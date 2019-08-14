@@ -60,8 +60,6 @@ class MetaInfo {
   std::vector<bst_uint> group_ptr_;
   /*! \brief weights of each instance, optional */
   HostDeviceVector<bst_float> weights_;
-  /*! \brief session-id of each instance, optional */
-  std::vector<uint64_t> qids_;
   /*!
    * \brief initialized margins,
    * if specified, xgboost will start from this init margin
@@ -69,9 +67,9 @@ class MetaInfo {
    */
   HostDeviceVector<bst_float> base_margin_;
   /*! \brief version flag, used to check version of this info */
-  static const int kVersion = 2;
-  /*! \brief version that introduced qid field */
-  static const int kVersionQidAdded = 2;
+  static const int kVersion = 3;
+  /*! \brief version that contains qid field */
+  static const int kVersionWithQid = 2;
   /*! \brief default constructor */
   MetaInfo()  = default;
   /*!
@@ -287,7 +285,6 @@ template<typename T>
 class BatchIteratorImpl {
  public:
   virtual ~BatchIteratorImpl() {}
-  virtual BatchIteratorImpl* Clone() = 0;
   virtual T& operator*() = 0;
   virtual const T& operator*() const = 0;
   virtual void operator++() = 0;
@@ -299,14 +296,6 @@ class BatchIterator {
  public:
   using iterator_category = std::forward_iterator_tag;
   explicit BatchIterator(BatchIteratorImpl<T>* impl) { impl_.reset(impl); }
-
-  BatchIterator(const BatchIterator& other) {
-    if (other.impl_) {
-      impl_.reset(other.impl_->Clone());
-    } else {
-      impl_.reset();
-    }
-  }
 
   void operator++() {
     CHECK(impl_ != nullptr);
@@ -334,7 +323,7 @@ class BatchIterator {
   }
 
  private:
-  std::unique_ptr<BatchIteratorImpl<T>> impl_;
+  std::shared_ptr<BatchIteratorImpl<T>> impl_;
 };
 
 template<typename T>
