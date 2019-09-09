@@ -1,26 +1,27 @@
 # coding: utf-8
 # pylint: disable=too-many-arguments, too-many-branches, invalid-name
 # pylint: disable=too-many-branches, too-many-lines, too-many-locals
+# pylint: disable=too-many-public-methods
 """Core XGBoost Library."""
-from __future__ import absolute_import
 import collections
 # pylint: disable=no-name-in-module,import-error
-try:
-    from collections.abc import Mapping  # Python 3
-except ImportError:
-    from collections import Mapping  # Python 2
+from collections.abc import Mapping  # Python 3
 # pylint: enable=no-name-in-module,import-error
+import math
 import ctypes
 import os
 import re
 import sys
 import warnings
+import json
 
 import numpy as np
 import scipy.sparse
 
 from .compat import (STRING_TYPES, PY3, DataFrame, MultiIndex, py_str,
-                     PANDAS_INSTALLED, DataTable)
+                     PANDAS_INSTALLED, DataTable,
+                     CUDF_INSTALLED, CUDF_DataFrame,
+                     os_fspath, os_PathLike)
 from .libpath import find_lib_path
 
 
@@ -131,8 +132,10 @@ def _load_lib():
     os_error_list = []
     for lib_path in lib_paths:
         try:
-            # needed when the lib is linked with non-system-available dependencies
-            os.environ['PATH'] = os.pathsep.join(pathBackup + [os.path.dirname(lib_path)])
+            # needed when the lib is linked with non-system-available
+            # dependencies
+            os.environ['PATH'] = os.pathsep.join(
+                pathBackup + [os.path.dirname(lib_path)])
             lib = ctypes.cdll.LoadLibrary(lib_path)
             lib_success = True
         except OSError as e:
@@ -217,6 +220,51 @@ def c_array(ctype, values):
     return (ctype * len(values))(*values)
 
 
+def _use_columnar_initializer(data):
+    '''Whether should we use columnar format initializer (pass data in as
+json string).  Currently cudf is the only valid option.'''
+    if CUDF_INSTALLED and isinstance(data, CUDF_DataFrame):
+        return True
+    return False
+
+
+def _extract_interface_from_cudf(df, is_info):
+    '''This function should be upstreamed to cudf.'''
+    if not _use_columnar_initializer(df):
+        raise ValueError('Only cudf is supported for initializing as json ' +
+                         'columnar format.  For other libraries please ' +
+                         'refer to specific API.')
+
+    def get_interface(obj):
+        return obj.mem.__cuda_array_interface__
+
+    array_interfaces = []
+    for col in df.columns:
+        data = df[col].data
+        array_interfaces.append(get_interface(data))
+
+    validity_masks = []
+    for col in df.columns:
+        if df[col].has_null_mask:
+            mask_interface = get_interface(df[col].nullmask)
+            mask_interface['null_count'] = df[col].null_count
+            validity_masks.append(mask_interface)
+        else:
+            validity_masks.append(False)
+
+    for i in range(len(df.columns)):
+        col_interface = array_interfaces[i]
+        mask_interface = validity_masks[i]
+        if mask_interface is not False:
+            col_interface['mask'] = mask_interface
+
+    if is_info:
+        array_interfaces = array_interfaces[0]
+
+    interfaces = bytes(json.dumps(array_interfaces, indent=2), 'utf-8')
+    return interfaces
+
+
 PANDAS_DTYPE_MAPPER = {'int8': 'int', 'int16': 'int', 'int32': 'int', 'int64': 'int',
                        'uint8': 'int', 'uint16': 'int', 'uint32': 'int', 'uint64': 'int',
                        'float16': 'float', 'float32': 'float', 'float64': 'float',
@@ -256,15 +304,18 @@ def _maybe_pandas_data(data, feature_names, feature_types):
 
 
 def _maybe_pandas_label(label):
-    """ Extract internal data from pd.DataFrame for DMatrix label """
+    """Extract internal data from pd.DataFrame for DMatrix label."""
 
     if PANDAS_INSTALLED and isinstance(label, DataFrame):
         if len(label.columns) > 1:
-            raise ValueError('DataFrame for label cannot have multiple columns')
+            raise ValueError(
+                'DataFrame for label cannot have multiple columns')
 
         label_dtypes = label.dtypes
-        if not all(dtype.name in PANDAS_DTYPE_MAPPER for dtype in label_dtypes):
-            raise ValueError('DataFrame.dtypes for label must be int, float or bool')
+        if not all(dtype.name in PANDAS_DTYPE_MAPPER
+                   for dtype in label_dtypes):
+            raise ValueError(
+                'DataFrame.dtypes for label must be int, float or bool')
         label = label.values.astype('float')
     # pd.Series can be passed to xgb as it is
 
@@ -318,6 +369,22 @@ def _maybe_dt_array(array):
     return array
 
 
+def _check_data(data, missing):
+    '''The missing value applies only to np.ndarray.'''
+    is_invalid = (not isinstance(data, np.ndarray)) and (missing is not None)
+    is_invalid = is_invalid and not math.isnan(missing)
+    if is_invalid:
+        raise ValueError(
+            'missing value only applies to dense input, ' +
+            'e.g. `numpy.ndarray`.' +
+            ' For a possibly sparse data type: ' + str(type(data)) +
+            ' please remove missing values or set it to nan.' +
+            ' Current missing value is set to: ' + str(missing))
+    if isinstance(data, list):
+        warnings.warn('Initializing DMatrix from List is deprecated.',
+                      DeprecationWarning)
+
+
 class DMatrix(object):
     """Data Matrix used in XGBoost.
 
@@ -336,15 +403,16 @@ class DMatrix(object):
         """
         Parameters
         ----------
-        data : string/numpy.array/scipy.sparse/pd.DataFrame/dt.Frame
+        data : os.PathLike/string/numpy.array/scipy.sparse/pd.DataFrame/
+               dt.Frame/cudf.DataFrame
             Data source of DMatrix.
-            When data is string type, it represents the path libsvm format txt file,
-            or binary file that xgboost can read from.
+            When data is string or os.PathLike type, it represents the path libsvm format
+            txt file, or binary file that xgboost can read from.
         label : list or numpy 1-D array, optional
             Label of the training data.
         missing : float, optional
-            Value in the data which needs to be present as a missing value. If
-            None, defaults to np.nan.
+            Value in the dense input data (e.g. `numpy.ndarray`) which needs
+            to be present as a missing value. If None, defaults to np.nan.
         weight : list or numpy 1-D array , optional
             Weight for each instance.
 
@@ -375,6 +443,8 @@ class DMatrix(object):
                 self._feature_types = feature_types
             return
 
+        _check_data(data, missing)
+
         data, feature_names, feature_types = _maybe_pandas_data(data,
                                                                 feature_names,
                                                                 feature_types)
@@ -382,17 +452,14 @@ class DMatrix(object):
         data, feature_names, feature_types = _maybe_dt_data(data,
                                                             feature_names,
                                                             feature_types)
+
         label = _maybe_pandas_label(label)
         label = _maybe_dt_array(label)
         weight = _maybe_dt_array(weight)
 
-        if isinstance(data, list):
-            warnings.warn('Initializing DMatrix from List is deprecated.',
-                          DeprecationWarning)
-
-        if isinstance(data, STRING_TYPES):
+        if isinstance(data, (STRING_TYPES, os_PathLike)):
             handle = ctypes.c_void_p()
-            _check_call(_LIB.XGDMatrixCreateFromFile(c_str(data),
+            _check_call(_LIB.XGDMatrixCreateFromFile(c_str(os_fspath(data)),
                                                      ctypes.c_int(silent),
                                                      ctypes.byref(handle)))
             self.handle = handle
@@ -404,6 +471,8 @@ class DMatrix(object):
             self._init_from_npy2d(data, missing, nthread)
         elif isinstance(data, DataTable):
             self._init_from_dt(data, nthread)
+        elif _use_columnar_initializer(data):
+            self._init_from_columnar(data)
         else:
             try:
                 csr = scipy.sparse.csr_matrix(data)
@@ -415,11 +484,15 @@ class DMatrix(object):
         if label is not None:
             if isinstance(label, np.ndarray):
                 self.set_label_npy2d(label)
+            elif _use_columnar_initializer(label):
+                self.set_interface_info('label', label)
             else:
                 self.set_label(label)
         if weight is not None:
             if isinstance(weight, np.ndarray):
                 self.set_weight_npy2d(weight)
+            elif _use_columnar_initializer(label):
+                self.set_interface_info('weight', weight)
             else:
                 self.set_weight(weight)
 
@@ -526,8 +599,19 @@ class DMatrix(object):
             nthread))
         self.handle = handle
 
+    def _init_from_columnar(self, df):
+        '''Initialize DMatrix from columnar memory format.
+
+        '''
+        interfaces = _extract_interface_from_cudf(df, False)
+        handle = ctypes.c_void_p()
+        _check_call(
+            _LIB.XGDMatrixCreateFromArrayInterfaces(interfaces,
+                                                    ctypes.byref(handle)))
+        self.handle = handle
+
     def __del__(self):
-        if hasattr(self, "handle") and self.handle is not None:
+        if hasattr(self, "handle") and self.handle:
             _check_call(_LIB.XGDMatrixFree(self.handle))
             self.handle = None
 
@@ -593,6 +677,13 @@ class DMatrix(object):
                                                c_data,
                                                c_bst_ulong(len(data))))
 
+    def set_interface_info(self, field, data):
+        '''Set info type peoperty into DMatrix.'''
+        interfaces = _extract_interface_from_cudf(data, True)
+        _check_call(_LIB.XGDMatrixSetInfoFromInterface(self.handle,
+                                                       c_str(field),
+                                                       interfaces))
+
     def set_float_info_npy2d(self, field, data):
         """Set float type property into the DMatrix
            for numpy 2d array input
@@ -653,13 +744,13 @@ class DMatrix(object):
 
         Parameters
         ----------
-        fname : string
+        fname : string or os.PathLike
             Name of the output buffer file.
         silent : bool (optional; default: True)
             If set, the output is suppressed.
         """
         _check_call(_LIB.XGDMatrixSaveBinary(self.handle,
-                                             c_str(fname),
+                                             c_str(os_fspath(fname)),
                                              ctypes.c_int(silent)))
 
     def set_label(self, label):
@@ -732,7 +823,10 @@ class DMatrix(object):
         margin: array like
             Prediction margin of each datapoint
         """
-        self.set_float_info('base_margin', margin)
+        if _use_columnar_initializer(margin):
+            self.set_interface_info('base_margin', margin)
+        else:
+            self.set_float_info('base_margin', margin)
 
     def set_group(self, group):
         """Set group size of DMatrix (used for ranking).
@@ -742,9 +836,12 @@ class DMatrix(object):
         group : array like
             Group size of each group
         """
-        _check_call(_LIB.XGDMatrixSetGroup(self.handle,
-                                           c_array(ctypes.c_uint, group),
-                                           c_bst_ulong(len(group))))
+        if _use_columnar_initializer(group):
+            self.set_interface_info('group', group)
+        else:
+            _check_call(_LIB.XGDMatrixSetGroup(self.handle,
+                                               c_array(ctypes.c_uint, group),
+                                               c_bst_ulong(len(group))))
 
     def get_label(self):
         """Get the label of the DMatrix.
@@ -831,7 +928,8 @@ class DMatrix(object):
         feature_names : list or None
         """
         if self._feature_names is None:
-            self._feature_names = ['f{0}'.format(i) for i in range(self.num_col())]
+            self._feature_names = ['f{0}'.format(i)
+                                   for i in range(self.num_col())]
         return self._feature_names
 
     @property
@@ -937,7 +1035,7 @@ class Booster(object):
             Parameters for boosters.
         cache : list
             List of cache items.
-        model_file : string
+        model_file : string or os.PathLike
             Path to the model file.
         """
         for d in cache:
@@ -1329,11 +1427,11 @@ class Booster(object):
 
         Parameters
         ----------
-        fname : string
+        fname : string or os.PathLike
             Output file name
         """
-        if isinstance(fname, STRING_TYPES):  # assume file name
-            _check_call(_LIB.XGBoosterSaveModel(self.handle, c_str(fname)))
+        if isinstance(fname, (STRING_TYPES, os_PathLike)):  # assume file name
+            _check_call(_LIB.XGBoosterSaveModel(self.handle, c_str(os_fspath(fname))))
         else:
             raise TypeError("fname must be a string")
 
@@ -1363,12 +1461,12 @@ class Booster(object):
 
         Parameters
         ----------
-        fname : string or a memory buffer
+        fname : string, os.PathLike, or a memory buffer
             Input file name or memory buffer(see also save_raw)
         """
-        if isinstance(fname, STRING_TYPES):
+        if isinstance(fname, (STRING_TYPES, os_PathLike)):
             # assume file name, cannot use os.path.exist to check, file can be from URL.
-            _check_call(_LIB.XGBoosterLoadModel(self.handle, c_str(fname)))
+            _check_call(_LIB.XGBoosterLoadModel(self.handle, c_str(os_fspath(fname))))
         else:
             buf = fname
             length = c_bst_ulong(len(buf))
@@ -1381,17 +1479,17 @@ class Booster(object):
 
         Parameters
         ----------
-        fout : string
+        fout : string or os.PathLike
             Output file name.
-        fmap : string, optional
+        fmap : string or os.PathLike, optional
             Name of the file containing feature map names.
         with_stats : bool, optional
             Controls whether the split statistics are output.
         dump_format : string, optional
             Format of model dump file. Can be 'text' or 'json'.
         """
-        if isinstance(fout, STRING_TYPES):
-            fout = open(fout, 'w')
+        if isinstance(fout, (STRING_TYPES, os_PathLike)):
+            fout = open(os_fspath(fout), 'w')
             need_close = True
         else:
             need_close = False
@@ -1416,13 +1514,14 @@ class Booster(object):
 
         Parameters
         ----------
-        fmap : string, optional
+        fmap : string or os.PathLike, optional
             Name of the file containing feature map names.
         with_stats : bool, optional
             Controls whether the split statistics are output.
         dump_format : string, optional
             Format of model dump. Can be 'text', 'json' or 'dot'.
         """
+        fmap = os_fspath(fmap)
         length = c_bst_ulong()
         sarr = ctypes.POINTER(ctypes.c_char_p)()
         if self.feature_names is not None and fmap == '':
@@ -1473,7 +1572,7 @@ class Booster(object):
 
         Parameters
         ----------
-        fmap: str (optional)
+        fmap: str or os.PathLike (optional)
            The name of feature map file
         """
 
@@ -1497,11 +1596,12 @@ class Booster(object):
 
         Parameters
         ----------
-        fmap: str (optional)
+        fmap: str or os.PathLike (optional)
            The name of feature map file.
         importance_type: str, default 'weight'
             One of the importance types defined above.
         """
+        fmap = os_fspath(fmap)
         if getattr(self, 'booster', None) is not None and self.booster not in {'gbtree', 'dart'}:
             raise ValueError('Feature importance is not defined for Booster type {}'
                              .format(self.booster))
@@ -1591,10 +1691,11 @@ class Booster(object):
 
         Parameters
         ----------
-        fmap: str (optional)
+        fmap: str or os.PathLike (optional)
            The name of feature map file.
         """
         # pylint: disable=too-many-locals
+        fmap = os_fspath(fmap)
         if not PANDAS_INSTALLED:
             raise Exception(('pandas must be available to use this method.'
                              'Install pandas before calling again.'))
@@ -1701,7 +1802,7 @@ class Booster(object):
         ----------
         feature: str
             The name of the feature.
-        fmap: str (optional)
+        fmap: str or os.PathLike (optional)
             The name of feature map file.
         bin: int, default None
             The maximum number of bins.
