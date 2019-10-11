@@ -11,6 +11,7 @@
 #include "./simple_dmatrix.h"
 #include "./simple_csr_source.h"
 #include "../common/io.h"
+#include "../common/group_data.h"
 
 #if DMLC_ENABLE_STD_THREAD
 #include "./sparse_page_source.h"
@@ -229,7 +230,8 @@ DMatrix* DMatrix::Load(const std::string& uri,
   /* sync up number of features after matrix loaded.
    * partitioned data will fail the train/val validation check
    * since partitioned data not knowing the real number of features. */
-  rabit::Allreduce<rabit::op::Max>(&dmat->Info().num_col_, 1);
+  rabit::Allreduce<rabit::op::Max>(&dmat->Info().num_col_, 1, nullptr,
+    nullptr, fname.c_str());
   // backward compatiblity code.
   if (!load_row_split) {
     MetaInfo& info = dmat->Info();
@@ -321,7 +323,35 @@ data::SparsePageFormat::DecideFormat(const std::string& cache_prefix) {
     return std::make_pair(raw, raw);
   }
 }
-
+SparsePage SparsePage::GetTranspose(int num_columns) const {
+  SparsePage transpose;
+  common::ParallelGroupBuilder<Entry> builder(&transpose.offset.HostVector(),
+                                              &transpose.data.HostVector());
+  const int nthread = omp_get_max_threads();
+  builder.InitBudget(num_columns, nthread);
+  long batch_size = static_cast<long>(this->Size());  // NOLINT(*)
+#pragma omp parallel for default(none) shared(batch_size, builder) schedule(static)
+  for (long i = 0; i < batch_size; ++i) {  // NOLINT(*)
+    int tid = omp_get_thread_num();
+    auto inst = (*this)[i];
+    for (const auto& entry : inst) {
+      builder.AddBudget(entry.index, tid);
+    }
+  }
+  builder.InitStorage();
+#pragma omp parallel for default(none) shared(batch_size, builder) schedule(static)
+  for (long i = 0; i < batch_size; ++i) {  // NOLINT(*)
+    int tid = omp_get_thread_num();
+    auto inst = (*this)[i];
+    for (const auto& entry : inst) {
+      builder.Push(
+          entry.index,
+          Entry(static_cast<bst_uint>(this->base_rowid + i), entry.fvalue),
+          tid);
+    }
+  }
+  return transpose;
+}
 void SparsePage::Push(const SparsePage &batch) {
   auto& data_vec = data.HostVector();
   auto& offset_vec = offset.HostVector();

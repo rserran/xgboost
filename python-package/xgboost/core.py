@@ -7,7 +7,6 @@ import collections
 # pylint: disable=no-name-in-module,import-error
 from collections.abc import Mapping  # Python 3
 # pylint: enable=no-name-in-module,import-error
-import math
 import ctypes
 import os
 import re
@@ -18,10 +17,11 @@ import json
 import numpy as np
 import scipy.sparse
 
-from .compat import (STRING_TYPES, PY3, DataFrame, MultiIndex, py_str,
-                     PANDAS_INSTALLED, DataTable,
-                     CUDF_INSTALLED, CUDF_DataFrame,
-                     os_fspath, os_PathLike)
+from .compat import (
+    STRING_TYPES, PY3, DataFrame, MultiIndex, py_str,
+    PANDAS_INSTALLED, DataTable,
+    CUDF_INSTALLED, CUDF_DataFrame, CUDF_Series, CUDF_MultiIndex,
+    os_fspath, os_PathLike)
 from .libpath import find_lib_path
 
 
@@ -105,6 +105,28 @@ def from_cstr_to_pystr(data, length):
                 # pylint: disable=undefined-variable
                 res.append(unicode(data[i].decode('utf-8')))
     return res
+
+
+def _expect(expectations, got):
+    '''Translate input error into string.
+
+    Parameters
+    ----------
+    expectations: sequence
+        a list of expected value.
+    got:
+        actual input
+
+    Returns
+    -------
+    msg: str'''
+    msg = 'Expecting '
+    for t in range(len(expectations) - 1):
+        msg += str(expectations[t])
+        msg += ' or '
+    msg += str(expectations[-1])
+    msg += '.  Got ' + str(got)
+    return msg
 
 
 def _log_callback(msg):
@@ -215,51 +237,46 @@ def c_str(string):
 
 def c_array(ctype, values):
     """Convert a python string to c array."""
-    if isinstance(values, np.ndarray) and values.dtype.itemsize == ctypes.sizeof(ctype):
+    if (isinstance(values, np.ndarray)
+            and values.dtype.itemsize == ctypes.sizeof(ctype)):
         return (ctype * len(values)).from_buffer_copy(values)
     return (ctype * len(values))(*values)
 
 
 def _use_columnar_initializer(data):
-    '''Whether should we use columnar format initializer (pass data in as
-json string).  Currently cudf is the only valid option.'''
-    if CUDF_INSTALLED and isinstance(data, CUDF_DataFrame):
+    '''Whether should we use columnar format initializer (pass data in as json
+    string).  Currently cudf is the only valid option.  For other dataframe
+    types, use their sepcific API instead.
+
+    '''
+    if CUDF_INSTALLED and (isinstance(data, (CUDF_DataFrame, CUDF_Series))):
         return True
     return False
 
 
-def _extract_interface_from_cudf(df, is_info):
-    '''This function should be upstreamed to cudf.'''
+def _extract_interface_from_cudf_series(data):
+    """This returns the array interface from the cudf series. This function should
+       be upstreamed to cudf."""
+    interface = data.__cuda_array_interface__
+    if data.has_null_mask:
+        interface['mask'] = interface['mask'].__cuda_array_interface__
+    return interface
+
+
+def _extract_interface_from_cudf(df):
+    """This function should be upstreamed to cudf."""
     if not _use_columnar_initializer(df):
         raise ValueError('Only cudf is supported for initializing as json ' +
                          'columnar format.  For other libraries please ' +
                          'refer to specific API.')
 
-    def get_interface(obj):
-        return obj.mem.__cuda_array_interface__
-
     array_interfaces = []
-    for col in df.columns:
-        data = df[col].data
-        array_interfaces.append(get_interface(data))
-
-    validity_masks = []
-    for col in df.columns:
-        if df[col].has_null_mask:
-            mask_interface = get_interface(df[col].nullmask)
-            mask_interface['null_count'] = df[col].null_count
-            validity_masks.append(mask_interface)
-        else:
-            validity_masks.append(False)
-
-    for i in range(len(df.columns)):
-        col_interface = array_interfaces[i]
-        mask_interface = validity_masks[i]
-        if mask_interface is not False:
-            col_interface['mask'] = mask_interface
-
-    if is_info:
-        array_interfaces = array_interfaces[0]
+    if isinstance(df, CUDF_DataFrame):
+        for col in df.columns:
+            array_interfaces.append(
+                _extract_interface_from_cudf_series(df[col]))
+    else:
+        array_interfaces.append(_extract_interface_from_cudf_series(df))
 
     interfaces = bytes(json.dumps(array_interfaces, indent=2), 'utf-8')
     return interfaces
@@ -322,6 +339,30 @@ def _maybe_pandas_label(label):
     return label
 
 
+def _maybe_cudf_dataframe(data, feature_names, feature_types):
+    '''Extract internal data from cudf.DataFrame for DMatrix data.'''
+    if not (CUDF_INSTALLED and isinstance(data,
+                                          (CUDF_DataFrame, CUDF_Series))):
+        return data, feature_names, feature_types
+    if feature_names is None:
+        if isinstance(data, CUDF_Series):
+            feature_names = [data.name]
+        elif isinstance(data.columns, CUDF_MultiIndex):
+            feature_names = [
+                ' '.join([str(x) for x in i])
+                for i in data.columns
+            ]
+        else:
+            feature_names = data.columns.format()
+    if feature_types is None:
+        if isinstance(data, CUDF_Series):
+            dtypes = [data.dtype]
+        else:
+            dtypes = data.dtypes
+        feature_types = [PANDAS_DTYPE_MAPPER[d.name] for d in dtypes]
+    return data, feature_names, feature_types
+
+
 DT_TYPE_MAPPER = {'bool': 'bool', 'int': 'int', 'real': 'float'}
 
 DT_TYPE_MAPPER2 = {'bool': 'i', 'int': 'int', 'real': 'float'}
@@ -369,20 +410,19 @@ def _maybe_dt_array(array):
     return array
 
 
-def _check_data(data, missing):
-    '''The missing value applies only to np.ndarray.'''
-    is_invalid = (not isinstance(data, np.ndarray)) and (missing is not None)
-    is_invalid = is_invalid and not math.isnan(missing)
-    if is_invalid:
-        raise ValueError(
-            'missing value only applies to dense input, ' +
-            'e.g. `numpy.ndarray`.' +
-            ' For a possibly sparse data type: ' + str(type(data)) +
-            ' please remove missing values or set it to nan.' +
-            ' Current missing value is set to: ' + str(missing))
-    if isinstance(data, list):
-        warnings.warn('Initializing DMatrix from List is deprecated.',
-                      DeprecationWarning)
+def _convert_dataframes(data, feature_names, feature_types):
+    data, feature_names, feature_types = _maybe_pandas_data(data,
+                                                            feature_names,
+                                                            feature_types)
+
+    data, feature_names, feature_types = _maybe_dt_data(data,
+                                                        feature_names,
+                                                        feature_types)
+
+    data, feature_names, feature_types = _maybe_cudf_dataframe(
+        data, feature_names, feature_types)
+
+    return data, feature_names, feature_types
 
 
 class DMatrix(object):
@@ -400,20 +440,21 @@ class DMatrix(object):
                  weight=None, silent=False,
                  feature_names=None, feature_types=None,
                  nthread=None):
-        """
-        Parameters
+        """Parameters
         ----------
         data : os.PathLike/string/numpy.array/scipy.sparse/pd.DataFrame/
                dt.Frame/cudf.DataFrame
             Data source of DMatrix.
-            When data is string or os.PathLike type, it represents the path libsvm format
-            txt file, or binary file that xgboost can read from.
-        label : list or numpy 1-D array, optional
+            When data is string or os.PathLike type, it represents the path
+            libsvm format txt file, csv file (by specifying uri parameter
+            'path_to_csv?format=csv'), or binary file that xgboost can read
+            from.
+        label : list, numpy 1-D array or cudf.DataFrame, optional
             Label of the training data.
         missing : float, optional
-            Value in the dense input data (e.g. `numpy.ndarray`) which needs
-            to be present as a missing value. If None, defaults to np.nan.
-        weight : list or numpy 1-D array , optional
+            Value in the input data which needs to be present as a missing
+            value. If None, defaults to np.nan.
+        weight : list, numpy 1-D array or cudf.DataFrame , optional
             Weight for each instance.
 
             .. note:: For ranking task, weights are per-group.
@@ -432,6 +473,7 @@ class DMatrix(object):
         nthread : integer, optional
             Number of threads to use for loading data from numpy array. If -1,
             uses maximum threads available on the system.
+
         """
         # force into void_p, mac need to pass things in as void_p
         if data is None:
@@ -443,15 +485,12 @@ class DMatrix(object):
                 self._feature_types = feature_types
             return
 
-        _check_data(data, missing)
+        if isinstance(data, list):
+            raise TypeError('Input data can not be a list.')
 
-        data, feature_names, feature_types = _maybe_pandas_data(data,
-                                                                feature_names,
-                                                                feature_types)
-
-        data, feature_names, feature_types = _maybe_dt_data(data,
-                                                            feature_names,
-                                                            feature_types)
+        data, feature_names, feature_types = _convert_dataframes(
+            data, feature_names, feature_types
+        )
 
         label = _maybe_pandas_label(label)
         label = _maybe_dt_array(label)
@@ -472,7 +511,7 @@ class DMatrix(object):
         elif isinstance(data, DataTable):
             self._init_from_dt(data, nthread)
         elif _use_columnar_initializer(data):
-            self._init_from_columnar(data)
+            self._init_from_columnar(data, missing)
         else:
             try:
                 csr = scipy.sparse.csr_matrix(data)
@@ -544,7 +583,8 @@ class DMatrix(object):
         and type if memory use is a concern.
         """
         if len(mat.shape) != 2:
-            raise ValueError('Input numpy.ndarray must be 2 dimensional')
+            raise ValueError('Expecting 2 dimensional numpy.ndarray, got: ',
+                             mat.shape)
         # flatten the array by rows and ensure it is float32.
         # we try to avoid data copies if possible (reshape returns a view when possible
         # and we explicitly tell np.array to try and avoid copying)
@@ -599,15 +639,18 @@ class DMatrix(object):
             nthread))
         self.handle = handle
 
-    def _init_from_columnar(self, df):
+    def _init_from_columnar(self, df, missing):
         '''Initialize DMatrix from columnar memory format.
 
         '''
-        interfaces = _extract_interface_from_cudf(df, False)
+        interfaces = _extract_interface_from_cudf(df)
         handle = ctypes.c_void_p()
+        has_missing = missing is not None
+        missing = missing if has_missing else np.nan
         _check_call(
-            _LIB.XGDMatrixCreateFromArrayInterfaces(interfaces,
-                                                    ctypes.byref(handle)))
+            _LIB.XGDMatrixCreateFromArrayInterfaces(
+                interfaces, ctypes.c_int32(has_missing),
+                ctypes.c_float(missing), ctypes.byref(handle)))
         self.handle = handle
 
     def __del__(self):
@@ -679,7 +722,7 @@ class DMatrix(object):
 
     def set_interface_info(self, field, data):
         '''Set info type peoperty into DMatrix.'''
-        interfaces = _extract_interface_from_cudf(data, True)
+        interfaces = _extract_interface_from_cudf(data)
         _check_call(_LIB.XGDMatrixSetInfoFromInterface(self.handle,
                                                        c_str(field),
                                                        interfaces))
@@ -839,9 +882,7 @@ class DMatrix(object):
         if _use_columnar_initializer(group):
             self.set_interface_info('group', group)
         else:
-            _check_call(_LIB.XGDMatrixSetGroup(self.handle,
-                                               c_array(ctypes.c_uint, group),
-                                               c_bst_ulong(len(group))))
+            self.set_uint_info('group', group)
 
     def get_label(self):
         """Get the label of the DMatrix.
@@ -1040,7 +1081,7 @@ class Booster(object):
         """
         for d in cache:
             if not isinstance(d, DMatrix):
-                raise TypeError('invalid cache item: {}'.format(type(d).__name__))
+                raise TypeError('invalid cache item: {}'.format(type(d).__name__), cache)
             self._validate_features(d)
 
         dmats = c_array(ctypes.c_void_p, [d.handle for d in cache])
@@ -1382,6 +1423,10 @@ class Booster(object):
             option_mask |= 0x08
         if pred_interactions:
             option_mask |= 0x10
+
+        if not isinstance(data, DMatrix):
+            raise TypeError('Expecting data to be a DMatrix object, got: ',
+                            type(data))
 
         if validate_features:
             self._validate_features(data)

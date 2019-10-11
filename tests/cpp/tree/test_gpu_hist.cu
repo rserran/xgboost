@@ -71,109 +71,6 @@ class HistogramCutsWrapper : public common::HistogramCuts {
 };
 }  //  anonymous namespace
 
-
-template <typename GradientSumT>
-void BuildGidx(DeviceShard<GradientSumT>* shard, int n_rows, int n_cols,
-               bst_float sparsity=0) {
-  auto dmat = CreateDMatrix(n_rows, n_cols, sparsity, 3);
-  const SparsePage& batch = *(*dmat)->GetBatches<xgboost::SparsePage>().begin();
-
-  HistogramCutsWrapper cmat;
-  cmat.SetPtrs({0, 3, 6, 9, 12, 15, 18, 21, 24});
-  // 24 cut fields, 3 cut fields for each feature (column).
-  cmat.SetValues({0.30f, 0.67f, 1.64f,
-          0.32f, 0.77f, 1.95f,
-          0.29f, 0.70f, 1.80f,
-          0.32f, 0.75f, 1.85f,
-          0.18f, 0.59f, 1.69f,
-          0.25f, 0.74f, 2.00f,
-          0.26f, 0.74f, 1.98f,
-          0.26f, 0.71f, 1.83f});
-  cmat.SetMins({0.1f, 0.2f, 0.3f, 0.1f, 0.2f, 0.3f, 0.2f, 0.2f});
-
-  auto is_dense = (*dmat)->Info().num_nonzero_ ==
-                  (*dmat)->Info().num_row_ * (*dmat)->Info().num_col_;
-  size_t row_stride = 0;
-  const auto &offset_vec = batch.offset.ConstHostVector();
-  for (size_t i = 1; i < offset_vec.size(); ++i) {
-    row_stride = std::max(row_stride, offset_vec[i] - offset_vec[i-1]);
-  }
-  shard->InitCompressedData(cmat, row_stride, is_dense);
-  shard->CreateHistIndices(
-    batch, cmat, RowStateOnDevice(batch.Size(), batch.Size()), -1);
-
-  delete dmat;
-}
-
-TEST(GpuHist, BuildGidxDense) {
-  int constexpr kNRows = 16, kNCols = 8;
-  tree::TrainParam param;
-  std::vector<std::pair<std::string, std::string>> args {
-    {"max_depth", "1"},
-    {"max_leaves", "0"},
-  };
-  param.Init(args);
-  DeviceShard<GradientPairPrecise> shard(0, kNRows, param, kNCols, kNCols);
-  BuildGidx(&shard, kNRows, kNCols);
-
-  std::vector<common::CompressedByteT> h_gidx_buffer(shard.gidx_buffer.size());
-  dh::CopyDeviceSpanToVector(&h_gidx_buffer, shard.gidx_buffer);
-  common::CompressedIterator<uint32_t> gidx(h_gidx_buffer.data(), 25);
-
-  ASSERT_EQ(shard.ellpack_matrix.row_stride, kNCols);
-
-  std::vector<uint32_t> solution = {
-    0, 3, 8,  9, 14, 17, 20, 21,
-    0, 4, 7, 10, 14, 16, 19, 22,
-    1, 3, 7, 11, 14, 15, 19, 21,
-    2, 3, 7,  9, 13, 16, 20, 22,
-    2, 3, 6,  9, 12, 16, 20, 21,
-    1, 5, 6, 10, 13, 16, 20, 21,
-    2, 5, 8,  9, 13, 17, 19, 22,
-    2, 4, 6, 10, 14, 17, 19, 21,
-    2, 5, 7,  9, 13, 16, 19, 22,
-    0, 3, 8, 10, 12, 16, 19, 22,
-    1, 3, 7, 10, 13, 16, 19, 21,
-    1, 3, 8, 10, 13, 17, 20, 22,
-    2, 4, 6,  9, 14, 15, 19, 22,
-    1, 4, 6,  9, 13, 16, 19, 21,
-    2, 4, 8, 10, 14, 15, 19, 22,
-    1, 4, 7, 10, 14, 16, 19, 21,
-  };
-  for (size_t i = 0; i < kNRows * kNCols; ++i) {
-    ASSERT_EQ(solution[i], gidx[i]);
-  }
-}
-
-TEST(GpuHist, BuildGidxSparse) {
-  int constexpr kNRows = 16, kNCols = 8;
-  TrainParam param;
-  std::vector<std::pair<std::string, std::string>> args {
-    {"max_depth", "1"},
-    {"max_leaves", "0"},
-  };
-  param.Init(args);
-
-  DeviceShard<GradientPairPrecise> shard(0, kNRows, param, kNCols, kNCols);
-  BuildGidx(&shard, kNRows, kNCols, 0.9f);
-
-  std::vector<common::CompressedByteT> h_gidx_buffer(shard.gidx_buffer.size());
-  dh::CopyDeviceSpanToVector(&h_gidx_buffer, shard.gidx_buffer);
-  common::CompressedIterator<uint32_t> gidx(h_gidx_buffer.data(), 25);
-
-  ASSERT_LE(shard.ellpack_matrix.row_stride, 3);
-
-  // row_stride = 3, 16 rows, 48 entries for ELLPack
-  std::vector<uint32_t> solution = {
-    15, 24, 24,  0, 24, 24, 24, 24, 24, 24, 24, 24, 20, 24, 24, 24,
-    24, 24, 24, 24, 24,  5, 24, 24,  0, 16, 24, 15, 24, 24, 24, 24,
-    24,  7, 14, 16,  4, 24, 24, 24, 24, 24,  9, 24, 24,  1, 24, 24
-  };
-  for (size_t i = 0; i < kNRows * shard.ellpack_matrix.row_stride; ++i) {
-    ASSERT_EQ(solution[i], gidx[i]);
-  }
-}
-
 std::vector<GradientPairPrecise> GetHostHistGpair() {
   // 24 bins, 3 bins for each feature (column).
   std::vector<GradientPairPrecise> hist_gpair = {
@@ -199,9 +96,10 @@ void TestBuildHist(bool use_shared_memory_histograms) {
     {"max_leaves", "0"},
   };
   param.Init(args);
-  DeviceShard<GradientSumT> shard(0, kNRows, param, kNCols, kNCols);
-  BuildGidx(&shard, kNRows, kNCols);
-
+  auto page = BuildEllpackPage(kNRows, kNCols);
+  GPUHistMakerDevice<GradientSumT> maker(0, page.get(), kNRows, param, kNCols, kNCols);
+  maker.InitHistogram();
+  
   xgboost::SimpleLCG gen;
   xgboost::SimpleRealUniformDistribution<bst_float> dist(0.0f, 1.0f);
   std::vector<GradientPair> h_gpair(kNRows);
@@ -211,21 +109,20 @@ void TestBuildHist(bool use_shared_memory_histograms) {
     gpair = GradientPair(grad, hess);
   }
 
-  thrust::host_vector<common::CompressedByteT> h_gidx_buffer (
-      shard.gidx_buffer.size());
+  thrust::host_vector<common::CompressedByteT> h_gidx_buffer (page->gidx_buffer.size());
 
-  common::CompressedByteT* d_gidx_buffer_ptr = shard.gidx_buffer.data();
+  common::CompressedByteT* d_gidx_buffer_ptr = page->gidx_buffer.data();
   dh::safe_cuda(cudaMemcpy(h_gidx_buffer.data(), d_gidx_buffer_ptr,
-                           sizeof(common::CompressedByteT) * shard.gidx_buffer.size(),
+                           sizeof(common::CompressedByteT) * page->gidx_buffer.size(),
                            cudaMemcpyDeviceToHost));
 
-  shard.row_partitioner.reset(new RowPartitioner(0, kNRows));
-  shard.hist.AllocateHistogram(0);
-  dh::CopyVectorToDeviceSpan(shard.gpair, h_gpair);
+  maker.row_partitioner.reset(new RowPartitioner(0, kNRows));
+  maker.hist.AllocateHistogram(0);
+  dh::CopyVectorToDeviceSpan(maker.gpair, h_gpair);
 
-  shard.use_shared_memory_histograms = use_shared_memory_histograms;
-  shard.BuildHist(0);
-  DeviceHistogram<GradientSumT> d_hist = shard.hist;
+  maker.use_shared_memory_histograms = use_shared_memory_histograms;
+  maker.BuildHist(0);
+  DeviceHistogram<GradientSumT> d_hist = maker.hist;
 
   auto node_histogram = d_hist.GetNodeHistogram(0);
   // d_hist.data stored in float, not gradient pair
@@ -299,33 +196,29 @@ TEST(GpuHist, EvaluateSplits) {
 
   int max_bins = 4;
 
-  // Initialize DeviceShard
-  std::unique_ptr<DeviceShard<GradientPairPrecise>> shard{
-    new DeviceShard<GradientPairPrecise>(0, kNRows, param, kNCols, kNCols)};
-  // Initialize DeviceShard::node_sum_gradients
-  shard->node_sum_gradients = {{6.4f, 12.8f}};
+  // Initialize GPUHistMakerDevice
+  auto page = BuildEllpackPage(kNRows, kNCols);
+  GPUHistMakerDevice<GradientPairPrecise> maker(0, page.get(), kNRows, param, kNCols, kNCols);
+  // Initialize GPUHistMakerDevice::node_sum_gradients
+  maker.node_sum_gradients = {{6.4f, 12.8f}};
 
-  // Initialize DeviceShard::cut
+  // Initialize GPUHistMakerDevice::cut
   auto cmat = GetHostCutMatrix();
 
   // Copy cut matrix to device.
-  shard->ba.Allocate(0,
-                     &(shard->feature_segments), cmat.Ptrs().size(),
-                     &(shard->min_fvalue), cmat.MinValues().size(),
-                     &(shard->gidx_fvalue_map), 24,
-                     &(shard->monotone_constraints), kNCols);
-  dh::CopyVectorToDeviceSpan(shard->feature_segments, cmat.Ptrs());
-  dh::CopyVectorToDeviceSpan(shard->gidx_fvalue_map, cmat.Values());
-  dh::CopyVectorToDeviceSpan(shard->monotone_constraints,
-                             param.monotone_constraints);
-  shard->ellpack_matrix.feature_segments = shard->feature_segments;
-  shard->ellpack_matrix.gidx_fvalue_map = shard->gidx_fvalue_map;
-  dh::CopyVectorToDeviceSpan(shard->min_fvalue, cmat.MinValues());
-  shard->ellpack_matrix.min_fvalue = shard->min_fvalue;
+  maker.ba.Allocate(0,
+                    &(page->ellpack_matrix.feature_segments), cmat.Ptrs().size(),
+                    &(page->ellpack_matrix.min_fvalue), cmat.MinValues().size(),
+                    &(page->ellpack_matrix.gidx_fvalue_map), 24,
+                    &(maker.monotone_constraints), kNCols);
+  dh::CopyVectorToDeviceSpan(page->ellpack_matrix.feature_segments, cmat.Ptrs());
+  dh::CopyVectorToDeviceSpan(page->ellpack_matrix.gidx_fvalue_map, cmat.Values());
+  dh::CopyVectorToDeviceSpan(maker.monotone_constraints, param.monotone_constraints);
+  dh::CopyVectorToDeviceSpan(page->ellpack_matrix.min_fvalue, cmat.MinValues());
 
-  // Initialize DeviceShard::hist
-  shard->hist.Init(0, (max_bins - 1) * kNCols);
-  shard->hist.AllocateHistogram(0);
+  // Initialize GPUHistMakerDevice::hist
+  maker.hist.Init(0, (max_bins - 1) * kNCols);
+  maker.hist.AllocateHistogram(0);
   // Each row of hist_gpair represents gpairs for one feature.
   // Each entry represents a bin.
   std::vector<GradientPairPrecise> hist_gpair = GetHostHistGpair();
@@ -335,27 +228,26 @@ TEST(GpuHist, EvaluateSplits) {
     hist.push_back(pair.GetHess());
   }
 
-  ASSERT_EQ(shard->hist.Data().size(), hist.size());
+  ASSERT_EQ(maker.hist.Data().size(), hist.size());
   thrust::copy(hist.begin(), hist.end(),
-               shard->hist.Data().begin());
+               maker.hist.Data().begin());
 
-  shard->column_sampler.Init(kNCols,
-                                  param.colsample_bynode,
-                                  param.colsample_bylevel,
-                                  param.colsample_bytree,
-                                  false);
+  maker.column_sampler.Init(kNCols,
+                            param.colsample_bynode,
+                            param.colsample_bylevel,
+                            param.colsample_bytree,
+                            false);
 
   RegTree tree;
   MetaInfo info;
   info.num_row_ = kNRows;
   info.num_col_ = kNCols;
 
-  shard->node_value_constraints.resize(1);
-  shard->node_value_constraints[0].lower_bound = -1.0;
-  shard->node_value_constraints[0].upper_bound = 1.0;
+  maker.node_value_constraints.resize(1);
+  maker.node_value_constraints[0].lower_bound = -1.0;
+  maker.node_value_constraints[0].upper_bound = 1.0;
 
-  std::vector<DeviceSplitCandidate> res =
-    shard->EvaluateSplits({ 0,0 }, tree, kNCols);
+  std::vector<DeviceSplitCandidate> res = maker.EvaluateSplits({0, 0 }, tree, kNCols);
 
   ASSERT_EQ(res[0].findex, 7);
   ASSERT_EQ(res[1].findex, 7);
@@ -388,24 +280,85 @@ void TestHistogramIndexImpl() {
   hist_maker_ext.Configure(training_params, &generic_param);
   hist_maker_ext.InitDataOnce(hist_maker_ext_dmat.get());
 
-  // Extract the device shard from the histogram makers and from that its compressed
+  // Extract the device maker from the histogram makers and from that its compressed
   // histogram index
-  const auto &dev_shard = hist_maker.shard_;
-  std::vector<common::CompressedByteT> h_gidx_buffer(dev_shard->gidx_buffer.size());
-  dh::CopyDeviceSpanToVector(&h_gidx_buffer, dev_shard->gidx_buffer);
+  const auto &maker = hist_maker.maker_;
+  std::vector<common::CompressedByteT> h_gidx_buffer(maker->page->gidx_buffer.size());
+  dh::CopyDeviceSpanToVector(&h_gidx_buffer, maker->page->gidx_buffer);
 
-  const auto &dev_shard_ext = hist_maker_ext.shard_;
-  std::vector<common::CompressedByteT> h_gidx_buffer_ext(dev_shard_ext->gidx_buffer.size());
-  dh::CopyDeviceSpanToVector(&h_gidx_buffer_ext, dev_shard_ext->gidx_buffer);
+  const auto &maker_ext = hist_maker_ext.maker_;
+  std::vector<common::CompressedByteT> h_gidx_buffer_ext(maker_ext->page->gidx_buffer.size());
+  dh::CopyDeviceSpanToVector(&h_gidx_buffer_ext, maker_ext->page->gidx_buffer);
 
-  ASSERT_EQ(dev_shard->n_bins, dev_shard_ext->n_bins);
-  ASSERT_EQ(dev_shard->gidx_buffer.size(), dev_shard_ext->gidx_buffer.size());
+  ASSERT_EQ(maker->page->n_bins, maker_ext->page->n_bins);
+  ASSERT_EQ(maker->page->gidx_buffer.size(), maker_ext->page->gidx_buffer.size());
 
   ASSERT_EQ(h_gidx_buffer, h_gidx_buffer_ext);
 }
 
 TEST(GpuHist, TestHistogramIndex) {
   TestHistogramIndexImpl();
+}
+
+// gamma is an alias of min_split_loss
+int32_t TestMinSplitLoss(DMatrix* dmat, float gamma, HostDeviceVector<GradientPair>* gpair) {
+  Args args {
+    {"max_depth", "1"},
+    {"max_leaves", "0"},
+
+    // Disable all other parameters.
+    {"colsample_bynode", "1"},
+    {"colsample_bylevel", "1"},
+    {"colsample_bytree", "1"},
+    {"min_child_weight", "0.01"},
+    {"reg_alpha", "0"},
+    {"reg_lambda", "0"},
+    {"max_delta_step", "0"},
+
+    // test gamma
+    {"gamma", std::to_string(gamma)}
+  };
+
+  tree::GPUHistMakerSpecialised<GradientPairPrecise> hist_maker;
+  GenericParameter generic_param(CreateEmptyGenericParam(0));
+  hist_maker.Configure(args, &generic_param);
+
+  RegTree tree;
+  hist_maker.Update(gpair, dmat, {&tree});
+
+  auto n_nodes = tree.NumExtraNodes();
+  return n_nodes;
+}
+
+TEST(GpuHist, MinSplitLoss) {
+  constexpr size_t kRows = 32;
+  constexpr size_t kCols = 16;
+  constexpr float kSparsity = 0.6;
+  auto dmat = CreateDMatrix(kRows, kCols, kSparsity, 3);
+
+  xgboost::SimpleLCG gen;
+  xgboost::SimpleRealUniformDistribution<bst_float> dist(0.0f, 1.0f);
+  std::vector<GradientPair> h_gpair(kRows);
+  for (auto &gpair : h_gpair) {
+    bst_float grad = dist(&gen);
+    bst_float hess = dist(&gen);
+    gpair = GradientPair(grad, hess);
+  }
+  HostDeviceVector<GradientPair> gpair(h_gpair);
+
+  {
+    int32_t n_nodes = TestMinSplitLoss((*dmat).get(), 0.01, &gpair);
+    // This is not strictly verified, meaning the numeber `2` is whatever GPU_Hist retured
+    // when writing this test, and only used for testing larger gamma (below) does prevent
+    // building tree.
+    ASSERT_EQ(n_nodes, 2);
+  }
+  {
+    int32_t n_nodes = TestMinSplitLoss((*dmat).get(), 100.0, &gpair);
+    // No new nodes with gamma == 100.
+    ASSERT_EQ(n_nodes, static_cast<decltype(n_nodes)>(0));
+  }
+  delete dmat;
 }
 
 }  // namespace tree

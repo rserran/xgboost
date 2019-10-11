@@ -11,8 +11,10 @@
 #include <rabit/rabit.h>
 #include <cub/util_allocator.cuh>
 
+#include "xgboost/host_device_vector.h"
+#include "xgboost/span.h"
+
 #include "common.h"
-#include "span.h"
 
 #include <algorithm>
 #include <omp.h>
@@ -249,7 +251,6 @@ public:
     int current_device;
     safe_cuda(cudaGetDevice(&current_device));
     stats_.RegisterAllocation(ptr, n);
-    CHECK_LE(stats_.peak_allocated_bytes, dh::TotalMemory(current_device));
   }
   void RegisterDeallocation(void *ptr, size_t n) {
     if (!xgboost::ConsoleLogger::ShouldLog(xgboost::ConsoleLogger::LV::kDebug))
@@ -345,6 +346,8 @@ struct XGBCachingDeviceAllocatorImpl : thrust::device_malloc_allocator<T> {
 // Replacement of allocator with custom backend should occur here
 template <typename T>
 using XGBDeviceAllocator = detail::XGBDefaultDeviceAllocatorImpl<T>;
+/*! Be careful that the initialization constructor is a no-op, which means calling
+ *  `vec.resize(n, 1)` won't initialize the memory region to 1. */
 template <typename T>
 using XGBCachingDeviceAllocator = detail::XGBCachingDeviceAllocatorImpl<T>;
 /** \brief Specialisation of thrust device vector using custom allocator. */
@@ -1128,6 +1131,27 @@ xgboost::common::Span<T> ToSpan(thrust::device_vector<T>& vec,
                                 size_t offset, size_t size) {
   using IndexT = typename xgboost::common::Span<T>::index_type;
   return ToSpan(vec, static_cast<IndexT>(offset), static_cast<IndexT>(size));
+}
+
+// thrust begin, similiar to std::begin
+template <typename T>
+thrust::device_ptr<T> tbegin(xgboost::HostDeviceVector<T>& vector) {  // NOLINT
+  return thrust::device_ptr<T>(vector.DevicePointer());
+}
+
+template <typename T>
+thrust::device_ptr<T> tend(xgboost::HostDeviceVector<T>& vector) {  // // NOLINT
+  return tbegin(vector) + vector.Size();
+}
+
+template <typename T>
+thrust::device_ptr<T const> tcbegin(xgboost::HostDeviceVector<T> const& vector) {
+  return thrust::device_ptr<T const>(vector.ConstDevicePointer());
+}
+
+template <typename T>
+thrust::device_ptr<T const> tcend(xgboost::HostDeviceVector<T> const& vector) {
+  return tcbegin(vector) + vector.Size();
 }
 
 template <typename FunctionT>

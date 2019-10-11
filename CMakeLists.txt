@@ -29,9 +29,10 @@ option(JVM_BINDINGS "Build JVM bindings" OFF)
 option(R_LIB "Build shared library for R package" OFF)
 ## Dev
 option(GOOGLE_TEST "Build google tests" OFF)
-option(USE_DMLC_GTEST "Use google tests bundled with dmlc-core submodule (EXPERIMENTAL)" OFF)
+option(USE_DMLC_GTEST "Use google tests bundled with dmlc-core submodule" OFF)
 option(USE_NVTX "Build with cuda profiling annotations. Developers only." OFF)
 set(NVTX_HEADER_DIR "" CACHE PATH "Path to the stand-alone nvtx header")
+option(RABIT_MOCK "Build rabit with mock" OFF)
 ## CUDA
 option(USE_CUDA  "Build with GPU acceleration" OFF)
 option(USE_NCCL  "Build with NCCL to enable distributed GPU support." OFF)
@@ -88,17 +89,25 @@ list(APPEND LINKED_LIBRARIES_PRIVATE dmlc)
 
 # rabit
 # full rabit doesn't build on windows, so we can't import it as subdirectory
-if(MINGW OR R_LIB)
+if(MINGW OR R_LIB OR WIN32)
   set(RABIT_SOURCES
     rabit/src/engine_empty.cc
     rabit/src/c_api.cc)
 else ()
-  set(RABIT_SOURCES
-    rabit/src/allreduce_base.cc
-    rabit/src/allreduce_robust.cc
-    rabit/src/engine.cc
-    rabit/src/c_api.cc)
-endif (MINGW OR R_LIB)
+  if(RABIT_MOCK)
+    set(RABIT_SOURCES
+      rabit/src/allreduce_base.cc
+      rabit/src/allreduce_robust.cc
+      rabit/src/engine_mock.cc
+      rabit/src/c_api.cc)
+  else()
+    set(RABIT_SOURCES
+      rabit/src/allreduce_base.cc
+      rabit/src/allreduce_robust.cc
+      rabit/src/engine.cc
+      rabit/src/c_api.cc)
+  endif(RABIT_MOCK)
+endif (MINGW OR R_LIB OR WIN32)
 add_library(rabit STATIC ${RABIT_SOURCES})
 target_include_directories(rabit PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/dmlc-core/include>
@@ -178,11 +187,9 @@ if (BUILD_C_DOC)
 endif (BUILD_C_DOC)
 
 include(GNUInstallDirs)
-# Exposing only C APIs.
-install(FILES
-  "${PROJECT_SOURCE_DIR}/include/xgboost/c_api.h"
-  DESTINATION
-  include/xgboost/)
+# Install all headers.  Please note that currently the C++ headers does not form an "API".
+install(DIRECTORY ${xgboost_SOURCE_DIR}/include/xgboost
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 install(TARGETS xgboost runxgboost
   EXPORT XGBoostTargets
