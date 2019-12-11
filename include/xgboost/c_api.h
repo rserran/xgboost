@@ -58,6 +58,16 @@ typedef struct {  // NOLINT(*)
   float* value;
 } XGBoostBatchCSR;
 
+/*!
+ * \brief Return the version of the XGBoost library being currently used.
+ *
+ *  The output variable is only written if it's not NULL.
+ *
+ * \param major Store the major version number
+ * \param minor Store the minor version number
+ * \param patch Store the patch (revision) number
+ */
+XGB_DLL void XGBoostVersion(int* major, int* minor, int* patch);
 
 /*!
  * \brief Callback to set the data to handle,
@@ -418,7 +428,7 @@ XGB_DLL int XGBoosterPredict(BoosterHandle handle,
                              const float **out_result);
 
 /*!
- * \brief load model from existing file
+ * \brief Load model from existing file
  * \param handle handle
  * \param fname file name
 * \return 0 when success, -1 when failure happens
@@ -426,7 +436,7 @@ XGB_DLL int XGBoosterPredict(BoosterHandle handle,
 XGB_DLL int XGBoosterLoadModel(BoosterHandle handle,
                                const char *fname);
 /*!
- * \brief save model into existing file
+ * \brief Save model into existing file
  * \param handle handle
  * \param fname file name
  * \return 0 when success, -1 when failure happens
