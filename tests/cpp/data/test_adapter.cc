@@ -6,7 +6,7 @@
 #include "../../../src/common/timer.h"
 #include "../helpers.h"
 using namespace xgboost;  // NOLINT
-TEST(c_api, CSRAdapter) {
+TEST(adapter, CSRAdapter) {
   int m = 3;
   int n = 2;
   std::vector<float> data = {1, 2, 3, 4, 5};
@@ -29,7 +29,7 @@ TEST(c_api, CSRAdapter) {
   EXPECT_EQ(line2 .GetElement(0).column_idx, 1);
 }
 
-TEST(c_api, CSCAdapterColsMoreThanRows) {
+TEST(adapter, CSCAdapterColsMoreThanRows) {
   std::vector<float> data = {1, 2, 3, 4, 5, 6, 7, 8};
   std::vector<unsigned> row_idx = {0, 1, 0, 1, 0, 1, 0, 1};
   std::vector<size_t> col_ptr = {0, 2, 4, 6, 8};
@@ -60,4 +60,32 @@ TEST(c_api, CSCAdapterColsMoreThanRows) {
   EXPECT_EQ(inst[2].index, 2);
   EXPECT_EQ(inst[3].fvalue, 8);
   EXPECT_EQ(inst[3].index, 3);
+}
+
+TEST(c_api, DMatrixSliceAdapterFromSimpleDMatrix) {
+  auto pp_dmat = CreateDMatrix(6, 2, 1.0);
+  auto p_dmat = *pp_dmat;
+
+  std::vector<int> ridx_set = {1, 3, 5};
+  data::DMatrixSliceAdapter adapter(p_dmat.get(),
+                                    {ridx_set.data(), ridx_set.size()});
+  EXPECT_EQ(adapter.NumRows(), ridx_set.size());
+
+  adapter.BeforeFirst();
+  for (auto &batch : p_dmat->GetBatches<SparsePage>()) {
+    adapter.Next();
+    auto &adapter_batch = adapter.Value();
+    for (auto i = 0ull; i < adapter_batch.Size(); i++) {
+      auto inst = batch[ridx_set[i]];
+      auto line = adapter_batch.GetLine(i);
+      ASSERT_EQ(inst.size(), line.Size());
+      for (auto j = 0ull; j < line.Size(); j++) {
+        EXPECT_EQ(inst[j].fvalue, line.GetElement(j).value);
+        EXPECT_EQ(inst[j].index, line.GetElement(j).column_idx);
+        EXPECT_EQ(i, line.GetElement(j).row_idx);
+      }
+    }
+  }
+
+  delete pp_dmat;
 }

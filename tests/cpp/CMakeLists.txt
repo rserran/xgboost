@@ -43,7 +43,18 @@ if (USE_CUDA)
     target_include_directories(testxgboost PRIVATE "${NVTX_HEADER_DIR}")
     target_compile_definitions(testxgboost PRIVATE -DXGBOOST_USE_NVTX=1)
   endif (USE_NVTX)
+  if (MSVC)
+    target_compile_options(testxgboost PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>
+    )
+  endif (MSVC)
 endif (USE_CUDA)
+
+if (MSVC)
+  target_compile_options(testxgboost PRIVATE
+    $<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/utf-8>
+  )
+endif (MSVC)
 
 target_include_directories(testxgboost
   PRIVATE
@@ -55,18 +66,12 @@ set_target_properties(
   testxgboost PROPERTIES
   CXX_STANDARD 11
   CXX_STANDARD_REQUIRED ON)
-if ((NOT OpenMP_CXX_LIBRARIES) AND (NOT MSVC))  # old CMake doesn't define this variable
-  set(OpenMP_CXX_LIBRARIES "gomp;pthread")
-endif ((NOT OpenMP_CXX_LIBRARIES) AND (NOT MSVC))
 target_link_libraries(testxgboost
   PRIVATE
   ${GTEST_LIBRARIES}
   ${LINKED_LIBRARIES_PRIVATE}
-  ${OpenMP_CXX_LIBRARIES})
+  OpenMP::OpenMP_CXX)
 target_compile_definitions(testxgboost PRIVATE ${XGBOOST_DEFINITIONS})
-if (USE_OPENMP)
-  target_compile_options(testxgboost PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OpenMP_CXX_FLAGS}>)
-endif (USE_OPENMP)
 set_output_directory(testxgboost ${xgboost_BINARY_DIR})
 
 # This grouping organises source files nicely in visual studio

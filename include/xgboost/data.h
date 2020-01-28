@@ -26,7 +26,7 @@ namespace xgboost {
 class DMatrix;
 
 /*! \brief data type accepted by xgboost interface */
-enum DataType {
+enum class DataType : uint8_t {
   kFloat32 = 1,
   kDouble = 2,
   kUInt32 = 3,
@@ -38,6 +38,9 @@ enum DataType {
  */
 class MetaInfo {
  public:
+  /*! \brief number of data fields in MetaInfo */
+  static constexpr uint64_t kNumField = 7;
+
   /*! \brief number of rows in the data */
   uint64_t num_row_{0};
   /*! \brief number of columns in the data */
@@ -59,8 +62,25 @@ class MetaInfo {
    * can be used to specify initial prediction to boost from.
    */
   HostDeviceVector<bst_float> base_margin_;
+
   /*! \brief default constructor */
   MetaInfo()  = default;
+  MetaInfo& operator=(MetaInfo const& that) {
+    this->num_row_ = that.num_row_;
+    this->num_col_ = that.num_col_;
+    this->num_nonzero_ = that.num_nonzero_;
+
+    this->labels_.Resize(that.labels_.Size());
+    this->labels_.Copy(that.labels_);
+
+    this->group_ptr_ = that.group_ptr_;
+
+    this->weights_.Resize(that.weights_.Size());
+    this->weights_.Copy(that.weights_);
+    this->base_margin_.Resize(that.base_margin_.Size());
+    this->base_margin_.Copy(that.base_margin_);
+    return *this;
+  }
   /*!
    * \brief Get weight of each instances.
    * \param i Instance index.
@@ -131,7 +151,7 @@ struct Entry {
    * \param index The feature or row index.
    * \param fvalue The feature value.
    */
-  Entry(bst_feature_t index, bst_float fvalue) : index(index), fvalue(fvalue) {}
+  XGBOOST_DEVICE Entry(bst_feature_t index, bst_float fvalue) : index(index), fvalue(fvalue) {}
   /*! \brief reversely compare feature values */
   inline static bool CmpValue(const Entry& a, const Entry& b) {
     return a.fvalue < b.fvalue;
@@ -246,10 +266,10 @@ class SparsePage {
   /**
    * \brief Pushes external data batch onto this page
    *
-   * \tparam  AdapterBatchT 
-   * \param batch 
-   * \param missing 
-   * \param nthread 
+   * \tparam  AdapterBatchT
+   * \param batch
+   * \param missing
+   * \param nthread
    *
    * \return  The maximum number of columns encountered in this input batch. Useful when pushing many adapter batches to work out the total number of columns.
    */

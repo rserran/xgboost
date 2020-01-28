@@ -32,7 +32,7 @@ struct LearnerModelParam;
 /*!
  * \brief interface of gradient boosting model.
  */
-class GradientBooster : public Model {
+class GradientBooster : public Model, public Configurable {
  protected:
   GenericParameter const* generic_param_;
 
@@ -84,6 +84,7 @@ class GradientBooster : public Model {
    */
   virtual void PredictBatch(DMatrix* dmat,
                             HostDeviceVector<bst_float>* out_preds,
+                            bool training,
                             unsigned ntree_limit = 0) = 0;
   /*!
    * \brief online prediction function, predict score for one instance at a time

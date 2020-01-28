@@ -222,6 +222,11 @@ class SparsePageSource : public DataSource<T> {
           weights.insert(weights.end(), batch.Weights(),
                          batch.Weights() + batch.Size());
         }
+        if (batch.BaseMargin() != nullptr) {
+          auto& base_margin = info.base_margin_.HostVector();
+          base_margin.insert(base_margin.end(), batch.BaseMargin(),
+                             batch.BaseMargin() + batch.Size());
+        }
         if (batch.Qid() != nullptr) {
           qids.insert(qids.end(), batch.Qid(), batch.Qid() + batch.Size());
           // get group
@@ -354,7 +359,6 @@ class SparsePageSource : public DataSource<T> {
       writer.Alloc(&page);
       page->Clear();
 
-      MetaInfo info = src->Info();
       size_t bytes_write = 0;
       double tstart = dmlc::GetTime();
       for (auto& batch : src->GetBatches<SparsePage>()) {

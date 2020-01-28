@@ -29,10 +29,16 @@ General Parameters
 
 * ``verbosity`` [default=1]
 
-  - Verbosity of printing messages.  Valid values are 0 (silent),
-    1 (warning), 2 (info), 3 (debug).  Sometimes XGBoost tries to change
-    configurations based on heuristics, which is displayed as warning message.
-    If there's unexpected behaviour, please try to increase value of verbosity.
+  - Verbosity of printing messages.  Valid values are 0 (silent), 1 (warning), 2 (info), 3
+    (debug).  Sometimes XGBoost tries to change configurations based on heuristics, which
+    is displayed as warning message.  If there's unexpected behaviour, please try to
+    increase value of verbosity.
+
+* ``validate_parameters`` [default to false, except for Python ``train`` function]
+
+  - When set to True, XGBoost will perform validation of input parameters to check whether
+    a parameter is used or not.  The feature is still experimental.  It's expected to have
+    some false positives, especially when used with Scikit-Learn interface.
 
 * ``nthread`` [default to maximum number of threads available if not set]
 
@@ -106,18 +112,24 @@ Parameters for Tree Booster
 
   - The tree construction algorithm used in XGBoost. See description in the `reference paper <http://arxiv.org/abs/1603.02754>`_.
   - XGBoost supports  ``approx``, ``hist`` and ``gpu_hist`` for distributed training.  Experimental support for external memory is available for ``approx`` and ``gpu_hist``.
-  - Choices: ``auto``, ``exact``, ``approx``, ``hist``, ``gpu_hist``
+
+  - Choices: ``auto``, ``exact``, ``approx``, ``hist``, ``gpu_hist``, this is a
+    combination of commonly used updaters.  For other updaters like ``refresh``, set the
+    parameter ``updater`` directly.
 
     - ``auto``: Use heuristic to choose the fastest method.
 
-      - For small to medium dataset, exact greedy (``exact``) will be used.
-      - For very large dataset, approximate algorithm (``approx``) will be chosen.
-      - Because old behavior is always use exact greedy in single machine,
-        user will get a message when approximate algorithm is chosen to notify this choice.
+      - For small dataset, exact greedy (``exact``) will be used.
+      - For larger dataset, approximate algorithm (``approx``) will be chosen.  It's
+        recommended to try ``hist`` and ``gpu_hist`` for higher performance with large
+        dataset.
+        (``gpu_hist``)has support for ``external memory``.
 
-    - ``exact``: Exact greedy algorithm.
+      - Because old behavior is always use exact greedy in single machine, user will get a
+        message when approximate algorithm is chosen to notify this choice.
+    - ``exact``: Exact greedy algorithm.  Enumerates all split candidates.
     - ``approx``: Approximate greedy algorithm using quantile sketch and gradient histogram.
-    - ``hist``: Fast histogram optimized approximate greedy algorithm. It uses some performance improvements such as bins caching.
+    - ``hist``: Faster histogram optimized approximate greedy algorithm.
     - ``gpu_hist``: GPU implementation of ``hist`` algorithm.
 
 * ``sketch_eps`` [default=0.03]
@@ -195,6 +207,17 @@ Parameters for Tree Booster
 
 * ``num_parallel_tree``, [default=1]
   - Number of parallel trees constructed during each iteration. This option is used to support boosted random forest.
+
+* ``monotone_constraints``
+
+  - Constraint of variable monotonicity.  See tutorial for more information.
+
+* ``interaction_constraints``
+
+  - Constraints for interaction representing permitted interactions.  The constraints must
+    be specified in the form of a nest list, e.g. ``[[0, 1], [2, 3, 4]]``, where each inner
+    list is a group of indices of features that are allowed to interact with each other.
+    See tutorial for more information
 
 Additional parameters for Dart Booster (``booster=dart``)
 =========================================================
@@ -349,7 +372,7 @@ Specify the learning task and the corresponding learning objective. The objectiv
 
 * ``seed`` [default=0]
 
-  - Random number seed.
+  - Random number seed.  This parameter is ignored in R package, use `set.seed()` instead.
 
 ***********************
 Command Line Parameters

@@ -157,7 +157,7 @@ test_that("SHAPs sum to predictions, with or without DART", {
       params = c(
         list(
           booster = booster,
-          objective = "reg:linear",
+          objective = "reg:squarederror",
           eval_metric = "rmse"),
         if (booster == "dart")
           list(rate_drop = .01, one_drop = T)),
@@ -166,7 +166,7 @@ test_that("SHAPs sum to predictions, with or without DART", {
       nrounds = nrounds)
 
     pr <- function(...)
-      predict(fit, newdata = d, ntreelimit = nrounds, ...)
+      predict(fit, newdata = d, ...)
     pred <- pr()
     shap <- pr(predcontrib = T)
     shapi <- pr(predinteraction = T)

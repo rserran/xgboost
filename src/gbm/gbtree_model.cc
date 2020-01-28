@@ -40,13 +40,14 @@ void GBTreeModel::Load(dmlc::Stream* fi) {
 void GBTreeModel::SaveModel(Json* p_out) const {
   auto& out = *p_out;
   CHECK_EQ(param.num_trees, static_cast<int>(trees.size()));
-  out["model_param"] = toJson(param);
+  out["gbtree_model_param"] = toJson(param);
   std::vector<Json> trees_json;
   size_t t = 0;
   for (auto const& tree : trees) {
     Json tree_json{Object()};
     tree->SaveModel(&tree_json);
-    tree_json["id"] = std::to_string(t);
+    // The field is not used in XGBoost, but might be useful for external project.
+    tree_json["id"] = Integer(t);
     trees_json.emplace_back(tree_json);
     t++;
   }
@@ -61,7 +62,7 @@ void GBTreeModel::SaveModel(Json* p_out) const {
 }
 
 void GBTreeModel::LoadModel(Json const& in) {
-  fromJson(in["model_param"], &param);
+  fromJson(in["gbtree_model_param"], &param);
 
   trees.clear();
   trees_to_update.clear();

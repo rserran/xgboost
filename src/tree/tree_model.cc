@@ -640,6 +640,7 @@ void RegTree::Save(dmlc::Stream* fo) const {
   CHECK_EQ(param.num_nodes, static_cast<int>(nodes_.size()));
   CHECK_EQ(param.num_nodes, static_cast<int>(stats_.size()));
   fo->Write(&param, sizeof(TreeParam));
+  CHECK_EQ(param.deprecated_num_roots, 1);
   CHECK_NE(param.num_nodes, 0);
   fo->Write(dmlc::BeginPtr(nodes_), sizeof(Node) * nodes_.size());
   fo->Write(dmlc::BeginPtr(stats_), sizeof(RTreeNodeStat) * nodes_.size());
@@ -682,13 +683,13 @@ void RegTree::LoadModel(Json const& in) {
     s.leaf_child_cnt = get<Integer const>(leaf_child_counts[i]);
 
     auto& n = nodes_[i];
-    auto left = get<Integer const>(lefts[i]);
-    auto right = get<Integer const>(rights[i]);
-    auto parent = get<Integer const>(parents[i]);
-    auto ind = get<Integer const>(indices[i]);
-    auto cond = get<Number const>(conds[i]);
-    auto dft_left = get<Boolean const>(default_left[i]);
-    n = Node(left, right, parent, ind, cond, dft_left);
+    bst_node_t left = get<Integer const>(lefts[i]);
+    bst_node_t right = get<Integer const>(rights[i]);
+    bst_node_t parent = get<Integer const>(parents[i]);
+    bst_feature_t ind = get<Integer const>(indices[i]);
+    float cond { get<Number const>(conds[i]) };
+    bool dft_left { get<Boolean const>(default_left[i]) };
+    n = Node{left, right, parent, ind, cond, dft_left};
   }
 
 

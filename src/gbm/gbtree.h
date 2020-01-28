@@ -192,6 +192,9 @@ class GBTree : public GradientBooster {
     model_.Save(fo);
   }
 
+  void LoadConfig(Json const& in) override;
+  void SaveConfig(Json* p_out) const override;
+
   void SaveModel(Json* p_out) const override;
   void LoadModel(Json const& in) override;
 
@@ -202,6 +205,7 @@ class GBTree : public GradientBooster {
 
   void PredictBatch(DMatrix* p_fmat,
                     HostDeviceVector<bst_float>* out_preds,
+                    bool training,
                     unsigned ntree_limit) override {
     CHECK(configured_);
     GetPredictor(out_preds, p_fmat)->PredictBatch(p_fmat, out_preds, model_, 0, ntree_limit);

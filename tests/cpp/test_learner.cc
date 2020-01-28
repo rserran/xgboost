@@ -30,6 +30,27 @@ TEST(Learner, Basic) {
   static_assert(std::is_integral<decltype(patch)>::value, "Wrong patch version type");
 }
 
+TEST(Learner, ParameterValidation) {
+  ConsoleLogger::Configure({{"verbosity", "2"}});
+  size_t constexpr kRows = 1;
+  size_t constexpr kCols = 1;
+  auto pp_mat = CreateDMatrix(kRows, kCols, 0);
+  auto& p_mat = *pp_mat;
+
+  auto learner = std::unique_ptr<Learner>(Learner::Create({p_mat}));
+  learner->SetParam("validate_parameters", "1");
+  learner->SetParam("Knock Knock", "Who's there?");
+  learner->SetParam("Silence", "....");
+  learner->SetParam("tree_method", "exact");
+
+  testing::internal::CaptureStderr();
+  learner->Configure();
+  std::string output = testing::internal::GetCapturedStderr();
+
+  ASSERT_TRUE(output.find("Parameters: { Knock Knock, Silence }") != std::string::npos);
+  delete pp_mat;
+}
+
 TEST(Learner, CheckGroup) {
   using Arg = std::pair<std::string, std::string>;
   size_t constexpr kNumGroups = 4;
@@ -70,7 +91,6 @@ TEST(Learner, CheckGroup) {
 }
 
 TEST(Learner, SLOW_CheckMultiBatch) {
-  using Arg = std::pair<std::string, std::string>;
   // Create sufficiently large data to make two row pages
   dmlc::TemporaryDirectory tempdir;
   const std::string tmp_file = tempdir.path + "/big.libsvm";
@@ -86,7 +106,7 @@ TEST(Learner, SLOW_CheckMultiBatch) {
   dmat->Info().SetInfo("label", labels.data(), DataType::kFloat32, num_row);
   std::vector<std::shared_ptr<DMatrix>> mat{dmat};
   auto learner = std::unique_ptr<Learner>(Learner::Create(mat));
-  learner->SetParams({Arg{"objective", "binary:logistic"}, Arg{"verbosity", "3"}});
+  learner->SetParams(Args{{"objective", "binary:logistic"}});
   learner->UpdateOneIter(0, dmat.get());
 }
 
@@ -114,7 +134,7 @@ TEST(Learner, Configuration) {
   }
 }
 
-TEST(Learner, Json_ModelIO) {
+TEST(Learner, JsonModelIO) {
   // Test of comparing JSON object directly.
   size_t constexpr kRows = 8;
   int32_t constexpr kIters = 4;
@@ -139,11 +159,10 @@ TEST(Learner, Json_ModelIO) {
 
   {
     std::unique_ptr<Learner> learner { Learner::Create({p_dmat}) };
-    learner->SetParam("verbosity", "3");
     for (int32_t iter = 0; iter < kIters; ++iter) {
       learner->UpdateOneIter(iter, p_dmat.get());
     }
-    learner->SetAttr("bset_score", "15.2");
+    learner->SetAttr("best_score", "15.2");
 
     Json out { Object() };
     learner->SaveModel(&out);
@@ -153,8 +172,8 @@ TEST(Learner, Json_ModelIO) {
     learner->Configure();
     learner->SaveModel(&new_in);
 
-    ASSERT_TRUE(IsA<Object>(out["Learner"]["attributes"]));
-    ASSERT_EQ(get<Object>(out["Learner"]["attributes"]).size(), 1);
+    ASSERT_TRUE(IsA<Object>(out["learner"]["attributes"]));
+    ASSERT_EQ(get<Object>(out["learner"]["attributes"]).size(), 1);
     ASSERT_EQ(out, new_in);
   }
 
