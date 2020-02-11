@@ -85,6 +85,14 @@ again after the model is loaded. If the customized function is useful, please co
 making a PR for implementing it inside XGBoost, this way we can have your functions
 working with different language bindings.
 
+******************************************************
+Loading pickled file from different version of XGBoost
+******************************************************
+
+As noted, pickled model is neither portable nor stable, but in some cases the pickled
+models are valuable.  One way to restore it in the future is to load it back with that
+specific version of Python and XGBoost, export the model by calling `save_model`.
+
 ********************************************************
 Saving and Loading the internal parameters configuration
 ********************************************************
@@ -201,6 +209,8 @@ Another important feature of JSON format is a documented `Schema
 XGBoost.  Here is the initial draft of JSON schema for the output model (not
 serialization, which will not be stable as noted above).  It's subject to change due to
 the beta status.  For an example of parsing XGBoost tree model, see ``/demo/json-model``.
+Please notice the "weight_drop" field used in "dart" booster.  XGBoost does not scale tree
+leaf directly, instead it saves the weights as a separated array.
 
 .. include:: ../model.schema
    :code: json

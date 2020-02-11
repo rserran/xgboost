@@ -11,7 +11,7 @@ from .training import train
 # Do not use class names on scikit-learn directly.  Re-define the classes on
 # .compat to guarantee the behavior without scikit-learn
 from .compat import (SKLEARN_INSTALLED, XGBModelBase,
-                     XGBClassifierBase, XGBRegressorBase, XGBLabelEncoder)
+                     XGBClassifierBase, XGBRegressorBase, XGBoostLabelEncoder)
 
 
 def _objective_decorator(func):
@@ -105,9 +105,8 @@ __model_doc = '''
            Using gblinear booster with shotgun updater is nondeterministic as
            it uses Hogwild algorithm.
 
-    missing : float, optional
-        Value in the data which needs to be present as a missing value. If
-        None, defaults to np.nan.
+    missing : float, default np.nan
+        Value in the data which needs to be present as a missing value.
     num_parallel_tree: int
         Used for boosting random forest.
     monotone_constraints : str
@@ -200,7 +199,7 @@ Parameters
 @xgboost_model_doc("""Implementation of the Scikit-Learn API for XGBoost.""",
                    ['estimators', 'model', 'objective'])
 class XGBModel(XGBModelBase):
-    # pylint: disable=too-many-arguments, too-many-instance-attributes, invalid-name, missing-docstring
+    # pylint: disable=too-many-arguments, too-many-instance-attributes, missing-docstring
     def __init__(self, max_depth=None, learning_rate=None, n_estimators=100,
                  verbosity=None, objective=None, booster=None,
                  tree_method=None, n_jobs=None, gamma=None,
@@ -208,9 +207,10 @@ class XGBModel(XGBModelBase):
                  colsample_bytree=None, colsample_bylevel=None,
                  colsample_bynode=None, reg_alpha=None, reg_lambda=None,
                  scale_pos_weight=None, base_score=None, random_state=None,
-                 missing=None, num_parallel_tree=None,
+                 missing=np.nan, num_parallel_tree=None,
                  monotone_constraints=None, interaction_constraints=None,
-                 importance_type="gain", gpu_id=None, **kwargs):
+                 importance_type="gain", gpu_id=None,
+                 validate_parameters=False, **kwargs):
         if not SKLEARN_INSTALLED:
             raise XGBoostError(
                 'sklearn needs to be installed in order to use this module')
@@ -233,25 +233,19 @@ class XGBModel(XGBModelBase):
         self.reg_lambda = reg_lambda
         self.scale_pos_weight = scale_pos_weight
         self.base_score = base_score
-        self.missing = missing if missing is not None else np.nan
+        self.missing = missing
         self.num_parallel_tree = num_parallel_tree
         self.kwargs = kwargs
-        self._Booster = None
         self.random_state = random_state
         self.n_jobs = n_jobs
         self.monotone_constraints = monotone_constraints
         self.interaction_constraints = interaction_constraints
         self.importance_type = importance_type
         self.gpu_id = gpu_id
-
-    def __setstate__(self, state):
-        # backward compatibility code
-        # load booster from raw if it is raw
-        # the booster now support pickle
-        bst = state["_Booster"]
-        if bst is not None and not isinstance(bst, Booster):
-            state["_Booster"] = Booster(model_file=bst)
-        self.__dict__.update(state)
+        # Parameter validation is not working with Scikit-Learn interface, as
+        # it passes all paraemters into XGBoost core, whether they are used or
+        # not.
+        self.validate_parameters = validate_parameters
 
     def get_booster(self):
         """Get the underlying xgboost Booster of this model.
@@ -262,7 +256,7 @@ class XGBModel(XGBModelBase):
         -------
         booster : a xgboost booster of underlying model
         """
-        if self._Booster is None:
+        if not hasattr(self, '_Booster'):
             raise XGBoostError('need to call fit or load_model beforehand')
         return self._Booster
 
@@ -314,11 +308,35 @@ class XGBModel(XGBModelBase):
         if isinstance(params['random_state'], np.random.RandomState):
             params['random_state'] = params['random_state'].randint(
                 np.iinfo(np.int32).max)
-        # Parameter validation is not working with Scikit-Learn interface, as
-        # it passes all paraemters into XGBoost core, whether they are used or
-        # not.
-        if 'validate_parameters' not in params.keys():
-            params['validate_parameters'] = False
+
+        def parse_parameter(value):
+            for t in (int, float):
+                try:
+                    ret = t(value)
+                    return ret
+                except ValueError:
+                    continue
+            return None
+
+        # Get internal parameter values
+        try:
+            config = json.loads(self.get_booster().save_config())
+            stack = [config]
+            internal = {}
+            while stack:
+                obj = stack.pop()
+                for k, v in obj.items():
+                    if k.endswith('_param'):
+                        for p_k, p_v in v.items():
+                            internal[p_k] = p_v
+                    elif isinstance(v, dict):
+                        stack.append(v)
+
+            for k, v in internal.items():
+                if k in params.keys() and params[k] is None:
+                    params[k] = parse_parameter(v)
+        except XGBoostError:
+            pass
         return params
 
     def get_xgb_params(self):
@@ -330,54 +348,96 @@ class XGBModel(XGBModelBase):
         """Gets the number of xgboost boosting rounds."""
         return self.n_estimators
 
-    def save_model(self, fname):
-        """
-        Save the model to a file.
+    def save_model(self, fname: str):
+        """Save the model to a file.
 
-        The model is saved in an XGBoost internal binary format which is
-        universal among the various XGBoost interfaces. Auxiliary attributes of
-        the Python Booster object (such as feature names) will not be loaded.
-        Label encodings (text labels to numeric labels) will be also lost.
-        **If you are using only the Python interface, we recommend pickling the
-        model object for best results.**
+        The model is saved in an XGBoost internal format which is universal
+        among the various XGBoost interfaces. Auxiliary attributes of the
+        Python Booster object (such as feature names) will not be saved.
+
+          .. note::
+
+            See:
+
+            https://xgboost.readthedocs.io/en/latest/tutorials/saving_model.html
 
         Parameters
         ----------
         fname : string
             Output file name
+
         """
-        warnings.warn("save_model: Useful attributes in the Python " +
-                      "object {} will be lost. ".format(type(self).__name__) +
-                      "If you did not mean to export the model to " +
-                      "a non-Python binding of XGBoost, consider " +
-                      "using `pickle` or `joblib` to save your model.",
-                      Warning)
+        meta = dict()
+        for k, v in self.__dict__.items():
+            if k == '_le':
+                meta['_le'] = self._le.to_json()
+                continue
+            if k == '_Booster':
+                continue
+            if k == 'classes_':
+                # numpy array is not JSON serializable
+                meta['classes_'] = self.classes_.tolist()
+                continue
+            try:
+                json.dumps({k: v})
+                meta[k] = v
+            except TypeError:
+                warnings.warn(str(k) + ' is not saved in Scikit-Learn meta.')
+        meta['type'] = type(self).__name__
+        meta = json.dumps(meta)
+        self.get_booster().set_attr(scikit_learn=meta)
         self.get_booster().save_model(fname)
+        # Delete the attribute after save
+        self.get_booster().set_attr(scikit_learn=None)
 
     def load_model(self, fname):
-        """
-        Load the model from a file.
+        # pylint: disable=attribute-defined-outside-init
+        """Load the model from a file.
 
-        The model is loaded from an XGBoost internal binary format which is
-        universal among the various XGBoost interfaces. Auxiliary attributes of
-        the Python Booster object (such as feature names) will not be loaded.
-        Label encodings (text labels to numeric labels) will be also lost.
-        **If you are using only the Python interface, we recommend pickling the
-        model object for best results.**
+        The model is loaded from an XGBoost internal format which is universal
+        among the various XGBoost interfaces. Auxiliary attributes of the
+        Python Booster object (such as feature names) will not be loaded.
 
         Parameters
         ----------
-        fname : string or a memory buffer
-            Input file name or memory buffer(see also save_raw)
+        fname : string
+            Input file name.
+
         """
-        if self._Booster is None:
+        if not hasattr(self, '_Booster'):
             self._Booster = Booster({'n_jobs': self.n_jobs})
         self._Booster.load_model(fname)
+        meta = self._Booster.attr('scikit_learn')
+        if meta is None:
+            warnings.warn(
+                'Loading a native XGBoost model with Scikit-Learn interface.')
+            return
+        meta = json.loads(meta)
+        states = dict()
+        for k, v in meta.items():
+            if k == '_le':
+                self._le = XGBoostLabelEncoder()
+                self._le.from_json(v)
+                continue
+            if k == 'classes_':
+                self.classes_ = np.array(v)
+                continue
+            if k == 'type' and type(self).__name__ != v:
+                msg = f'Current model type: {type(self).__name__}, ' + \
+                    f'type of model in file: {v}'
+                raise TypeError(msg)
+            if k == 'type':
+                continue
+            states[k] = v
+        self.__dict__.update(states)
+        # Delete the attribute after load
+        self.get_booster().set_attr(scikit_learn=None)
 
     def fit(self, X, y, sample_weight=None, base_margin=None,
             eval_set=None, eval_metric=None, early_stopping_rounds=None,
-            verbose=True, xgb_model=None, sample_weight_eval_set=None, callbacks=None):
-        # pylint: disable=missing-docstring,invalid-name,attribute-defined-outside-init
+            verbose=True, xgb_model=None, sample_weight_eval_set=None,
+            callbacks=None):
+        # pylint: disable=invalid-name,attribute-defined-outside-init
         """Fit gradient boosting model
 
         Parameters
@@ -678,7 +738,7 @@ class XGBModel(XGBModelBase):
     "Implementation of the scikit-learn API for XGBoost classification.",
     ['model', 'objective'])
 class XGBClassifier(XGBModel, XGBClassifierBase):
-    # pylint: disable=missing-docstring,too-many-arguments,invalid-name,too-many-instance-attributes
+    # pylint: disable=missing-docstring,invalid-name,too-many-instance-attributes
     def __init__(self, objective="binary:logistic", **kwargs):
         super().__init__(objective=objective, **kwargs)
 
@@ -714,7 +774,7 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
             else:
                 xgb_options.update({"eval_metric": eval_metric})
 
-        self._le = XGBLabelEncoder().fit(y)
+        self._le = XGBoostLabelEncoder().fit(y)
         training_labels = self._le.transform(y)
 
         if eval_set is not None:
@@ -809,10 +869,11 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
                                missing=self.missing, nthread=self.n_jobs)
         if ntree_limit is None:
             ntree_limit = getattr(self, "best_ntree_limit", 0)
-        class_probs = self.get_booster().predict(test_dmatrix,
-                                                 output_margin=output_margin,
-                                                 ntree_limit=ntree_limit,
-                                                 validate_features=validate_features)
+        class_probs = self.get_booster().predict(
+            test_dmatrix,
+            output_margin=output_margin,
+            ntree_limit=ntree_limit,
+            validate_features=validate_features)
         if output_margin:
             # If output_margin is active, simply return the scores
             return class_probs
@@ -822,7 +883,12 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
         else:
             column_indexes = np.repeat(0, class_probs.shape[0])
             column_indexes[class_probs > 0.5] = 1
-        return self._le.inverse_transform(column_indexes)
+
+        if hasattr(self, '_le'):
+            return self._le.inverse_transform(column_indexes)
+        warnings.warn(
+            'Label encoder is not defined.  Returning class probability.')
+        return class_probs
 
     def predict_proba(self, data, ntree_limit=None, validate_features=True,
                       base_margin=None):
