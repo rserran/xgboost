@@ -1,8 +1,9 @@
-cmake_minimum_required(VERSION 3.12)
-project(xgboost LANGUAGES CXX C VERSION 1.0.0)
+cmake_minimum_required(VERSION 3.13)
+project(xgboost LANGUAGES CXX C VERSION 1.1.0)
 include(cmake/Utils.cmake)
 list(APPEND CMAKE_MODULE_PATH "${xgboost_SOURCE_DIR}/cmake/modules")
 cmake_policy(SET CMP0022 NEW)
+cmake_policy(SET CMP0079 NEW)
 
 if ((${CMAKE_VERSION} VERSION_GREATER 3.13) OR (${CMAKE_VERSION} VERSION_EQUAL 3.13))
   cmake_policy(SET CMP0077 NEW)
@@ -23,6 +24,7 @@ set_default_configuration_release()
 #-- Options
 option(BUILD_C_DOC "Build documentation for C APIs using Doxygen." OFF)
 option(USE_OPENMP "Build with OpenMP support." ON)
+option(BUILD_STATIC_LIB "Build static library" OFF)
 ## Bindings
 option(JVM_BINDINGS "Build JVM bindings" OFF)
 option(R_LIB "Build shared library for R package" OFF)
@@ -49,7 +51,7 @@ option(USE_SANITIZER "Use santizer flags" OFF)
 option(SANITIZER_PATH "Path to sanitizes.")
 set(ENABLED_SANITIZERS "address" "leak" CACHE STRING
   "Semicolon separated list of sanitizer names. E.g 'address;leak'. Supported sanitizers are
-address, leak and thread.")
+address, leak, undefined and thread.")
 ## Plugins
 option(PLUGIN_LZ4 "Build lz4 plugin" OFF)
 option(PLUGIN_DENSE_PARSER "Build dense parser plugin" OFF)
@@ -122,6 +124,13 @@ if (RABIT_MOCK)
 else()
   list(APPEND LINKED_LIBRARIES_PRIVATE rabit)
 endif(RABIT_MOCK)
+foreach(lib rabit rabit_base rabit_empty rabit_mock rabit_mock_static)
+  # Explicitly link dmlc to rabit, so that configured header (build_config.h)
+  # from dmlc is correctly applied to rabit.
+  if (TARGET ${lib})
+    target_link_libraries(${lib} dmlc)
+  endif (TARGET ${lib})
+endforeach()
 
 # Exports some R specific definitions and objects
 if (R_LIB)
@@ -131,10 +140,15 @@ endif (R_LIB)
 # core xgboost
 add_subdirectory(${xgboost_SOURCE_DIR}/plugin)
 add_subdirectory(${xgboost_SOURCE_DIR}/src)
+target_link_libraries(objxgboost PUBLIC dmlc)
 set(XGBOOST_OBJ_SOURCES "${XGBOOST_OBJ_SOURCES};$<TARGET_OBJECTS:objxgboost>")
 
-#-- Shared library
-add_library(xgboost SHARED ${XGBOOST_OBJ_SOURCES})
+#-- library
+if (BUILD_STATIC_LIB)
+    add_library(xgboost STATIC ${XGBOOST_OBJ_SOURCES})
+else()
+    add_library(xgboost SHARED ${XGBOOST_OBJ_SOURCES})
+endif(BUILD_STATIC_LIB)
 target_include_directories(xgboost
   INTERFACE
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_PREFIX}/include>

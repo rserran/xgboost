@@ -88,11 +88,21 @@ pipeline {
             'test-jvm-jdk8': { CrossTestJVMwithJDK(jdk_version: '8', spark_version: '2.4.3') },
             'test-jvm-jdk11': { CrossTestJVMwithJDK(jdk_version: '11') },
             'test-jvm-jdk12': { CrossTestJVMwithJDK(jdk_version: '12') },
-            'test-r-3.4.4': { TestR(use_r35: false) },
             'test-r-3.5.3': { TestR(use_r35: true) }
           ])
         }
         milestone ordinal: 4
+      }
+    }
+    stage('Jenkins Linux: Deploy') {
+      agent none
+      steps {
+        script {
+          parallel ([
+            'deploy-jvm-packages': { DeployJVMPackages(spark_version: '2.4.3') }
+          ])
+        }
+        milestone ordinal: 5
       }
     }
   }
@@ -119,7 +129,7 @@ def ClangTidy() {
     echo "Running clang-tidy job..."
     def container_type = "clang_tidy"
     def docker_binary = "docker"
-    def dockerArgs = "--build-arg CUDA_VERSION=9.2"
+    def dockerArgs = "--build-arg CUDA_VERSION=10.1"
     sh """
     ${dockerRun} ${container_type} ${docker_binary} ${dockerArgs} python3 tests/ci_build/tidy.py
     """
@@ -176,17 +186,22 @@ def BuildCPU() {
     def container_type = "cpu"
     def docker_binary = "docker"
     sh """
+    ${dockerRun} ${container_type} ${docker_binary} rm -fv dmlc-core/include/dmlc/build_config_default.h
+      # This step is not necessary, but here we include it, to ensure that DMLC_CORE_USE_CMAKE flag is correctly propagated
+      # We want to make sure that we use the configured header build/dmlc/build_config.h instead of include/dmlc/build_config_default.h.
+      # See discussion at https://github.com/dmlc/xgboost/issues/5510
     ${dockerRun} ${container_type} ${docker_binary} tests/ci_build/build_via_cmake.sh
     ${dockerRun} ${container_type} ${docker_binary} build/testxgboost
     """
     // Sanitizer test
     def docker_extra_params = "CI_DOCKER_EXTRA_PARAMS_INIT='-e ASAN_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer -e ASAN_OPTIONS=symbolize=1 -e UBSAN_OPTIONS=print_stacktrace=1:log_path=ubsan_error.log --cap-add SYS_PTRACE'"
-    def docker_args = "--build-arg CMAKE_VERSION=3.12"
     sh """
-    ${dockerRun} ${container_type} ${docker_binary} ${docker_args} tests/ci_build/build_via_cmake.sh -DUSE_SANITIZER=ON -DENABLED_SANITIZERS="address;leak;undefined" \
+    ${dockerRun} ${container_type} ${docker_binary} tests/ci_build/build_via_cmake.sh -DUSE_SANITIZER=ON -DENABLED_SANITIZERS="address;leak;undefined" \
       -DCMAKE_BUILD_TYPE=Debug -DSANITIZER_PATH=/usr/lib/x86_64-linux-gnu/
     ${docker_extra_params} ${dockerRun} ${container_type} ${docker_binary} build/testxgboost
     """
+
+    stash name: 'xgboost_cli', includes: 'xgboost'
     deleteDir()
   }
 }
@@ -268,11 +283,13 @@ def TestPythonCPU() {
   node('linux && cpu') {
     unstash name: 'xgboost_whl_cuda9'
     unstash name: 'srcs'
+    unstash name: 'xgboost_cli'
     echo "Test Python CPU"
     def container_type = "cpu"
     def docker_binary = "docker"
     sh """
     ${dockerRun} ${container_type} ${docker_binary} tests/ci_build/test_python.sh cpu
+    ${dockerRun} ${container_type} ${docker_binary} tests/ci_build/test_python.sh cpu-py35
     """
     deleteDir()
   }
@@ -292,19 +309,25 @@ def TestPythonGPU(args) {
       sh """
       ${dockerRun} ${container_type} ${docker_binary} ${docker_args} tests/ci_build/test_python.sh mgpu
       """
+      if (args.cuda_version != '9.0') {
+        echo "Running tests with cuDF..."
+        sh """
+        ${dockerRun} cudf ${docker_binary} ${docker_args} tests/ci_build/test_python.sh mgpu-cudf
+        """
+      }
     } else {
       echo "Using a single GPU"
       sh """
       ${dockerRun} ${container_type} ${docker_binary} ${docker_args} tests/ci_build/test_python.sh gpu
       """
+      if (args.cuda_version != '9.0') {
+        echo "Running tests with cuDF..."
+        sh """
+        ${dockerRun} cudf ${docker_binary} ${docker_args} tests/ci_build/test_python.sh cudf
+        """
+      }
     }
     // For CUDA 10.0 target, run cuDF tests too
-    if (args.cuda_version == '10.0') {
-      echo "Running tests with cuDF..."
-      sh """
-      ${dockerRun} cudf ${docker_binary} ${docker_args} tests/ci_build/test_python.sh cudf
-      """
-    }
     deleteDir()
   }
 }
@@ -376,6 +399,21 @@ def TestR(args) {
     sh """
     ${dockerRun} ${container_type} ${docker_binary} ${docker_args} tests/ci_build/build_test_rpkg.sh || tests/ci_build/print_r_stacktrace.sh
     """
+    deleteDir()
+  }
+}
+
+def DeployJVMPackages(args) {
+  node('linux && cpu') {
+    unstash name: 'srcs'
+    if (env.BRANCH_NAME == 'master' || env.BRANCH_NAME.startsWith('release')) {
+      echo 'Deploying to xgboost-maven-repo S3 repo...'
+      def container_type = "jvm"
+      def docker_binary = "docker"
+      sh """
+      ${dockerRun} ${container_type} ${docker_binary} tests/ci_build/deploy_jvm_packages.sh ${args.spark_version}
+      """
+    }
     deleteDir()
   }
 }

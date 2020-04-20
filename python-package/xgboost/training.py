@@ -38,7 +38,7 @@ def _train_internal(params, dtrain,
 
     _params = dict(params) if isinstance(params, list) else params
 
-    if 'num_parallel_tree' in _params and params[
+    if 'num_parallel_tree' in _params and _params[
             'num_parallel_tree'] is not None:
         num_parallel_tree = _params['num_parallel_tree']
         nboost //= num_parallel_tree
@@ -109,7 +109,9 @@ def _train_internal(params, dtrain,
     else:
         bst.best_iteration = nboost - 1
     bst.best_ntree_limit = (bst.best_iteration + 1) * num_parallel_tree
-    return bst
+
+    # Copy to serialise and unserialise booster to reset state and free training memory
+    return bst.copy()
 
 
 def train(params, dtrain, num_boost_round=10, evals=(), obj=None, feval=None,

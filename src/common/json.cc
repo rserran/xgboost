@@ -2,6 +2,7 @@
  * Copyright (c) by Contributors 2019
  */
 #include <cctype>
+#include <locale>
 #include <sstream>
 #include <limits>
 #include <cmath>
@@ -19,12 +20,12 @@ void JsonWriter::Save(Json json) {
 
 void JsonWriter::Visit(JsonArray const* arr) {
   this->Write("[");
-  auto const& vec = arr->getArray();
+  auto const& vec = arr->GetArray();
   size_t size = vec.size();
   for (size_t i = 0; i < size; ++i) {
     auto const& value = vec[i];
     this->Save(value);
-    if (i != size-1) { Write(", "); }
+    if (i != size-1) { Write(","); }
   }
   this->Write("]");
 }
@@ -35,10 +36,10 @@ void JsonWriter::Visit(JsonObject const* obj) {
   this->NewLine();
 
   size_t i = 0;
-  size_t size = obj->getObject().size();
+  size_t size = obj->GetObject().size();
 
-  for (auto& value : obj->getObject()) {
-    this->Write("\"" + value.first + "\": ");
+  for (auto& value : obj->GetObject()) {
+    this->Write("\"" + value.first + "\":");
     this->Save(value.second);
 
     if (i != size-1) {
@@ -53,14 +54,14 @@ void JsonWriter::Visit(JsonObject const* obj) {
 }
 
 void JsonWriter::Visit(JsonNumber const* num) {
-  convertor_ << num->getNumber();
+  convertor_ << num->GetNumber();
   auto const& str = convertor_.str();
   this->Write(StringView{str.c_str(), str.size()});
   convertor_.str("");
 }
 
 void JsonWriter::Visit(JsonInteger const* num) {
-  convertor_ << num->getInteger();
+  convertor_ << num->GetInteger();
   auto const& str = convertor_.str();
   this->Write(StringView{str.c_str(), str.size()});
   convertor_.str("");
@@ -73,7 +74,7 @@ void JsonWriter::Visit(JsonNull const* null) {
 void JsonWriter::Visit(JsonString const* str) {
   std::string buffer;
   buffer += '"';
-  auto const& string = str->getString();
+  auto const& string = str->GetString();
   for (size_t i = 0; i < string.length(); i++) {
     const char ch = string[i];
     if (ch == '\\') {
@@ -108,7 +109,7 @@ void JsonWriter::Visit(JsonString const* str) {
 }
 
 void JsonWriter::Visit(JsonBoolean const* boolean) {
-  bool val = boolean->getBoolean();
+  bool val = boolean->GetBoolean();
   if (val) {
     this->Write(u8"true");
   } else {
@@ -119,13 +120,13 @@ void JsonWriter::Visit(JsonBoolean const* boolean) {
 // Value
 std::string Value::TypeStr() const {
   switch (kind_) {
-    case ValueKind::String:  return "String";  break;
-    case ValueKind::Number:  return "Number";  break;
-    case ValueKind::Object:  return "Object";  break;
-    case ValueKind::Array:   return "Array";   break;
-    case ValueKind::Boolean: return "Boolean"; break;
-    case ValueKind::Null:    return "Null";    break;
-    case ValueKind::Integer: return "Integer"; break;
+    case ValueKind::kString:  return "String";  break;
+    case ValueKind::kNumber:  return "Number";  break;
+    case ValueKind::kObject:  return "Object";  break;
+    case ValueKind::kArray:   return "Array";   break;
+    case ValueKind::kBoolean: return "Boolean"; break;
+    case ValueKind::kNull:    return "Null";    break;
+    case ValueKind::kInteger: return "Integer"; break;
   }
   return "";
 }
@@ -139,10 +140,10 @@ Json& DummyJsonObject() {
 
 // Json Object
 JsonObject::JsonObject(JsonObject && that) :
-    Value(ValueKind::Object), object_{std::move(that.object_)} {}
+    Value(ValueKind::kObject), object_{std::move(that.object_)} {}
 
 JsonObject::JsonObject(std::map<std::string, Json>&& object)
-    : Value(ValueKind::Object), object_{std::move(object)} {}
+    : Value(ValueKind::kObject), object_{std::move(object)} {}
 
 Json& JsonObject::operator[](std::string const & key) {
   return object_[key];
@@ -156,12 +157,12 @@ Json& JsonObject::operator[](int ind) {
 
 bool JsonObject::operator==(Value const& rhs) const {
   if (!IsA<JsonObject>(&rhs)) { return false; }
-  return object_ == Cast<JsonObject const>(&rhs)->getObject();
+  return object_ == Cast<JsonObject const>(&rhs)->GetObject();
 }
 
 Value& JsonObject::operator=(Value const &rhs) {
   JsonObject const* casted = Cast<JsonObject const>(&rhs);
-  object_ = casted->getObject();
+  object_ = casted->GetObject();
   return *this;
 }
 
@@ -185,12 +186,12 @@ Json& JsonString::operator[](int ind) {
 
 bool JsonString::operator==(Value const& rhs) const {
   if (!IsA<JsonString>(&rhs)) { return false; }
-  return Cast<JsonString const>(&rhs)->getString() == str_;
+  return Cast<JsonString const>(&rhs)->GetString() == str_;
 }
 
 Value & JsonString::operator=(Value const &rhs) {
   JsonString const* casted = Cast<JsonString const>(&rhs);
-  str_ = casted->getString();
+  str_ = casted->GetString();
   return *this;
 }
 
@@ -201,7 +202,7 @@ void JsonString::Save(JsonWriter* writer) {
 
 // Json Array
 JsonArray::JsonArray(JsonArray && that) :
-    Value(ValueKind::Array), vec_{std::move(that.vec_)} {}
+    Value(ValueKind::kArray), vec_{std::move(that.vec_)} {}
 
 Json& JsonArray::operator[](std::string const & key) {
   LOG(FATAL) << "Object of type "
@@ -215,13 +216,13 @@ Json& JsonArray::operator[](int ind) {
 
 bool JsonArray::operator==(Value const& rhs) const {
   if (!IsA<JsonArray>(&rhs)) { return false; }
-  auto& arr = Cast<JsonArray const>(&rhs)->getArray();
+  auto& arr = Cast<JsonArray const>(&rhs)->GetArray();
   return std::equal(arr.cbegin(), arr.cend(), vec_.cbegin());
 }
 
 Value & JsonArray::operator=(Value const &rhs) {
   JsonArray const* casted = Cast<JsonArray const>(&rhs);
-  vec_ = casted->getArray();
+  vec_ = casted->GetArray();
   return *this;
 }
 
@@ -244,12 +245,12 @@ Json& JsonNumber::operator[](int ind) {
 
 bool JsonNumber::operator==(Value const& rhs) const {
   if (!IsA<JsonNumber>(&rhs)) { return false; }
-  return std::abs(number_ - Cast<JsonNumber const>(&rhs)->getNumber()) < kRtEps;
+  return std::abs(number_ - Cast<JsonNumber const>(&rhs)->GetNumber()) < kRtEps;
 }
 
 Value & JsonNumber::operator=(Value const &rhs) {
   JsonNumber const* casted = Cast<JsonNumber const>(&rhs);
-  number_ = casted->getNumber();
+  number_ = casted->GetNumber();
   return *this;
 }
 
@@ -272,12 +273,12 @@ Json& JsonInteger::operator[](int ind) {
 
 bool JsonInteger::operator==(Value const& rhs) const {
   if (!IsA<JsonInteger>(&rhs)) { return false; }
-  return integer_ == Cast<JsonInteger const>(&rhs)->getInteger();
+  return integer_ == Cast<JsonInteger const>(&rhs)->GetInteger();
 }
 
 Value & JsonInteger::operator=(Value const &rhs) {
   JsonInteger const* casted = Cast<JsonInteger const>(&rhs);
-  integer_ = casted->getInteger();
+  integer_ = casted->GetInteger();
   return *this;
 }
 
@@ -327,12 +328,12 @@ Json& JsonBoolean::operator[](int ind) {
 
 bool JsonBoolean::operator==(Value const& rhs) const {
   if (!IsA<JsonBoolean>(&rhs)) { return false; }
-  return boolean_ == Cast<JsonBoolean const>(&rhs)->getBoolean();
+  return boolean_ == Cast<JsonBoolean const>(&rhs)->GetBoolean();
 }
 
 Value & JsonBoolean::operator=(Value const &rhs) {
   JsonBoolean const* casted = Cast<JsonBoolean const>(&rhs);
-  boolean_ = casted->getBoolean();
+  boolean_ = casted->GetBoolean();
   return *this;
 }
 
@@ -692,47 +693,23 @@ Json JsonReader::ParseBoolean() {
   return Json{JsonBoolean{result}};
 }
 
-// This is an ad-hoc solution for writing numeric value in standard way.  We need to add
-// a locale independent way of writing stream like `std::{from, to}_chars' from C++-17.
-// FIXME(trivialfis): Remove this.
-class GlobalCLocale {
-  std::locale ori_;
-
- public:
-  GlobalCLocale() : ori_{std::locale()} {
-    std::string const name {"C"};
-    try {
-      std::locale::global(std::locale(name.c_str()));
-    } catch (std::runtime_error const& e) {
-      LOG(FATAL) << "Failed to set locale: " << name;
-    }
-  }
-  ~GlobalCLocale() {
-    std::locale::global(ori_);
-  }
-};
-
 Json Json::Load(StringView str) {
-  GlobalCLocale guard;
   JsonReader reader(str);
   Json json{reader.Load()};
   return json;
 }
 
 Json Json::Load(JsonReader* reader) {
-  GlobalCLocale guard;
   Json json{reader->Load()};
   return json;
 }
 
 void Json::Dump(Json json, std::ostream *stream, bool pretty) {
-  GlobalCLocale guard;
   JsonWriter writer(stream, pretty);
   writer.Save(json);
 }
 
 void Json::Dump(Json json, std::string* str, bool pretty) {
-  GlobalCLocale guard;
   std::stringstream ss;
   JsonWriter writer(&ss, pretty);
   writer.Save(json);
