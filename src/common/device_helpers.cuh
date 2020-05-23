@@ -30,7 +30,6 @@
 
 #ifdef XGBOOST_USE_NCCL
 #include "nccl.h"
-#include "../common/io.h"
 #endif
 
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 600 || defined(__clang__)
@@ -100,7 +99,7 @@ inline size_t TotalMemory(int device_idx) {
 }
 
 /**
- * \fn  inline int max_shared_memory(int device_idx)
+ * \fn  inline int MaxSharedMemory(int device_idx)
  *
  * \brief Maximum shared memory per block on this device.
  *
@@ -108,9 +107,28 @@ inline size_t TotalMemory(int device_idx) {
  */
 
 inline size_t MaxSharedMemory(int device_idx) {
-  cudaDeviceProp prop;
-  dh::safe_cuda(cudaGetDeviceProperties(&prop, device_idx));
-  return prop.sharedMemPerBlock;
+  int max_shared_memory = 0;
+  dh::safe_cuda(cudaDeviceGetAttribute
+                (&max_shared_memory, cudaDevAttrMaxSharedMemoryPerBlock,
+                 device_idx));
+  return size_t(max_shared_memory);
+}
+
+/**
+ * \fn  inline int MaxSharedMemoryOptin(int device_idx)
+ *
+ * \brief Maximum dynamic shared memory per thread block on this device
+     that can be opted into when using cudaFuncSetAttribute().
+ *
+ * \param device_idx  Zero-based index of the device.
+ */
+
+inline size_t MaxSharedMemoryOptin(int device_idx) {
+  int max_shared_memory = 0;
+  dh::safe_cuda(cudaDeviceGetAttribute
+                (&max_shared_memory, cudaDevAttrMaxSharedMemoryPerBlockOptin,
+                 device_idx));
+  return size_t(max_shared_memory);
 }
 
 inline void CheckComputeCapability() {
@@ -483,6 +501,15 @@ struct PinnedMemory {
       temp_storage_bytes = num_bytes;
     }
     return xgboost::common::Span<T>(static_cast<T *>(temp_storage), size);
+  }
+
+  template <typename T>
+  xgboost::common::Span<T> GetSpan(size_t size, T init) {
+    auto result = this->GetSpan<T>(size);
+    for (auto &e : result) {
+      e = init;
+    }
+    return result;
   }
 
   void Free() {

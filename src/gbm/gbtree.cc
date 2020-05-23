@@ -295,6 +295,9 @@ void GBTree::BoostNewTrees(HostDeviceVector<GradientPair>* gpair,
     }
   }
   // update the trees
+  CHECK_EQ(gpair->Size(), p_fmat->Info().num_row_)
+      << "Mismatching size between number of rows from input data and size of "
+         "gradient vector.";
   for (auto& up : updaters_) {
     up->Update(gpair, p_fmat, new_trees);
   }
@@ -404,6 +407,7 @@ GBTree::GetPredictor(HostDeviceVector<float> const *out_pred,
   if (tparam_.predictor != PredictorType::kAuto) {
     if (tparam_.predictor == PredictorType::kGPUPredictor) {
 #if defined(XGBOOST_USE_CUDA)
+      CHECK_GE(common::AllVisibleGPUs(), 1) << "No visible GPU is found for XGBoost.";
       CHECK(gpu_predictor_);
       return gpu_predictor_;
 #else
@@ -426,6 +430,7 @@ GBTree::GetPredictor(HostDeviceVector<float> const *out_pred,
   // Use GPU Predictor if data is already on device and gpu_id is set.
   if (on_device && generic_param_->gpu_id >= 0) {
 #if defined(XGBOOST_USE_CUDA)
+    CHECK_GE(common::AllVisibleGPUs(), 1) << "No visible GPU is found for XGBoost.";
     CHECK(gpu_predictor_);
     return gpu_predictor_;
 #else
@@ -451,6 +456,7 @@ GBTree::GetPredictor(HostDeviceVector<float> const *out_pred,
 
   if (tparam_.tree_method == TreeMethod::kGPUHist) {
 #if defined(XGBOOST_USE_CUDA)
+    CHECK_GE(common::AllVisibleGPUs(), 1) << "No visible GPU is found for XGBoost.";
     CHECK(gpu_predictor_);
     return gpu_predictor_;
 #else

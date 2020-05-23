@@ -9,6 +9,7 @@
 
 #include <dmlc/base.h>
 #include <dmlc/data.h>
+#include <dmlc/serializer.h>
 #include <rabit/rabit.h>
 #include <xgboost/base.h>
 #include <xgboost/span.h>
@@ -87,10 +88,22 @@ class MetaInfo {
 
     this->weights_.Resize(that.weights_.Size());
     this->weights_.Copy(that.weights_);
+
     this->base_margin_.Resize(that.base_margin_.Size());
     this->base_margin_.Copy(that.base_margin_);
+
+    this->labels_lower_bound_.Resize(that.labels_lower_bound_.Size());
+    this->labels_lower_bound_.Copy(that.labels_lower_bound_);
+
+    this->labels_upper_bound_.Resize(that.labels_upper_bound_.Size());
+    this->labels_upper_bound_.Copy(that.labels_upper_bound_);
     return *this;
   }
+
+  /*!
+   * \brief Validate all metainfo.
+   */
+  void Validate(int32_t device) const;
 
   MetaInfo Slice(common::Span<int32_t const> ridxs) const;
   /*!
@@ -338,6 +351,8 @@ class EllpackPage {
   /*! \brief Destructor. */
   ~EllpackPage();
 
+  EllpackPage(EllpackPage&& that);
+
   /*! \return Number of instances in the page. */
   size_t Size() const;
 
@@ -408,32 +423,7 @@ class BatchSet {
 };
 
 /*!
- * \brief This is data structure that user can pass to DMatrix::Create
- *  to create a DMatrix for training, user can create this data structure
- *  for customized Data Loading on single machine.
- *
- *  On distributed setting, usually an customized dmlc::Parser is needed instead.
- */
-template<typename T>
-class DataSource : public dmlc::DataIter<T> {
- public:
-  /*!
-   * \brief Meta information about the dataset
-   * The subclass need to be able to load this correctly from data.
-   */
-  MetaInfo info;
-};
-
-/*!
  * \brief Internal data structured used by XGBoost during training.
- *  There are two ways to create a customized DMatrix that reads in user defined-format.
- *
- *  - Provide a dmlc::Parser and pass into the DMatrix::Create
- *  - Alternatively, if data can be represented by an URL, define a new dmlc::Parser and register by
- *    DMLC_REGISTER_DATA_PARSER;
- *      - This works best for user defined data input source, such as data-base, filesystem.
- *  - Provide a DataSource, that can be passed to DMatrix::Create
- *      This can be used to re-use inmemory data structure into DMatrix.
  */
 class DMatrix {
  public:
@@ -542,5 +532,21 @@ inline BatchSet<EllpackPage> DMatrix::GetBatches(const BatchParam& param) {
 
 namespace dmlc {
 DMLC_DECLARE_TRAITS(is_pod, xgboost::Entry, true);
-}
+
+namespace serializer {
+
+template <>
+struct Handler<xgboost::Entry> {
+  inline static void Write(Stream* strm, const xgboost::Entry& data) {
+    strm->Write(data.index);
+    strm->Write(data.fvalue);
+  }
+
+  inline static bool Read(Stream* strm, xgboost::Entry* data) {
+    return strm->Read(&data->index) && strm->Read(&data->fvalue);
+  }
+};
+
+}  // namespace serializer
+}  // namespace dmlc
 #endif  // XGBOOST_DATA_H_

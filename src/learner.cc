@@ -187,8 +187,13 @@ void GenericParameter::ConfigureGpuId(bool require_gpu) {
   // raw model), number of available GPUs could be different.  Wrap around it.
   int32_t n_gpus = common::AllVisibleGPUs();
   if (n_gpus == 0) {
+    if (gpu_id != kCpuId) {
+      LOG(WARNING) << "No visible GPU is found, setting `gpu_id` to -1";
+    }
     this->UpdateAllowUnknown(Args{{"gpu_id", std::to_string(kCpuId)}});
   } else if (gpu_id != kCpuId && gpu_id >= n_gpus) {
+    LOG(WARNING) << "Only " << n_gpus
+                 << " GPUs are visible, setting `gpu_id` to " << gpu_id % n_gpus;
     this->UpdateAllowUnknown(Args{{"gpu_id", std::to_string(gpu_id % n_gpus)}});
   }
 #else
@@ -482,22 +487,26 @@ class LearnerConfiguration : public Learner {
   }
 
   void ConfigureNumFeatures() {
-    // estimate feature bound
-    // TODO(hcho3): Change num_feature to 64-bit integer
-    unsigned num_feature = 0;
-    for (auto & matrix : cache_.Container()) {
-      CHECK(matrix.first);
-      CHECK(!matrix.second.ref.expired());
-      const uint64_t num_col = matrix.first->Info().num_col_;
-      CHECK_LE(num_col, static_cast<uint64_t>(std::numeric_limits<unsigned>::max()))
-          << "Unfortunately, XGBoost does not support data matrices with "
-          << std::numeric_limits<unsigned>::max() << " features or greater";
-      num_feature = std::max(num_feature, static_cast<uint32_t>(num_col));
-    }
-    // run allreduce on num_feature to find the maximum value
-    rabit::Allreduce<rabit::op::Max>(&num_feature, 1, nullptr, nullptr, "num_feature");
-    if (num_feature > mparam_.num_feature) {
-      mparam_.num_feature = num_feature;
+    // Compute number of global features if parameter not already set
+    if (mparam_.num_feature == 0) {
+      // TODO(hcho3): Change num_feature to 64-bit integer
+      unsigned num_feature = 0;
+      for (auto& matrix : cache_.Container()) {
+        CHECK(matrix.first);
+        CHECK(!matrix.second.ref.expired());
+        const uint64_t num_col = matrix.first->Info().num_col_;
+        CHECK_LE(num_col,
+                 static_cast<uint64_t>(std::numeric_limits<unsigned>::max()))
+            << "Unfortunately, XGBoost does not support data matrices with "
+            << std::numeric_limits<unsigned>::max() << " features or greater";
+        num_feature = std::max(num_feature, static_cast<uint32_t>(num_col));
+      }
+
+      rabit::Allreduce<rabit::op::Max>(&num_feature, 1, nullptr, nullptr,
+                                       "num_feature");
+      if (num_feature > mparam_.num_feature) {
+        mparam_.num_feature = num_feature;
+      }
     }
     CHECK_NE(mparam_.num_feature, 0)
         << "0 feature is supplied.  Are you using raw Booster interface?";
@@ -731,7 +740,7 @@ class LearnerIO : public LearnerConfiguration {
       tparam_.dsplit = DataSplitMode::kRow;
     }
 
-    this->Configure();
+    this->need_configuration_ = true;
   }
 
   // Save model into binary format.  The code is about to be deprecated by more robust
@@ -1048,15 +1057,7 @@ class LearnerImpl : public LearnerIO {
 
   void ValidateDMatrix(DMatrix* p_fmat) const {
     MetaInfo const& info = p_fmat->Info();
-    auto const& weights = info.weights_;
-    if (info.group_ptr_.size() != 0 && weights.Size() != 0) {
-      CHECK(weights.Size() == info.group_ptr_.size() - 1)
-          << "\n"
-          << "weights size: " << weights.Size()            << ", "
-          << "groups size: "  << info.group_ptr_.size() -1 << ", "
-          << "num rows: "     << p_fmat->Info().num_row_   << "\n"
-          << "Number of weights should be equal to number of groups in ranking task.";
-    }
+    info.Validate(generic_parameters_.gpu_id);
 
     auto const row_based_split = [this]() {
       return tparam_.dsplit == DataSplitMode::kRow ||

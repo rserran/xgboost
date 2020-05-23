@@ -133,7 +133,8 @@ Most of the objective functions implemented in XGBoost can be run on GPU.  Follo
 
 Objective will run on GPU if GPU updater (``gpu_hist``), otherwise they will run on CPU by
 default.  For unsupported objectives XGBoost will fall back to using CPU implementation by
-default.
+default.  Note that when using GPU ranking objective, the result is not deterministic due
+to the non-associative aspect of floating point summation.
 
 Metric functions
 ===================
@@ -225,6 +226,8 @@ References
 `Mitchell R, Frank E. (2017) Accelerating the XGBoost algorithm using GPU computing. PeerJ Computer Science 3:e127 https://doi.org/10.7717/peerj-cs.127 <https://peerj.com/articles/cs-127/>`_
 
 `Nvidia Parallel Forall: Gradient Boosting, Decision Trees and XGBoost with CUDA <https://devblogs.nvidia.com/parallelforall/gradient-boosting-decision-trees-xgboost-cuda/>`_
+
+`Out-of-Core GPU Gradient Boosting <https://arxiv.org/abs/2005.09148>`_
 
 Contributors
 ============
