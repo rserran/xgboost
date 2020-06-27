@@ -24,8 +24,6 @@ namespace data {
 // be supported in future. Does not currently support inferring row/column size
 template <typename AdapterT>
 DeviceDMatrix::DeviceDMatrix(AdapterT* adapter, float missing, int nthread, int max_bin) {
-  common::HistogramCuts cuts =
-      common::AdapterDeviceSketch(adapter, max_bin, missing);
   dh::safe_cuda(cudaSetDevice(adapter->DeviceIdx()));
   auto& batch = adapter->Value();
   // Work out how many valid entries we have in each row
@@ -35,16 +33,17 @@ DeviceDMatrix::DeviceDMatrix(AdapterT* adapter, float missing, int nthread, int 
   size_t row_stride =
       GetRowCounts(batch, row_counts_span, adapter->DeviceIdx(), missing);
 
-  ellpack_page_.reset(new EllpackPage());
-  *ellpack_page_->Impl() =
-      EllpackPageImpl(adapter, missing, this->IsDense(), nthread, max_bin,
-                      row_counts_span, row_stride);
-
   dh::XGBCachingDeviceAllocator<char> alloc;
   info_.num_nonzero_ = thrust::reduce(thrust::cuda::par(alloc),
                                       row_counts.begin(), row_counts.end());
   info_.num_col_ = adapter->NumColumns();
   info_.num_row_ = adapter->NumRows();
+
+  ellpack_page_.reset(new EllpackPage());
+  *ellpack_page_->Impl() =
+      EllpackPageImpl(adapter, missing, this->IsDense(), nthread, max_bin,
+                      row_counts_span, row_stride);
+
   // Synchronise worker columns
   rabit::Allreduce<rabit::op::Max>(&info_.num_col_, 1);
 }

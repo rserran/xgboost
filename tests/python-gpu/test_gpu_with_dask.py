@@ -31,7 +31,8 @@ class TestDistributedGPU(unittest.TestCase):
     def test_dask_dataframe(self):
         with LocalCUDACluster() as cluster:
             with Client(cluster) as client:
-                import cupy
+                import cupy as cp
+                cp.cuda.runtime.setDevice(0)
                 X, y = generate_array()
 
                 X = dd.from_dask_array(X)
@@ -44,10 +45,10 @@ class TestDistributedGPU(unittest.TestCase):
                 out = dxgb.train(client, {'tree_method': 'gpu_hist'},
                                  dtrain=dtrain,
                                  evals=[(dtrain, 'X')],
-                                 num_boost_round=2)
+                                 num_boost_round=4)
 
                 assert isinstance(out['booster'], dxgb.Booster)
-                assert len(out['history']['X']['rmse']) == 2
+                assert len(out['history']['X']['rmse']) == 4
 
                 predictions = dxgb.predict(client, out, dtrain).compute()
                 assert isinstance(predictions, np.ndarray)
@@ -59,19 +60,34 @@ class TestDistributedGPU(unittest.TestCase):
                 single_node = out['booster'].predict(
                     xgboost.DMatrix(X.compute()))
 
-                cupy.testing.assert_allclose(single_node, predictions)
-                cupy.testing.assert_allclose(single_node, series_predictions)
+                cp.testing.assert_allclose(single_node, predictions)
+                np.testing.assert_allclose(single_node, series_predictions.to_array())
+
+                predt = dxgb.predict(client, out, X)
+                assert isinstance(predt, dd.Series)
+
+                def is_df(part):
+                    assert isinstance(part, cudf.DataFrame), part
+                    return part
+
+                predt.map_partitions(
+                    is_df,
+                    meta=dd.utils.make_meta({'prediction': 'f4'}))
+
+                cp.testing.assert_allclose(
+                    predt.values.compute(), single_node)
 
     @pytest.mark.skipif(**tm.no_cupy())
     @pytest.mark.mgpu
     def test_dask_array(self):
         with LocalCUDACluster() as cluster:
             with Client(cluster) as client:
-                import cupy
+                import cupy as cp
+                cp.cuda.runtime.setDevice(0)
                 X, y = generate_array()
 
-                X = X.map_blocks(cupy.asarray)
-                y = y.map_blocks(cupy.asarray)
+                X = X.map_blocks(cp.asarray)
+                y = y.map_blocks(cp.asarray)
                 dtrain = dxgb.DaskDMatrix(client, X, y)
                 out = dxgb.train(client, {'tree_method': 'gpu_hist'},
                                  dtrain=dtrain,
@@ -83,11 +99,11 @@ class TestDistributedGPU(unittest.TestCase):
                 single_node = out['booster'].predict(
                     xgboost.DMatrix(X.compute()))
                 np.testing.assert_allclose(single_node, from_dmatrix)
-                device = cupy.cuda.runtime.getDevice()
+                device = cp.cuda.runtime.getDevice()
                 assert device == inplace_predictions.device.id
-                single_node = cupy.array(single_node)
+                single_node = cp.array(single_node)
                 assert device == single_node.device.id
-                cupy.testing.assert_allclose(
+                cp.testing.assert_allclose(
                     single_node,
                     inplace_predictions)
 

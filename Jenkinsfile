@@ -79,7 +79,6 @@ pipeline {
         script {
           parallel ([
             'test-python-cpu': { TestPythonCPU() },
-            'test-python-gpu-cuda9.0': { TestPythonGPU(cuda_version: '9.0') },
             'test-python-gpu-cuda10.0': { TestPythonGPU(cuda_version: '10.0') },
             'test-python-gpu-cuda10.1': { TestPythonGPU(cuda_version: '10.1') },
             'test-python-mgpu-cuda10.1': { TestPythonGPU(cuda_version: '10.1', multi_gpu: true) },
@@ -305,7 +304,6 @@ def TestPythonCPU() {
     def docker_binary = "docker"
     sh """
     ${dockerRun} ${container_type} ${docker_binary} tests/ci_build/test_python.sh cpu
-    ${dockerRun} ${container_type} ${docker_binary} tests/ci_build/test_python.sh cpu-py35
     """
     deleteDir()
   }
@@ -325,25 +323,12 @@ def TestPythonGPU(args) {
       sh """
       ${dockerRun} ${container_type} ${docker_binary} ${docker_args} tests/ci_build/test_python.sh mgpu
       """
-      if (args.cuda_version != '9.0') {
-        echo "Running tests with cuDF..."
-        sh """
-        ${dockerRun} cudf ${docker_binary} ${docker_args} tests/ci_build/test_python.sh mgpu-cudf
-        """
-      }
     } else {
       echo "Using a single GPU"
       sh """
       ${dockerRun} ${container_type} ${docker_binary} ${docker_args} tests/ci_build/test_python.sh gpu
       """
-      if (args.cuda_version != '9.0') {
-        echo "Running tests with cuDF..."
-        sh """
-        ${dockerRun} cudf ${docker_binary} ${docker_args} tests/ci_build/test_python.sh cudf
-        """
-      }
     }
-    // For CUDA 10.0 target, run cuDF tests too
     deleteDir()
   }
 }

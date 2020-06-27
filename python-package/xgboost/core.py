@@ -17,8 +17,7 @@ import scipy.sparse
 
 from .compat import (
     STRING_TYPES, DataFrame, py_str,
-    PANDAS_INSTALLED, CUDF_INSTALLED,
-    CUDF_DataFrame,
+    PANDAS_INSTALLED,
     os_fspath, os_PathLike, lazy_isinstance)
 from .libpath import find_lib_path
 
@@ -26,7 +25,7 @@ from .libpath import find_lib_path
 c_bst_ulong = ctypes.c_uint64
 
 
-class XGBoostError(Exception):
+class XGBoostError(ValueError):
     """Error thrown by xgboost trainer."""
 
 
@@ -264,9 +263,9 @@ def _convert_unknown_data(data, meta=None, meta_type=None):
     if meta is not None:
         try:
             data = np.array(data, dtype=meta_type)
-        except Exception:
+        except Exception as e:
             raise TypeError('Can not handle data from {}'.format(
-                type(data).__name__))
+                type(data).__name__)) from e
     else:
         import warnings
         warnings.warn(
@@ -274,16 +273,16 @@ def _convert_unknown_data(data, meta=None, meta_type=None):
             ', coverting it to csr_matrix')
         try:
             data = scipy.sparse.csr_matrix(data)
-        except Exception:
+        except Exception as e:
             raise TypeError('Can not initialize DMatrix from'
-                            ' {}'.format(type(data).__name__))
+                            ' {}'.format(type(data).__name__)) from e
     return data
 
 
 # Either object has cuda array interface or contains columns with interfaces
 def _has_cuda_array_interface(data):
-    return hasattr(data, '__cuda_array_interface__') or (
-        CUDF_INSTALLED and isinstance(data, CUDF_DataFrame))
+    return hasattr(data, '__cuda_array_interface__') or \
+        lazy_isinstance(data, 'cudf.core.dataframe', 'DataFrame')
 
 
 def _cudf_array_interfaces(df):
@@ -508,7 +507,7 @@ class DMatrix:                  # pylint: disable=too-many-instance-attributes
     def set_interface_info(self, field, data):
         """Set info type property into DMatrix."""
         # If we are passed a dataframe, extract the series
-        if CUDF_INSTALLED and isinstance(data, CUDF_DataFrame):
+        if lazy_isinstance(data, 'cudf.core.dataframe', 'DataFrame'):
             if len(data.columns) != 1:
                 raise ValueError(
                     'Expecting meta-info to contain a single column')
@@ -1445,8 +1444,11 @@ class Booster(object):
 
         The model is saved in an XGBoost internal format which is universal
         among the various XGBoost interfaces. Auxiliary attributes of the
-        Python Booster object (such as feature_names) will not be saved.  To
-        preserve all attributes, pickle the Booster object.
+        Python Booster object (such as feature_names) will not be saved.  See:
+
+          https://xgboost.readthedocs.io/en/latest/tutorials/saving_model.html
+
+        for more info.
 
         Parameters
         ----------
@@ -1461,7 +1463,7 @@ class Booster(object):
             raise TypeError("fname must be a string or os_PathLike")
 
     def save_raw(self):
-        """Save the model to a in memory buffer representation
+        """Save the model to a in memory buffer representation instead of file.
 
         Returns
         -------
@@ -1480,8 +1482,11 @@ class Booster(object):
 
         The model is loaded from an XGBoost format which is universal among the
         various XGBoost interfaces. Auxiliary attributes of the Python Booster
-        object (such as feature_names) will not be loaded.  To preserve all
-        attributes, pickle the Booster object.
+        object (such as feature_names) will not be loaded.  See:
+
+          https://xgboost.readthedocs.io/en/latest/tutorials/saving_model.html
+
+        for more info.
 
         Parameters
         ----------
@@ -1504,7 +1509,9 @@ class Booster(object):
             raise TypeError('Unknown file type: ', fname)
 
     def dump_model(self, fout, fmap='', with_stats=False, dump_format="text"):
-        """Dump model into a text or JSON file.
+        """Dump model into a text or JSON file.  Unlike `save_model`, the
+        output format is primarily used for visualization or interpretation,
+        hence it's more human readable but cannot be loaded back to XGBoost.
 
         Parameters
         ----------
@@ -1538,7 +1545,9 @@ class Booster(object):
             fout.close()
 
     def get_dump(self, fmap='', with_stats=False, dump_format="text"):
-        """Returns the model dump as a list of strings.
+        """Returns the model dump as a list of strings.  Unlike `save_model`, the
+        output format is primarily used for visualization or interpretation,
+        hence it's more human readable but cannot be loaded back to XGBoost.
 
         Parameters
         ----------
@@ -1548,6 +1557,7 @@ class Booster(object):
             Controls whether the split statistics are output.
         dump_format : string, optional
             Format of model dump. Can be 'text', 'json' or 'dot'.
+
         """
         fmap = os_fspath(fmap)
         length = c_bst_ulong()

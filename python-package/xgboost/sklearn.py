@@ -499,6 +499,8 @@ class XGBModel(XGBModelBase):
 
                 [xgb.callback.reset_learning_rate(custom_rates)]
         """
+        self.n_features_in_ = X.shape[1]
+
         train_dmatrix = DMatrix(data=X, label=y, weight=sample_weight,
                                 base_margin=base_margin,
                                 missing=self.missing,
@@ -537,16 +539,13 @@ class XGBModel(XGBModelBase):
             else:
                 params.update({'eval_metric': eval_metric})
 
-        try:
-            self._Booster = train(params, train_dmatrix,
-                                  self.get_num_boosting_rounds(), evals=evals,
-                                  early_stopping_rounds=early_stopping_rounds,
-                                  evals_result=evals_result,
-                                  obj=obj, feval=feval,
-                                  verbose_eval=verbose, xgb_model=xgb_model,
-                                  callbacks=callbacks)
-        except XGBoostError as e:
-            raise ValueError(e)
+        self._Booster = train(params, train_dmatrix,
+                              self.get_num_boosting_rounds(), evals=evals,
+                              early_stopping_rounds=early_stopping_rounds,
+                              evals_result=evals_result,
+                              obj=obj, feval=feval,
+                              verbose_eval=verbose, xgb_model=xgb_model,
+                              callbacks=callbacks)
 
         if evals_result:
             for val in evals_result.items():
@@ -815,7 +814,10 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
             # different ways of reshaping
             raise ValueError(
                 'Please reshape the input data X into 2-dimensional matrix.')
+
         self._features_count = X.shape[1]
+        self.n_features_in_ = self._features_count
+
         train_dmatrix = DMatrix(X, label=training_labels, weight=sample_weight,
                                 base_margin=base_margin,
                                 missing=self.missing, nthread=self.n_jobs)
@@ -1198,6 +1200,8 @@ class XGBRanker(XGBModel):
             ret.set_group(group)
             return ret
 
+        self.n_features_in_ = X.shape[1]
+
         train_dmatrix = DMatrix(data=X, label=y, weight=sample_weight,
                                 base_margin=base_margin,
                                 missing=self.missing, nthread=self.n_jobs)
@@ -1230,16 +1234,13 @@ class XGBRanker(XGBModel):
                     'Custom evaluation metric is not yet supported for XGBRanker.')
             params.update({'eval_metric': eval_metric})
 
-        try:
-            self._Booster = train(params, train_dmatrix,
-                                  self.n_estimators,
-                                  early_stopping_rounds=early_stopping_rounds,
-                                  evals=evals,
-                                  evals_result=evals_result, feval=feval,
-                                  verbose_eval=verbose, xgb_model=xgb_model,
-                                  callbacks=callbacks)
-        except XGBoostError as e:
-            raise ValueError(e)
+        self._Booster = train(params, train_dmatrix,
+                              self.n_estimators,
+                              early_stopping_rounds=early_stopping_rounds,
+                              evals=evals,
+                              evals_result=evals_result, feval=feval,
+                              verbose_eval=verbose, xgb_model=xgb_model,
+                              callbacks=callbacks)
 
         self.objective = params["objective"]
 

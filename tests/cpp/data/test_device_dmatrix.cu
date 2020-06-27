@@ -78,9 +78,8 @@ TEST(DeviceDMatrix, ColumnMajor) {
 
   Json column_arr{columns};
 
-  std::stringstream ss;
-  Json::Dump(column_arr, &ss);
-  std::string str = ss.str();
+  std::string str;
+  Json::Dump(column_arr, &str);
 
   data::CudfAdapter adapter(str);
   data::DeviceDMatrix dmat(&adapter, std::numeric_limits<float>::quiet_NaN(),
@@ -128,4 +127,23 @@ TEST(DeviceDMatrix, Equivalent) {
                 device_dmat_batch.Impl()->gidx_buffer.HostVector());
     }
   }
+}
+
+TEST(DeviceDMatrix, IsDense) {
+  int num_bins = 16;
+  auto test = [num_bins] (float sparsity) {
+    HostDeviceVector<float> data;
+    std::string interface_str = RandomDataGenerator{10, 10, sparsity}
+      .Device(0).GenerateArrayInterface(&data);
+    data::CupyAdapter x{interface_str};
+    std::unique_ptr<data::DeviceDMatrix> device_dmat{ new data::DeviceDMatrix(
+        &x, std::numeric_limits<float>::quiet_NaN(), 1, num_bins) };
+    if (sparsity == 0.0) {
+      ASSERT_TRUE(device_dmat->IsDense()) << sparsity;
+    } else {
+      ASSERT_FALSE(device_dmat->IsDense());
+    }
+  };
+  test(0.0);
+  test(0.1);
 }

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
-project(xgboost LANGUAGES CXX C VERSION 1.1.0)
+project(xgboost LANGUAGES CXX C VERSION 1.2.0)
 include(cmake/Utils.cmake)
 list(APPEND CMAKE_MODULE_PATH "${xgboost_SOURCE_DIR}/cmake/modules")
 cmake_policy(SET CMP0022 NEW)
@@ -57,6 +57,7 @@ address, leak, undefined and thread.")
 ## Plugins
 option(PLUGIN_LZ4 "Build lz4 plugin" OFF)
 option(PLUGIN_DENSE_PARSER "Build dense parser plugin" OFF)
+option(ADD_PKGCONFIG "Add xgboost.pc into system." ON)
 
 #-- Checks for building XGBoost
 if (USE_DEBUG_OUTPUT AND (NOT (CMAKE_BUILD_TYPE MATCHES Debug)))
@@ -92,6 +93,9 @@ if (USE_CUDA)
   message(STATUS "Configured CUDA host compiler: ${CMAKE_CUDA_HOST_COMPILER}")
 
   enable_language(CUDA)
+  if (${CMAKE_CUDA_COMPILER_VERSION} VERSION_LESS 10.0)
+    message(FATAL_ERROR "CUDA version must be at least 10.0!")
+  endif()
   set(GEN_CODE "")
   format_gencode_flags("${GPU_COMPUTE_VER}" GEN_CODE)
   message(STATUS "CUDA GEN_CODE: ${GEN_CODE}")
@@ -116,6 +120,14 @@ set_target_properties(dmlc PROPERTIES
   CXX_STANDARD_REQUIRED ON
   POSITION_INDEPENDENT_CODE ON)
 list(APPEND LINKED_LIBRARIES_PRIVATE dmlc)
+if (MSVC)
+  target_compile_options(dmlc PRIVATE
+                         -D_CRT_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_DEPRECATE)
+  if (TARGET dmlc_unit_tests)
+    target_compile_options(dmlc_unit_tests PRIVATE
+                           -D_CRT_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_DEPRECATE)
+  endif (TARGET dmlc_unit_tests)
+endif (MSVC)
 
 # rabit
 set(RABIT_BUILD_DMLC OFF)
@@ -125,8 +137,16 @@ add_subdirectory(rabit)
 
 if (RABIT_MOCK)
   list(APPEND LINKED_LIBRARIES_PRIVATE rabit_mock_static)
+  if (MSVC)
+    target_compile_options(rabit_mock_static PRIVATE
+                           -D_CRT_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_DEPRECATE)
+  endif (MSVC)
 else()
   list(APPEND LINKED_LIBRARIES_PRIVATE rabit)
+  if (MSVC)
+    target_compile_options(rabit PRIVATE
+                           -D_CRT_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_DEPRECATE)
+  endif (MSVC)
 endif(RABIT_MOCK)
 foreach(lib rabit rabit_base rabit_empty rabit_mock rabit_mock_static)
   # Explicitly link dmlc to rabit, so that configured header (build_config.h)
@@ -206,11 +226,12 @@ add_dependencies(xgboost runxgboost)
 
 #-- Installing XGBoost
 if (R_LIB)
+  include(cmake/RPackageInstallTargetSetup.cmake)
   set_target_properties(xgboost PROPERTIES PREFIX "")
   if (APPLE)
     set_target_properties(xgboost PROPERTIES SUFFIX ".so")
   endif (APPLE)
-  setup_rpackage_install_target(xgboost ${CMAKE_CURRENT_BINARY_DIR})
+  setup_rpackage_install_target(xgboost "${CMAKE_CURRENT_BINARY_DIR}/R-package-install")
   set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/dummy_inst")
 endif (R_LIB)
 if (MINGW)
@@ -281,3 +302,12 @@ endif (GOOGLE_TEST)
 # replace /MD with /MT. See https://github.com/dmlc/xgboost/issues/4462
 # for issues caused by mixing of /MD and /MT flags
 msvc_use_static_runtime()
+
+# Add xgboost.pc
+if (ADD_PKGCONFIG)
+  configure_file(${xgboost_SOURCE_DIR}/cmake/xgboost.pc.in ${xgboost_BINARY_DIR}/xgboost.pc @ONLY)
+
+  install(
+    FILES ${xgboost_BINARY_DIR}/xgboost.pc
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+endif (ADD_PKGCONFIG)
