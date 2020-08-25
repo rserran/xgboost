@@ -9,11 +9,14 @@
 
 #include <dmlc/base.h>
 #include <xgboost/logging.h>
+#include <xgboost/data.h>
 #include <cmath>
 #include <vector>
 #include <cstring>
 #include <algorithm>
 #include <iostream>
+
+#include "timer.h"
 
 namespace xgboost {
 namespace common {
@@ -54,6 +57,14 @@ struct WQSummary {
     /*! \return rmax estimation for v strictly smaller than value */
     XGBOOST_DEVICE inline RType RMaxPrev() const {
       return rmax - wmin;
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, Entry const& e) {
+      os << "rmin: " << e.rmin << ", "
+         << "rmax: " << e.rmax << ", "
+         << "wmin: " << e.wmin << ", "
+         << "value: " << e.value;
+      return os;
     }
   };
   /*! \brief input data queue before entering the summary */
@@ -155,6 +166,16 @@ struct WQSummary {
    * \param src source sketch
    */
   inline void CopyFrom(const WQSummary &src) {
+    if (!src.data) {
+      CHECK_EQ(src.size, 0);
+      size = 0;
+      return;
+    }
+    if (!data) {
+      CHECK_EQ(this->size, 0);
+      CHECK_EQ(src.size, 0);
+      return;
+    }
     size = src.size;
     std::memcpy(data, src.data, sizeof(Entry) * size);
   }
@@ -184,14 +205,14 @@ struct WQSummary {
       }
     }
   }
+
   /*!
    * \brief set current summary to be pruned summary of src
    *        assume data field is already allocated to be at least maxsize
    * \param src source summary
    * \param maxsize size we can afford in the pruned sketch
    */
-
-  inline void SetPrune(const WQSummary &src, size_t maxsize) {
+  void SetPrune(const WQSummary &src, size_t maxsize) {
     if (src.size <= maxsize) {
       this->CopyFrom(src); return;
     }
@@ -455,6 +476,9 @@ struct WXQSummary : public WQSummary<DType, RType> {
 template<typename DType, typename RType, class TSummary>
 class QuantileSketchTemplate {
  public:
+  static float constexpr kFactor = 8.0;
+
+ public:
   /*! \brief type of summary type */
   using Summary = TSummary;
   /*! \brief the entry type */
@@ -473,30 +497,6 @@ class QuantileSketchTemplate {
       if (size > space.size()) {
         space.resize(size);
         this->data = dmlc::BeginPtr(space);
-      }
-    }
-    /*!
-     * \brief set the space to be merge of all Summary arrays
-     * \param begin beginning position in the summary array
-     * \param end ending position in the Summary array
-     */
-    inline void SetMerge(const Summary *begin,
-                         const Summary *end) {
-      CHECK(begin < end) << "can not set combine to empty instance";
-      size_t len = end - begin;
-      if (len == 1) {
-        this->Reserve(begin[0].size);
-        this->CopyFrom(begin[0]);
-      } else if (len == 2) {
-        this->Reserve(begin[0].size + begin[1].size);
-        this->SetMerge(begin[0], begin[1]);
-      } else {
-        // recursive merge
-        SummaryContainer lhs, rhs;
-        lhs.SetCombine(begin, begin + len / 2);
-        rhs.SetCombine(begin + len / 2, end);
-        this->Reserve(lhs.size + rhs.size);
-        this->SetCombine(lhs, rhs);
       }
     }
     /*!
@@ -694,6 +694,73 @@ class WQuantileSketch :
 template<typename DType, typename RType = unsigned>
 class WXQuantileSketch :
       public QuantileSketchTemplate<DType, RType, WXQSummary<DType, RType> > {
+};
+
+class HistogramCuts;
+
+/*!
+ * A sketch matrix storing sketches for each feature.
+ */
+class HostSketchContainer {
+ public:
+  using WQSketch = WQuantileSketch<float, float>;
+
+ private:
+  std::vector<WQSketch> sketches_;
+  std::vector<bst_row_t> columns_size_;
+  int32_t max_bins_;
+  bool use_group_ind_{false};
+  Monitor monitor_;
+
+ public:
+  /* \brief Initialize necessary info.
+   *
+   * \param columns_size Size of each column.
+   * \param max_bins maximum number of bins for each feature.
+   * \param use_group whether is assigned to group to data instance.
+   */
+  HostSketchContainer(std::vector<bst_row_t> columns_size, int32_t max_bins,
+                      bool use_group);
+
+  static bool UseGroup(MetaInfo const &info) {
+    size_t const num_groups =
+        info.group_ptr_.size() == 0 ? 0 : info.group_ptr_.size() - 1;
+    // Use group index for weights?
+    bool const use_group_ind =
+        num_groups != 0 && (info.weights_.Size() != info.num_row_);
+    return use_group_ind;
+  }
+
+  static std::vector<bst_row_t> CalcColumnSize(SparsePage const &page,
+                                               bst_feature_t const n_columns,
+                                               size_t const nthreads);
+
+  static std::vector<bst_feature_t> LoadBalance(SparsePage const &page,
+                                                bst_feature_t n_columns,
+                                                size_t const nthreads);
+
+  static uint32_t SearchGroupIndFromRow(std::vector<bst_uint> const &group_ptr,
+                                        size_t const base_rowid) {
+    CHECK_LT(base_rowid, group_ptr.back())
+        << "Row: " << base_rowid << " is not found in any group.";
+    bst_group_t group_ind =
+        std::upper_bound(group_ptr.cbegin(), group_ptr.cend() - 1, base_rowid) -
+        group_ptr.cbegin() - 1;
+    return group_ind;
+  }
+  // Gather sketches from all workers.
+  void GatherSketchInfo(std::vector<WQSketch::SummaryContainer> const &reduced,
+                        std::vector<bst_row_t> *p_worker_segments,
+                        std::vector<bst_row_t> *p_sketches_scan,
+                        std::vector<WQSketch::Entry> *p_global_sketches);
+  // Merge sketches from all workers.
+  void AllReduce(std::vector<WQSketch::SummaryContainer> *p_reduced,
+                 std::vector<int32_t>* p_num_cuts);
+
+  /* \brief Push a CSR matrix. */
+  void PushRowPage(SparsePage const& page, MetaInfo const& info);
+
+  void MakeCuts(HistogramCuts* cuts);
 };
 }  // namespace common
 }  // namespace xgboost

@@ -101,6 +101,18 @@ namespace common {
   } while (0);
 #endif  // __CUDA_ARCH__
 
+#if defined(__CUDA_ARCH__)
+#define SPAN_LT(lhs, rhs)                                                      \
+  if (!((lhs) < (rhs))) {                                                      \
+    printf("%lu < %lu failed\n", static_cast<size_t>(lhs),                     \
+           static_cast<size_t>(rhs));                                          \
+    asm("trap;");                                                              \
+  }
+#else
+#define SPAN_LT(lhs, rhs)                       \
+  SPAN_CHECK((lhs) < (rhs))
+#endif  // defined(__CUDA_ARCH__)
+
 namespace detail {
 /*!
  * By default, XGBoost uses uint32_t for indexing data. int64_t covers all
@@ -515,7 +527,7 @@ class Span {
   }
 
   XGBOOST_DEVICE reference operator[](index_type _idx) const {
-    SPAN_CHECK(_idx < size());
+    SPAN_LT(_idx, size());
     return data()[_idx];
   }
 
@@ -573,18 +585,16 @@ class Span {
   XGBOOST_DEVICE auto subspan() const ->                   // NOLINT
       Span<element_type,
            detail::ExtentValue<Extent, Offset, Count>::value> {
-    SPAN_CHECK(Offset < size() || size() == 0);
-    SPAN_CHECK(Count == dynamic_extent || (Offset + Count <= size()));
-
+    SPAN_CHECK((Count == dynamic_extent) ?
+               (Offset <= size()) : (Offset + Count <= size()));
     return {data() + Offset, Count == dynamic_extent ? size() - Offset : Count};
   }
 
   XGBOOST_DEVICE Span<element_type, dynamic_extent> subspan(  // NOLINT
       index_type _offset,
       index_type _count = dynamic_extent) const {
-    SPAN_CHECK(_offset < size() || size() == 0);
-    SPAN_CHECK((_count == dynamic_extent) || (_offset + _count <= size()));
-
+    SPAN_CHECK((_count == dynamic_extent) ?
+               (_offset <= size()) : (_offset + _count <= size()));
     return {data() + _offset, _count ==
             dynamic_extent ? size() - _offset : _count};
   }

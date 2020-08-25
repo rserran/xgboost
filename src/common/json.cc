@@ -275,6 +275,9 @@ Json& JsonNumber::operator[](int ind) {
 
 bool JsonNumber::operator==(Value const& rhs) const {
   if (!IsA<JsonNumber>(&rhs)) { return false; }
+  if (std::isinf(number_)) {
+    return std::isinf(Cast<JsonNumber const>(&rhs)->GetNumber());
+  }
   return std::abs(number_ - Cast<JsonNumber const>(&rhs)->GetNumber()) < kRtEps;
 }
 
@@ -427,6 +430,8 @@ void JsonReader::Error(std::string msg) const {
   for (auto c : raw_portion) {
     if (c == '\n') {
       portion += "\\n";
+    } else if (c == '\0') {
+      portion += "\\0";
     } else {
       portion += c;
     }

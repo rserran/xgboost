@@ -26,6 +26,7 @@
 #include "param.h"
 #include "updater_gpu_common.cuh"
 #include "constraints.cuh"
+#include "gpu_hist/feature_groups.cuh"
 #include "gpu_hist/gradient_based_sampler.cuh"
 #include "gpu_hist/row_partitioner.cuh"
 #include "gpu_hist/histogram.cuh"
@@ -203,6 +204,8 @@ struct GPUHistMakerDevice {
 
   std::unique_ptr<GradientBasedSampler> sampler;
 
+  std::unique_ptr<FeatureGroups> feature_groups;
+
   GPUHistMakerDevice(int _device_id,
                      EllpackPageImpl* _page,
                      bst_uint _n_rows,
@@ -229,6 +232,9 @@ struct GPUHistMakerDevice {
     // Init histogram
     hist.Init(device_id, page->Cuts().TotalBins());
     monitor.Init(std::string("GPUHistMakerDevice") + std::to_string(device_id));
+    feature_groups.reset(new FeatureGroups(
+        page->Cuts(), page->is_dense, dh::MaxSharedMemoryOptin(device_id),
+        sizeof(GradientSumT)));
   }
 
   ~GPUHistMakerDevice() {  // NOLINT
@@ -260,8 +266,10 @@ struct GPUHistMakerDevice {
   // Note that the column sampler must be passed by value because it is not
   // thread safe
   void Reset(HostDeviceVector<GradientPair>* dh_gpair, DMatrix* dmat, int64_t num_columns) {
-    this->column_sampler.Init(num_columns, param.colsample_bynode,
-      param.colsample_bylevel, param.colsample_bytree);
+    auto const& info = dmat->Info();
+    this->column_sampler.Init(num_columns, info.feature_weigths.HostVector(),
+                              param.colsample_bynode, param.colsample_bylevel,
+                              param.colsample_bytree);
     dh::safe_cuda(cudaSetDevice(device_id));
     this->interaction_constraints.Reset();
     std::fill(node_sum_gradients.begin(), node_sum_gradients.end(),
@@ -372,8 +380,9 @@ struct GPUHistMakerDevice {
     hist.AllocateHistogram(nidx);
     auto d_node_hist = hist.GetNodeHistogram(nidx);
     auto d_ridx = row_partitioner->GetRows(nidx);
-    BuildGradientHistogram(page->GetDeviceAccessor(device_id), gpair, d_ridx, d_node_hist,
-                           histogram_rounding);
+    BuildGradientHistogram(page->GetDeviceAccessor(device_id),
+                           feature_groups->DeviceAccessor(device_id), gpair,
+                           d_ridx, d_node_hist, histogram_rounding);
   }
 
   void SubtractionTrick(int nidx_parent, int nidx_histogram,

@@ -12,14 +12,23 @@ if (USE_CUDA)
   file(GLOB_RECURSE CUDA_TEST_SOURCES "*.cu")
   list(APPEND TEST_SOURCES ${CUDA_TEST_SOURCES})
 endif (USE_CUDA)
-add_executable(testxgboost ${TEST_SOURCES} ${XGBOOST_OBJ_SOURCES}
+
+file(GLOB_RECURSE ONEAPI_TEST_SOURCES "plugin/*_oneapi.cc")
+if (NOT PLUGIN_UPDATER_ONEAPI)
+  list(REMOVE_ITEM TEST_SOURCES ${ONEAPI_TEST_SOURCES})
+endif (NOT PLUGIN_UPDATER_ONEAPI)
+
+add_executable(testxgboost ${TEST_SOURCES}
   ${xgboost_SOURCE_DIR}/plugin/example/custom_obj.cc)
+target_link_libraries(testxgboost PRIVATE objxgboost)
 
 if (USE_CUDA)
   # OpenMP is mandatory for CUDA
   find_package(OpenMP REQUIRED)
-  target_include_directories(testxgboost PRIVATE
-    ${xgboost_SOURCE_DIR}/cub/)
+  if (CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 11.0)
+    target_include_directories(testxgboost PRIVATE
+      ${xgboost_SOURCE_DIR}/cub/)
+  endif (CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 11.0)
   target_compile_options(testxgboost PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda>
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
@@ -28,6 +37,8 @@ if (USE_CUDA)
     $<$<COMPILE_LANGUAGE:CUDA>:${GEN_CODE}>)
   target_compile_definitions(testxgboost
     PRIVATE -DXGBOOST_USE_CUDA=1)
+  find_package(CUDA)
+  target_include_directories(testxgboost PRIVATE ${CUDA_INCLUDE_DIRS})
   set_target_properties(testxgboost PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF)
 
@@ -60,6 +71,10 @@ if (MSVC)
     -D_CRT_SECURE_NO_DEPRECATE
   )
 endif (MSVC)
+if (ENABLE_ALL_WARNINGS)
+  target_compile_options(testxgboost PUBLIC
+    $<IF:$<COMPILE_LANGUAGE:CUDA>,-Xcompiler=-Wall -Xcompiler=-Wextra,-Wall -Wextra>)
+endif (ENABLE_ALL_WARNINGS)
 
 target_include_directories(testxgboost
   PRIVATE
@@ -73,10 +88,8 @@ set_target_properties(
   CXX_STANDARD_REQUIRED ON)
 target_link_libraries(testxgboost
   PRIVATE
-  ${GTEST_LIBRARIES}
-  ${LINKED_LIBRARIES_PRIVATE})
+  ${GTEST_LIBRARIES})
 
-target_compile_definitions(testxgboost PRIVATE ${XGBOOST_DEFINITIONS})
 set_output_directory(testxgboost ${xgboost_BINARY_DIR})
 
 # This grouping organises source files nicely in visual studio

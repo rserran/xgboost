@@ -282,21 +282,12 @@ void QuantileHistMaker::Builder<GradientSumT>::SetHistSynchronizer(
                                                HistSynchronizer<GradientSumT>* sync) {
   hist_synchronizer_.reset(sync);
 }
-template void QuantileHistMaker::Builder<double>::SetHistSynchronizer(
-                                                  HistSynchronizer<double>* sync);
-template void QuantileHistMaker::Builder<float>::SetHistSynchronizer(
-                                                  HistSynchronizer<float>* sync);
 
 template<typename GradientSumT>
 void QuantileHistMaker::Builder<GradientSumT>::SetHistRowsAdder(
                                                HistRowsAdder<GradientSumT>* adder) {
   hist_rows_adder_.reset(adder);
 }
-template void QuantileHistMaker::Builder<double>::SetHistRowsAdder(
-                                                  HistRowsAdder<double>* sync);
-template void QuantileHistMaker::Builder<float>::SetHistRowsAdder(
-                                                 HistRowsAdder<float>* sync);
-
 template<typename GradientSumT>
 void QuantileHistMaker::Builder<GradientSumT>::BuildHistogramsLossGuide(
                         ExpandEntry entry,
@@ -850,11 +841,13 @@ void QuantileHistMaker::Builder<GradientSumT>::InitData(const GHistIndexMatrix& 
   // store a pointer to the tree
   p_last_tree_ = &tree;
   if (data_layout_ == kDenseDataOneBased) {
-    column_sampler_.Init(info.num_col_, param_.colsample_bynode, param_.colsample_bylevel,
-            param_.colsample_bytree, true);
+    column_sampler_.Init(info.num_col_, info.feature_weigths.ConstHostVector(),
+                         param_.colsample_bynode, param_.colsample_bylevel,
+                         param_.colsample_bytree, true);
   } else {
-    column_sampler_.Init(info.num_col_, param_.colsample_bynode, param_.colsample_bylevel,
-            param_.colsample_bytree,  false);
+    column_sampler_.Init(info.num_col_, info.feature_weigths.ConstHostVector(),
+                         param_.colsample_bynode, param_.colsample_bylevel,
+                         param_.colsample_bytree, false);
   }
   if (data_layout_ == kDenseDataZeroBased || data_layout_ == kDenseDataOneBased) {
     /* specialized code for dense data:
@@ -1356,6 +1349,27 @@ GradStats QuantileHistMaker::Builder<GradientSumT>::EnumerateSplit(
   return e;
 }
 
+template struct QuantileHistMaker::Builder<float>;
+template struct QuantileHistMaker::Builder<double>;
+template void QuantileHistMaker::Builder<float>::PartitionKernel<uint8_t>(
+    const size_t node_in_set, const size_t nid, common::Range1d range,
+    const int32_t split_cond, const ColumnMatrix& column_matrix, const RegTree& tree);
+template void QuantileHistMaker::Builder<float>::PartitionKernel<uint16_t>(
+    const size_t node_in_set, const size_t nid, common::Range1d range,
+    const int32_t split_cond, const ColumnMatrix& column_matrix, const RegTree& tree);
+template void QuantileHistMaker::Builder<float>::PartitionKernel<uint32_t>(
+    const size_t node_in_set, const size_t nid, common::Range1d range,
+    const int32_t split_cond, const ColumnMatrix& column_matrix, const RegTree& tree);
+template void QuantileHistMaker::Builder<double>::PartitionKernel<uint8_t>(
+    const size_t node_in_set, const size_t nid, common::Range1d range,
+    const int32_t split_cond, const ColumnMatrix& column_matrix, const RegTree& tree);
+template void QuantileHistMaker::Builder<double>::PartitionKernel<uint16_t>(
+    const size_t node_in_set, const size_t nid, common::Range1d range,
+    const int32_t split_cond, const ColumnMatrix& column_matrix, const RegTree& tree);
+template void QuantileHistMaker::Builder<double>::PartitionKernel<uint32_t>(
+    const size_t node_in_set, const size_t nid, common::Range1d range,
+    const int32_t split_cond, const ColumnMatrix& column_matrix, const RegTree& tree);
+
 XGBOOST_REGISTER_TREE_UPDATER(FastHistMaker, "grow_fast_histmaker")
 .describe("(Deprecated, use grow_quantile_histmaker instead.)"
           " Grow tree using quantized histogram.")
@@ -1372,6 +1386,5 @@ XGBOOST_REGISTER_TREE_UPDATER(QuantileHistMaker, "grow_quantile_histmaker")
     []() {
       return new QuantileHistMaker();
     });
-
 }  // namespace tree
 }  // namespace xgboost

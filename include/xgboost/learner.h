@@ -9,7 +9,6 @@
 #define XGBOOST_LEARNER_H_
 
 #include <dmlc/any.h>
-#include <rabit/rabit.h>
 #include <xgboost/base.h>
 #include <xgboost/feature_map.h>
 #include <xgboost/predictor.h>
@@ -63,7 +62,7 @@ struct XGBAPIThreadLocalEntry {
  *
  *  \endcode
  */
-class Learner : public Model, public Configurable, public rabit::Serializable {
+class Learner : public Model, public Configurable, public dmlc::Serializable {
  public:
   /*! \brief virtual destructor */
   ~Learner() override;
@@ -157,6 +156,12 @@ class Learner : public Model, public Configurable, public rabit::Serializable {
    * \param value The value of parameter
    */
   virtual void SetParam(const std::string& key, const std::string& value) = 0;
+
+  /*!
+   * \brief Get the number of features of the booster.
+   * \return number of features
+   */
+  virtual uint32_t GetNumFeature() = 0;
 
   /*!
    * \brief Set additional attribute to the Booster.
