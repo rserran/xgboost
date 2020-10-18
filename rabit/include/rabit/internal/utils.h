@@ -8,17 +8,14 @@
 #define RABIT_INTERNAL_UTILS_H_
 
 #include <rabit/base.h>
-#include <string.h>
+#include <cstring>
 #include <cstdio>
 #include <string>
 #include <cstdlib>
 #include <stdexcept>
 #include <vector>
 #include "dmlc/io.h"
-
-#ifndef RABIT_STRICT_CXX98_
 #include <cstdarg>
-#endif  // RABIT_STRICT_CXX98_
 
 #if !defined(__GNUC__) || defined(__FreeBSD__)
 #define fopen64 std::fopen
@@ -48,15 +45,7 @@ extern "C" {
 }
 #endif  // _MSC_VER
 
-#ifdef _MSC_VER
-typedef unsigned char uint8_t;
-typedef unsigned __int16 uint16_t;
-typedef unsigned __int32 uint32_t;
-typedef unsigned __int64 uint64_t;
-typedef __int64 int64_t;
-#else
-#include <inttypes.h>
-#endif  // _MSC_VER
+#include <cinttypes>
 
 namespace rabit {
 /*! \brief namespace for helper utils of the project */
@@ -79,7 +68,6 @@ inline bool StringToBool(const char* s) {
   return CompareStringsCaseInsensitive(s, "true") == 0 || atoi(s) != 0;
 }
 
-#ifndef RABIT_CUSTOMIZE_MSG_
 /*!
  * \brief handling of Assert error, caused by inappropriate input
  * \param msg error message
@@ -97,6 +85,7 @@ inline void HandleCheckError(const char *msg) {
   fprintf(stderr, "%s, rabit is configured to keep process running\n", msg);
   throw dmlc::Error(msg);
 }
+
 inline void HandlePrint(const char *msg) {
   printf("%s", msg);
 }
@@ -110,22 +99,7 @@ inline void HandleLogInfo(const char *fmt, ...) {
   fprintf(stdout, "%s", msg.c_str());
   fflush(stdout);
 }
-#else
-#ifndef RABIT_STRICT_CXX98_
-// include declarations, some one must implement this
-void HandleAssertError(const char *msg);
-void HandleCheckError(const char *msg);
-void HandlePrint(const char *msg);
-#endif  // RABIT_STRICT_CXX98_
-#endif  // RABIT_CUSTOMIZE_MSG_
-#ifdef RABIT_STRICT_CXX98_
-// these function pointers are to be assigned
-extern "C" void (*Printf)(const char *fmt, ...);
-extern "C" int (*SPrintf)(char *buf, size_t size, const char *fmt, ...);
-extern "C" void (*Assert)(int exp, const char *fmt, ...);
-extern "C" void (*Check)(int exp, const char *fmt, ...);
-extern "C" void (*Error)(const char *fmt, ...);
-#else
+
 /*! \brief printf, prints messages to the console */
 inline void Printf(const char *fmt, ...) {
   std::string msg(kPrintBuffer, '\0');
@@ -135,6 +109,7 @@ inline void Printf(const char *fmt, ...) {
   va_end(args);
   HandlePrint(msg.c_str());
 }
+
 /*! \brief portable version of snprintf */
 inline int SPrintf(char *buf, size_t size, const char *fmt, ...) {
   va_list args;
@@ -179,21 +154,33 @@ inline void Error(const char *fmt, ...) {
     HandleCheckError(msg.c_str());
   }
 }
-#endif  // RABIT_STRICT_CXX98_
 
 /*! \brief replace fopen, report error when the file open fails */
 inline std::FILE *FopenCheck(const char *fname, const char *flag) {
   std::FILE *fp = fopen64(fname, flag);
-  Check(fp != NULL, "can not open file \"%s\"\n", fname);
+  Check(fp != nullptr, "can not open file \"%s\"\n", fname);
   return fp;
 }
 }  // namespace utils
+
+// Can not use std::min on Windows with msvc due to:
+// error C2589: '(': illegal token on right side of '::'
+template <typename T>
+auto Min(T const& l, T const& r) {
+  return l < r ? l : r;
+}
+// same with Min
+template <typename T>
+auto Max(T const& l, T const& r) {
+  return l > r ? l : r;
+}
+
 // easy utils that can be directly accessed in xgboost
 /*! \brief get the beginning address of a vector */
 template<typename T>
 inline T *BeginPtr(std::vector<T> &vec) {  // NOLINT(*)
   if (vec.size() == 0) {
-    return NULL;
+    return nullptr;
   } else {
     return &vec[0];
   }
@@ -202,17 +189,17 @@ inline T *BeginPtr(std::vector<T> &vec) {  // NOLINT(*)
 template<typename T>
 inline const T *BeginPtr(const std::vector<T> &vec) {  // NOLINT(*)
   if (vec.size() == 0) {
-    return NULL;
+    return nullptr;
   } else {
     return &vec[0];
   }
 }
 inline char* BeginPtr(std::string &str) {  // NOLINT(*)
-  if (str.length() == 0) return NULL;
+  if (str.length() == 0) return nullptr;
   return &str[0];
 }
 inline const char* BeginPtr(const std::string &str) {
-  if (str.length() == 0) return NULL;
+  if (str.length() == 0) return nullptr;
   return &str[0];
 }
 }  // namespace rabit

@@ -1,6 +1,11 @@
 if (PLUGIN_LZ4)
   target_sources(objxgboost PRIVATE ${xgboost_SOURCE_DIR}/plugin/lz4/sparse_page_lz4_format.cc)
-  target_link_libraries(objxgboost PUBLIC lz4)
+  find_path(LIBLZ4_INCLUDE_DIR lz4.h)
+  find_library(LIBLZ4_LIBRARY NAMES lz4)
+  message(STATUS "LIBLZ4_INCLUDE_DIR = ${LIBLZ4_INCLUDE_DIR}")
+  message(STATUS "LIBLZ4_LIBRARY = ${LIBLZ4_LIBRARY}")
+  target_include_directories(objxgboost PUBLIC ${LIBLZ4_INCLUDE_DIR})
+  target_link_libraries(objxgboost PUBLIC ${LIBLZ4_LIBRARY})
 endif (PLUGIN_LZ4)
 
 if (PLUGIN_DENSE_PARSER)
@@ -8,13 +13,8 @@ if (PLUGIN_DENSE_PARSER)
 endif (PLUGIN_DENSE_PARSER)
 
 if (PLUGIN_RMM)
-  find_path(RMM_INCLUDE "rmm"
-    HINTS "$ENV{RMM_ROOT}/include")
-
-  find_library(RMM_LIBRARY "rmm"
-    HINTS "$ENV{RMM_ROOT}/lib" "$ENV{RMM_ROOT}/build")
-
-  if ((NOT RMM_LIBRARY) OR (NOT RMM_INCLUDE))
+  find_path(RMM_INCLUDE "rmm" HINTS "$ENV{RMM_ROOT}/include")
+  if (NOT RMM_INCLUDE)
     message(FATAL_ERROR "Could not locate RMM library")
   endif ()
 
@@ -22,13 +22,12 @@ if (PLUGIN_RMM)
   message(STATUS "RMM: RMM_INCLUDE set to ${RMM_INCLUDE}")
 
   target_include_directories(objxgboost PUBLIC ${RMM_INCLUDE})
-  target_link_libraries(objxgboost PUBLIC ${RMM_LIBRARY} cuda)
   target_compile_definitions(objxgboost PUBLIC -DXGBOOST_USE_RMM=1)
 endif (PLUGIN_RMM)
 
 if (PLUGIN_UPDATER_ONEAPI)
   add_library(oneapi_plugin OBJECT
-    ${xgboost_SOURCE_DIR}/plugin/updater_oneapi/regression_obj_oneapi.cc 
+    ${xgboost_SOURCE_DIR}/plugin/updater_oneapi/regression_obj_oneapi.cc
     ${xgboost_SOURCE_DIR}/plugin/updater_oneapi/predictor_oneapi.cc)
   target_include_directories(oneapi_plugin
     PRIVATE

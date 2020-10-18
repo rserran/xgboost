@@ -37,6 +37,15 @@ def no_pandas():
             'reason': 'Pandas is not installed.'}
 
 
+def no_modin():
+    reason = 'Modin is not installed.'
+    try:
+        import modin.pandas as _  # noqa
+        return {'condition': False, 'reason': reason}
+    except ImportError:
+        return {'condition': True, 'reason': reason}
+
+
 def no_dt():
     import importlib.util
     spec = importlib.util.find_spec('datatable')
@@ -155,6 +164,7 @@ class TestDataset:
             np.savetxt(path,
                        np.hstack((self.y.reshape(len(self.y), 1), self.X)),
                        delimiter=',')
+            assert os.path.exists(path)
             uri = path + '?format=csv&label_column=0#tmptmp_'
             # The uri looks like:
             # 'tmptmp_1234.csv?format=csv&label_column=0#tmptmp_'
@@ -228,6 +238,16 @@ dataset_strategy = _dataset_weight_margin()
 
 def non_increasing(L, tolerance=1e-4):
     return all((y - x) < tolerance for x, y in zip(L, L[1:]))
+
+
+def eval_error_metric(predt, dtrain: xgb.DMatrix):
+    label = dtrain.get_label()
+    r = np.zeros(predt.shape)
+    gt = predt > 0.5
+    r[gt] = 1 - label[gt]
+    le = predt <= 0.5
+    r[le] = label[le]
+    return 'CustomErr', np.sum(r)
 
 
 CURDIR = os.path.normpath(os.path.abspath(os.path.dirname(__file__)))

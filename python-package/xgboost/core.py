@@ -16,10 +16,8 @@ import warnings
 import numpy as np
 import scipy.sparse
 
-from .compat import (
-    STRING_TYPES, DataFrame, py_str,
-    PANDAS_INSTALLED,
-    os_fspath, os_PathLike, lazy_isinstance)
+from .compat import (STRING_TYPES, DataFrame, py_str, PANDAS_INSTALLED,
+                     lazy_isinstance)
 from .libpath import find_lib_path
 
 # c_bst_ulong corresponds to bst_ulong defined in xgboost/c_api.h
@@ -320,7 +318,8 @@ class DataIter:
         def data_handle(data, label=None, weight=None, base_margin=None,
                         group=None,
                         label_lower_bound=None, label_upper_bound=None,
-                        feature_names=None, feature_types=None):
+                        feature_names=None, feature_types=None,
+                        feature_weights=None):
             from .data import dispatch_device_quantile_dmatrix_set_data
             from .data import _device_quantile_transform
             data, feature_names, feature_types = _device_quantile_transform(
@@ -333,7 +332,8 @@ class DataIter:
                                 label_lower_bound=label_lower_bound,
                                 label_upper_bound=label_upper_bound,
                                 feature_names=feature_names,
-                                feature_types=feature_types)
+                                feature_types=feature_types,
+                                feature_weights=feature_weights)
         try:
             # Differ the exception in order to return 0 and stop the iteration.
             # Exception inside a ctype callback function has no effect except
@@ -382,7 +382,8 @@ class DMatrix:                  # pylint: disable=too-many-instance-attributes
                  silent=False,
                  feature_names=None,
                  feature_types=None,
-                 nthread=None):
+                 nthread=None,
+                 enable_categorical=False):
         """Parameters
         ----------
         data : os.PathLike/string/numpy.array/scipy.sparse/pd.DataFrame/
@@ -417,6 +418,16 @@ class DMatrix:                  # pylint: disable=too-many-instance-attributes
             Number of threads to use for loading data when parallelization is
             applicable. If -1, uses maximum threads available on the system.
 
+        enable_categorical: boolean, optional
+
+            .. versionadded:: 1.3.0
+
+            Experimental support of specializing for categorical features.  Do
+            not set to True unless you are interested in development.
+            Currently it's only available for `gpu_hist` tree method with 1 vs
+            rest (one hot) categorical split.  Also, JSON serialization format,
+            `gpu_predictor` and pandas input are required.
+
         """
         if isinstance(data, list):
             raise TypeError('Input data can not be a list.')
@@ -435,7 +446,8 @@ class DMatrix:                  # pylint: disable=too-many-instance-attributes
             data, missing=self.missing,
             threads=self.nthread,
             feature_names=feature_names,
-            feature_types=feature_types)
+            feature_types=feature_types,
+            enable_categorical=enable_categorical)
         assert handle is not None
         self.handle = handle
 
@@ -576,7 +588,7 @@ class DMatrix:                  # pylint: disable=too-many-instance-attributes
             If set, the output is suppressed.
         """
         _check_call(_LIB.XGDMatrixSaveBinary(self.handle,
-                                             c_str(os_fspath(fname)),
+                                             c_str(os.fspath(fname)),
                                              ctypes.c_int(silent)))
 
     def set_label(self, label):
@@ -859,6 +871,8 @@ class DeviceQuantileDMatrix(DMatrix):
 
     .. versionadded:: 1.1.0
 
+    Known limitation:
+    The data size (rows * cols) can not exceed 2 ** 31 - 1000
     """
 
     def __init__(self, data, label=None, weight=None,  # pylint: disable=W0231
@@ -968,7 +982,7 @@ class Booster(object):
             _check_call(
                 _LIB.XGBoosterUnserializeFromBuffer(self.handle, ptr, length))
             self.__dict__.update(state)
-        elif isinstance(model_file, (STRING_TYPES, os_PathLike, bytearray)):
+        elif isinstance(model_file, (STRING_TYPES, os.PathLike, bytearray)):
             self.load_model(model_file)
         elif model_file is None:
             pass
@@ -1568,11 +1582,11 @@ class Booster(object):
             Output file name
 
         """
-        if isinstance(fname, (STRING_TYPES, os_PathLike)):  # assume file name
+        if isinstance(fname, (STRING_TYPES, os.PathLike)):  # assume file name
             _check_call(_LIB.XGBoosterSaveModel(
-                self.handle, c_str(os_fspath(fname))))
+                self.handle, c_str(os.fspath(fname))))
         else:
-            raise TypeError("fname must be a string or os_PathLike")
+            raise TypeError("fname must be a string or os PathLike")
 
     def save_raw(self):
         """Save the model to a in memory buffer representation instead of file.
@@ -1606,11 +1620,11 @@ class Booster(object):
             Input file name or memory buffer(see also save_raw)
 
         """
-        if isinstance(fname, (STRING_TYPES, os_PathLike)):
+        if isinstance(fname, (STRING_TYPES, os.PathLike)):
             # assume file name, cannot use os.path.exist to check, file can be
             # from URL.
             _check_call(_LIB.XGBoosterLoadModel(
-                self.handle, c_str(os_fspath(fname))))
+                self.handle, c_str(os.fspath(fname))))
         elif isinstance(fname, bytearray):
             buf = fname
             length = c_bst_ulong(len(buf))
@@ -1636,8 +1650,8 @@ class Booster(object):
         dump_format : string, optional
             Format of model dump file. Can be 'text' or 'json'.
         """
-        if isinstance(fout, (STRING_TYPES, os_PathLike)):
-            fout = open(os_fspath(fout), 'w')
+        if isinstance(fout, (STRING_TYPES, os.PathLike)):
+            fout = open(os.fspath(fout), 'w')
             need_close = True
         else:
             need_close = False
@@ -1671,7 +1685,7 @@ class Booster(object):
             Format of model dump. Can be 'text', 'json' or 'dot'.
 
         """
-        fmap = os_fspath(fmap)
+        fmap = os.fspath(fmap)
         length = c_bst_ulong()
         sarr = ctypes.POINTER(ctypes.c_char_p)()
         if self.feature_names is not None and fmap == '':
@@ -1751,7 +1765,7 @@ class Booster(object):
         importance_type: str, default 'weight'
             One of the importance types defined above.
         """
-        fmap = os_fspath(fmap)
+        fmap = os.fspath(fmap)
         if getattr(self, 'booster', None) is not None and self.booster not in {'gbtree', 'dart'}:
             raise ValueError('Feature importance is not defined for Booster type {}'
                              .format(self.booster))
@@ -1844,7 +1858,7 @@ class Booster(object):
            The name of feature map file.
         """
         # pylint: disable=too-many-locals
-        fmap = os_fspath(fmap)
+        fmap = os.fspath(fmap)
         if not PANDAS_INSTALLED:
             raise Exception(('pandas must be available to use this method.'
                              'Install pandas before calling again.'))

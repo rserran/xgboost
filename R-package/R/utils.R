@@ -167,9 +167,8 @@ xgb.iter.eval <- function(booster_handle, watchlist, iter, feval = NULL) {
   evnames <- names(watchlist)
   if (is.null(feval)) {
     msg <- .Call(XGBoosterEvalOneIter_R, booster_handle, as.integer(iter), watchlist, as.list(evnames))
-    msg <- stri_split_regex(msg, '(\\s+|:|\\s+)')[[1]][-1]
-    res <- as.numeric(msg[c(FALSE, TRUE)]) # even indices are the values
-    names(res) <- msg[c(TRUE, FALSE)]      # odds are the names
+    mat <- matrix(strsplit(msg, '\\s+|:')[[1]][-1], nrow = 2)
+    res <- structure(as.numeric(mat[2, ]), names = mat[1, ])
   } else {
     res <- sapply(seq_along(watchlist), function(j) {
       w <- watchlist[[j]]
@@ -349,6 +348,7 @@ NULL
 #' # Save as a stand-alone file (JSON); load it with xgb.load()
 #' xgb.save(bst, 'xgb.model.json')
 #' bst2 <- xgb.load('xgb.model.json')
+#' if (file.exists('xgb.model.json')) file.remove('xgb.model.json')
 #'
 #' # Save as a raw byte vector; load it with xgb.load.raw()
 #' xgb_bytes <- xgb.save.raw(bst)
@@ -364,6 +364,7 @@ NULL
 #' obj2 <- readRDS('my_object.rds')
 #' # Re-construct xgb.Booster object from the bytes
 #' bst2 <- xgb.load.raw(obj2$xgb_model_bytes)
+#' if (file.exists('my_object.rds')) file.remove('my_object.rds')
 #'
 #' @name a-compatibility-note-for-saveRDS-save
 NULL

@@ -11,6 +11,99 @@ env:
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
+  gtest-cpu:
+    name: Test Google C++ test (CPU)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-10.15]
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: 'true'
+    - name: Install system packages
+      run: |
+        brew install lz4 ninja libomp
+    - name: Build gtest binary
+      run: |
+        mkdir build
+        cd build
+        cmake .. -DGOOGLE_TEST=ON -DUSE_OPENMP=ON -DUSE_DMLC_GTEST=ON -DPLUGIN_LZ4=ON -DPLUGIN_DENSE_PARSER=ON -GNinja
+        ninja -v
+    - name: Run gtest binary
+      run: |
+        cd build
+        ctest --extra-verbose
+
+  gtest-cpu-nonomp:
+    name: Test Google C++ unittest (CPU Non-OMP)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: 'true'
+    - name: Install system packages
+      run: |
+        sudo apt-get install -y --no-install-recommends ninja-build
+    - name: Build and install XGBoost
+      shell: bash -l {0}
+      run: |
+        mkdir build
+        cd build
+        cmake .. -GNinja -DGOOGLE_TEST=ON  -DUSE_DMLC_GTEST=ON -DUSE_OPENMP=OFF
+        ninja -v
+    - name: Run gtest binary
+      run: |
+        cd build
+        ctest --extra-verbose
+
+  c-api-demo:
+    name: Test installing XGBoost lib + building the C API demo
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-latest"]
+        python-version: ["3.8"]
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: 'true'
+    - name: Install system packages
+      run: |
+        sudo apt-get install -y --no-install-recommends ninja-build
+    - uses: conda-incubator/setup-miniconda@v1
+      with:
+        auto-update-conda: true
+        python-version: ${{ matrix.python-version }}
+    - name: Display Conda env
+      shell: bash -l {0}
+      run: |
+        conda info
+        conda list
+    - name: Build and install XGBoost
+      shell: bash -l {0}
+      run: |
+        mkdir build
+        cd build
+        cmake .. -DBUILD_STATIC_LIB=ON -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX -GNinja
+        ninja -v install
+    - name: Build and run C API demo
+      shell: bash -l {0}
+      run: |
+        cd demo/c-api/
+        mkdir build
+        cd build
+        cmake .. -GNinja -DCMAKE_PREFIX_PATH=$CONDA_PREFIX
+        ninja -v
+        cd ..
+        ./build/api-demo
+
   test-with-jvm:
     name: Test JVM on OS ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -170,7 +263,7 @@ jobs:
       run: |
         cd R-package
         R.exe CMD INSTALL .
-        Rscript.exe tests/run_lint.R
+        Rscript.exe tests/helper_scripts/run_lint.R
 
   test-with-R:
     runs-on: ${{ matrix.config.os }}
@@ -179,9 +272,8 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          - {os: windows-2016, r: 'release', compiler: 'msvc', build: 'autotools'}
-          - {os: windows-2016, r: 'release', compiler: 'msvc', build: 'cmake'}
           - {os: windows-2016, r: 'release', compiler: 'mingw', build: 'autotools'}
+          - {os: windows-2016, r: 'release', compiler: 'msvc', build: 'cmake'}
           - {os: windows-2016, r: 'release', compiler: 'mingw', build: 'cmake'}
     env:
       R_REMOTES_NO_ERRORS_FROM_WARNINGS: true
