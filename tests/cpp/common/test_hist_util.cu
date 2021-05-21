@@ -45,6 +45,10 @@ TEST(HistUtil, DeviceSketch) {
 }
 
 TEST(HistUtil, SketchBatchNumElements) {
+#if defined(XGBOOST_USE_RMM) && XGBOOST_USE_RMM == 1
+  LOG(WARNING) << "Test not runnable with RMM enabled.";
+  return;
+#endif  // defined(XGBOOST_USE_RMM) && XGBOOST_USE_RMM == 1
   size_t constexpr kCols = 10000;
   int device;
   dh::safe_cuda(cudaGetDevice(&device));
@@ -122,10 +126,21 @@ TEST(HistUtil, DeviceSketchCategoricalAsNumeric) {
   }
 }
 
-void TestCategoricalSketch(size_t n, size_t num_categories, int32_t num_bins) {
+void TestCategoricalSketch(size_t n, size_t num_categories, int32_t num_bins, bool weighted) {
   auto x = GenerateRandomCategoricalSingleColumn(n, num_categories);
   auto dmat = GetDMatrixFromData(x, n, 1);
   dmat->Info().feature_types.HostVector().push_back(FeatureType::kCategorical);
+
+  if (weighted) {
+    std::vector<float> weights(n, 0);
+    SimpleLCG lcg;
+    SimpleRealUniformDistribution<float> dist(0, 1);
+    for (auto& v : weights) {
+      v = dist(&lcg);
+    }
+    dmat->Info().weights_.HostVector() = weights;
+  }
+
   ASSERT_EQ(dmat->Info().feature_types.Size(), 1);
   auto cuts = DeviceSketch(0, dmat.get(), num_bins);
   std::sort(x.begin(), x.end());
@@ -146,7 +161,8 @@ void TestCategoricalSketch(size_t n, size_t num_categories, int32_t num_bins) {
 }
 
 TEST(HistUtil, DeviceSketchCategoricalFeatures) {
-  TestCategoricalSketch(1000, 256, 32);
+  TestCategoricalSketch(1000, 256, 32, false);
+  TestCategoricalSketch(1000, 256, 32, true);
 }
 
 TEST(HistUtil, DeviceSketchMultipleColumns) {

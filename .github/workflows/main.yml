@@ -6,9 +6,6 @@ name: XGBoost-CI
 # events but only for the master branch
 on: [push, pull_request]
 
-env:
-  R_PACKAGES: c('XML', 'igraph', 'data.table', 'magrittr', 'stringi', 'ggplot2', 'DiagrammeR', 'Ckmeans.1d.dp', 'vcd', 'testthat', 'lintr', 'knitr', 'rmarkdown', 'e1071', 'cplm', 'devtools')
-
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   gtest-cpu:
@@ -34,7 +31,10 @@ jobs:
     - name: Run gtest binary
       run: |
         cd build
-        ctest --extra-verbose
+        # libomp internal error:
+        #   OMP: Error #131: Thread identifier invalid.
+        ./testxgboost  --gtest_filter="-HistIndexCreationWithExternalMemory.Test"
+        ctest -R TestXGBoostCLI --extra-verbose
 
   gtest-cpu-nonomp:
     name: Test Google C++ unittest (CPU Non-OMP)
@@ -62,6 +62,45 @@ jobs:
         cd build
         ctest --extra-verbose
 
+  python-sdist-test:
+    name: Test installing XGBoost Python source package
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-10.15, windows-latest]
+        python-version: ["3.8"]
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: 'true'
+    - name: Install osx system dependencies
+      if: matrix.os == 'macos-10.15'
+      run: |
+        brew install ninja libomp
+    - name: Install Ubuntu system dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get install -y --no-install-recommends ninja-build
+    - uses: conda-incubator/setup-miniconda@v2
+      with:
+        auto-update-conda: true
+        python-version: ${{ matrix.python-version }}
+        activate-environment: test
+    - name: Display Conda env
+      shell: bash -l {0}
+      run: |
+        conda info
+        conda list
+    - name: Build and install XGBoost
+      shell: bash -l {0}
+      run: |
+        cd python-package
+        python --version
+        python setup.py sdist
+        pip install -v ./dist/xgboost-*.tar.gz
+        cd ..
+        python -c 'import xgboost'
+
   c-api-demo:
     name: Test installing XGBoost lib + building the C API demo
     runs-on: ${{ matrix.os }}
@@ -77,10 +116,11 @@ jobs:
     - name: Install system packages
       run: |
         sudo apt-get install -y --no-install-recommends ninja-build
-    - uses: conda-incubator/setup-miniconda@v1
+    - uses: conda-incubator/setup-miniconda@v2
       with:
         auto-update-conda: true
         python-version: ${{ matrix.python-version }}
+        activate-environment: test
     - name: Display Conda env
       shell: bash -l {0}
       run: |
@@ -117,9 +157,19 @@ jobs:
       with:
         submodules: 'true'
 
+    - uses: actions/setup-python@v2
+      with:
+        python-version: '3.8'
+        architecture: 'x64'
+
     - uses: actions/setup-java@v1
       with:
         java-version: 1.8
+
+    - name: Install Python packages
+      run: |
+        python -m pip install wheel setuptools
+        python -m pip install awscli
 
     - name: Cache Maven packages
       uses: actions/cache@v2
@@ -132,6 +182,28 @@ jobs:
       run: |
         cd jvm-packages
         mvn test -B -pl :xgboost4j_2.12
+
+    - name: Extract branch name
+      shell: bash
+      run: echo "##[set-output name=branch;]$(echo ${GITHUB_REF#refs/heads/})"
+      id: extract_branch
+      if: |
+        (github.ref == 'refs/heads/master' || contains(github.ref, 'refs/heads/release_')) &&
+        matrix.os == 'windows-latest'
+
+    - name: Publish artifact xgboost4j.dll to S3
+      run: |
+        cd lib/
+        Rename-Item -Path xgboost4j.dll -NewName xgboost4j_${{ github.sha }}.dll
+        dir
+        python -m awscli s3 cp xgboost4j_${{ github.sha }}.dll s3://xgboost-nightly-builds/${{ steps.extract_branch.outputs.branch }}/ --acl public-read
+      if: |
+        (github.ref == 'refs/heads/master' || contains(github.ref, 'refs/heads/release_')) &&
+        matrix.os == 'windows-latest'
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID_IAM_S3_UPLOADER }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY_IAM_S3_UPLOADER }}
+
 
     - name: Test XGBoost4J-Spark
       run: |
@@ -160,6 +232,24 @@ jobs:
     - name: Run lint
       run: |
         make lint
+
+  mypy:
+    runs-on: ubuntu-latest
+    name: Type checking for Python
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: 'true'
+    - uses: actions/setup-python@v2
+      with:
+        python-version: '3.7'
+        architecture: 'x64'
+    - name: Install Python packages
+      run: |
+        python -m pip install wheel setuptools mypy pandas dask[complete] distributed
+    - name: Run mypy
+      run: |
+        make mypy
 
   doxygen:
     runs-on: ubuntu-latest
@@ -192,7 +282,7 @@ jobs:
       run: |
         cd build/
         tar cvjf ${{ steps.extract_branch.outputs.branch }}.tar.bz2 doc_doxygen/
-        python -m awscli s3 cp ./${{ steps.extract_branch.outputs.branch }}.tar.bz2 s3://xgboost-docs/ --acl public-read
+        python -m awscli s3 cp ./${{ steps.extract_branch.outputs.branch }}.tar.bz2 s3://xgboost-docs/doxygen/ --acl public-read
       if: github.ref == 'refs/heads/master' || contains(github.ref, 'refs/heads/release_')
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID_IAM_S3_UPLOADER }}
@@ -207,7 +297,7 @@ jobs:
         submodules: 'true'
     - uses: actions/setup-python@v2
       with:
-        python-version: '3.7'
+        python-version: '3.8'
         architecture: 'x64'
     - name: Install system packages
       run: |
@@ -224,89 +314,3 @@ jobs:
         make -C doc html
       env:
         SPHINX_GIT_BRANCH: ${{ steps.extract_branch.outputs.branch }}
-
-  lintr:
-    runs-on: ${{ matrix.config.os }}
-    name: Run R linters on OS ${{ matrix.config.os }}, R ${{ matrix.config.r }}, Compiler ${{ matrix.config.compiler }}, Build ${{ matrix.config.build }}
-    strategy:
-      matrix:
-        config:
-          - {os: windows-latest, r: 'release', compiler: 'mingw', build: 'autotools'}
-    env:
-      R_REMOTES_NO_ERRORS_FROM_WARNINGS: true
-      RSPM: ${{ matrix.config.rspm }}
-
-    steps:
-    - uses: actions/checkout@v2
-      with:
-        submodules: 'true'
-
-    - uses: r-lib/actions/setup-r@master
-      with:
-        r-version: ${{ matrix.config.r }}
-
-    - name: Cache R packages
-      uses: actions/cache@v2
-      with:
-        path: ${{ env.R_LIBS_USER }}
-        key: ${{ runner.os }}-r-${{ matrix.config.r }}-1-${{ hashFiles('R-package/DESCRIPTION') }}
-        restore-keys: ${{ runner.os }}-r-${{ matrix.config.r }}-2-
-
-    - name: Install dependencies
-      shell: Rscript {0}
-      run: |
-        install.packages(${{ env.R_PACKAGES }},
-                         repos = 'http://cloud.r-project.org',
-                         dependencies = c('Depends', 'Imports', 'LinkingTo'))
-
-    - name: Run lintr
-      run: |
-        cd R-package
-        R.exe CMD INSTALL .
-        Rscript.exe tests/helper_scripts/run_lint.R
-
-  test-with-R:
-    runs-on: ${{ matrix.config.os }}
-    name: Test R on OS ${{ matrix.config.os }}, R ${{ matrix.config.r }}, Compiler ${{ matrix.config.compiler }}, Build ${{ matrix.config.build }}
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - {os: windows-2016, r: 'release', compiler: 'mingw', build: 'autotools'}
-          - {os: windows-2016, r: 'release', compiler: 'msvc', build: 'cmake'}
-          - {os: windows-2016, r: 'release', compiler: 'mingw', build: 'cmake'}
-    env:
-      R_REMOTES_NO_ERRORS_FROM_WARNINGS: true
-      RSPM: ${{ matrix.config.rspm }}
-
-    steps:
-    - uses: actions/checkout@v2
-      with:
-        submodules: 'true'
-
-    - uses: r-lib/actions/setup-r@master
-      with:
-        r-version: ${{ matrix.config.r }}
-
-    - name: Cache R packages
-      uses: actions/cache@v2
-      with:
-        path: ${{ env.R_LIBS_USER }}
-        key: ${{ runner.os }}-r-${{ matrix.config.r }}-1-${{ hashFiles('R-package/DESCRIPTION') }}
-        restore-keys: ${{ runner.os }}-r-${{ matrix.config.r }}-2-
-
-    - name: Install dependencies
-      shell: Rscript {0}
-      run: |
-        install.packages(${{ env.R_PACKAGES }},
-                         repos = 'http://cloud.r-project.org',
-                         dependencies = c('Depends', 'Imports', 'LinkingTo'))
-
-    - uses: actions/setup-python@v2
-      with:
-        python-version: '3.7'
-        architecture: 'x64'
-
-    - name: Test R
-      run: |
-        python tests/ci_build/test_r_package.py --compiler="${{ matrix.config.compiler }}" --build-tool="${{ matrix.config.build }}"

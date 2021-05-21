@@ -99,7 +99,7 @@ std::vector<T> WeightedSamplingWithoutReplacement(
     auto k = std::log(u) / w;
     keys[i] = k;
   }
-  auto ind = ArgSort<size_t>(keys, std::greater<>{});
+  auto ind = ArgSort<size_t>(Span<float>{keys}, std::greater<>{});
   ind.resize(n);
 
   std::vector<T> results(ind.size());
@@ -143,7 +143,7 @@ class ColumnSampler {
   */
   ColumnSampler() {
     uint32_t seed = common::GlobalRandom()();
-    rabit::Broadcast(&seed, sizeof(seed), 0, "seed");
+    rabit::Broadcast(&seed, sizeof(seed), 0);
     rng_.seed(seed);
   }
 

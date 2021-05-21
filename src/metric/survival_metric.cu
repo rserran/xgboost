@@ -58,15 +58,19 @@ class ElementWiseSurvivalMetricsReduction {
     double residue_sum = 0;
     double weights_sum = 0;
 
+    dmlc::OMPException exc;
 #pragma omp parallel for reduction(+: residue_sum, weights_sum) schedule(static)
     for (omp_ulong i = 0; i < ndata; ++i) {
-      const double wt = h_weights.empty() ? 1.0 : static_cast<double>(h_weights[i]);
-      residue_sum += policy_.EvalRow(
-        static_cast<double>(h_labels_lower_bound[i]),
-        static_cast<double>(h_labels_upper_bound[i]),
-        static_cast<double>(h_preds[i])) * wt;
-      weights_sum += wt;
+      exc.Run([&]() {
+        const double wt = h_weights.empty() ? 1.0 : static_cast<double>(h_weights[i]);
+        residue_sum += policy_.EvalRow(
+          static_cast<double>(h_labels_lower_bound[i]),
+          static_cast<double>(h_labels_upper_bound[i]),
+          static_cast<double>(h_preds[i])) * wt;
+        weights_sum += wt;
+      });
     }
+    exc.Rethrow();
     PackedReduceResult res{residue_sum, weights_sum};
     return res;
   }
@@ -206,10 +210,6 @@ struct EvalEWiseSurvivalBase : public Metric {
   bst_float Eval(const HostDeviceVector<bst_float>& preds,
                  const MetaInfo& info,
                  bool distributed) override {
-    CHECK_NE(info.labels_lower_bound_.Size(), 0U)
-      << "labels_lower_bound cannot be empty";
-    CHECK_NE(info.labels_upper_bound_.Size(), 0U)
-      << "labels_upper_bound cannot be empty";
     CHECK_EQ(preds.Size(), info.labels_lower_bound_.Size());
     CHECK_EQ(preds.Size(), info.labels_upper_bound_.Size());
 

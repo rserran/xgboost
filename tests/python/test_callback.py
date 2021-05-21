@@ -1,5 +1,4 @@
 import xgboost as xgb
-import unittest
 import pytest
 import os
 import testing as tm
@@ -9,9 +8,9 @@ import tempfile
 pytestmark = pytest.mark.skipif(**tm.no_sklearn())
 
 
-class TestCallbacks(unittest.TestCase):
+class TestCallbacks:
     @classmethod
-    def setUpClass(cls):
+    def setup_class(cls):
         from sklearn.datasets import load_breast_cancer
         X, y = load_breast_cancer(return_X_y=True)
         cls.X = X
@@ -22,6 +21,30 @@ class TestCallbacks(unittest.TestCase):
         cls.y_train = y[: split, ...]
         cls.X_valid = X[split:, ...]
         cls.y_valid = y[split:, ...]
+
+    def run_evaluation_monitor(self, D_train, D_valid, rounds, verbose_eval):
+        evals_result = {}
+        with tm.captured_output() as (out, err):
+            xgb.train({'objective': 'binary:logistic',
+                       'eval_metric': 'error'}, D_train,
+                      evals=[(D_train, 'Train'), (D_valid, 'Valid')],
+                      num_boost_round=rounds,
+                      evals_result=evals_result,
+                      verbose_eval=verbose_eval)
+            output: str = out.getvalue().strip()
+
+        if int(verbose_eval) == 1:
+            # Should print each iteration info
+            assert len(output.split('\n')) == rounds
+        elif int(verbose_eval) > rounds:
+            # Should print first and latest iteration info
+            assert len(output.split('\n')) == 2
+        else:
+            # Should print info by each period additionaly to first and latest iteration
+            num_periods = rounds // int(verbose_eval)
+            # Extra information is required for latest iteration
+            is_extra_info_required = num_periods * int(verbose_eval) < (rounds - 1)
+            assert len(output.split('\n')) == 1 + num_periods + int(is_extra_info_required)
 
     def test_evaluation_monitor(self):
         D_train = xgb.DMatrix(self.X_train, self.y_train)
@@ -34,9 +57,13 @@ class TestCallbacks(unittest.TestCase):
                   num_boost_round=rounds,
                   evals_result=evals_result,
                   verbose_eval=True)
-        print('evals_result:', evals_result)
         assert len(evals_result['Train']['error']) == rounds
         assert len(evals_result['Valid']['error']) == rounds
+
+        self.run_evaluation_monitor(D_train, D_valid, rounds, True)
+        self.run_evaluation_monitor(D_train, D_valid, rounds, 2)
+        self.run_evaluation_monitor(D_train, D_valid, rounds, 4)
+        self.run_evaluation_monitor(D_train, D_valid, rounds, rounds + 1)
 
     def test_early_stopping(self):
         D_train = xgb.DMatrix(self.X_train, self.y_train)
@@ -53,6 +80,15 @@ class TestCallbacks(unittest.TestCase):
                             early_stopping_rounds=early_stopping_rounds)
         dump = booster.get_dump(dump_format='json')
         assert len(dump) - booster.best_iteration == early_stopping_rounds + 1
+
+        # No early stopping, best_iteration should be set to last epoch
+        booster = xgb.train({'objective': 'binary:logistic',
+                             'eval_metric': 'error'}, D_train,
+                            evals=[(D_train, 'Train'), (D_valid, 'Valid')],
+                            num_boost_round=10,
+                            evals_result=evals_result,
+                            verbose_eval=True)
+        assert booster.num_boosted_rounds() - 1 == booster.best_iteration
 
     def test_early_stopping_custom_eval(self):
         D_train = xgb.DMatrix(self.X_train, self.y_train)
@@ -90,6 +126,27 @@ class TestCallbacks(unittest.TestCase):
         assert len(dump) - booster.best_iteration == early_stopping_rounds + 1
         assert len(early_stop.stopping_history['Train']['CustomErr']) == len(dump)
 
+        # test tolerance, early stop won't occur with high tolerance.
+        tol = 10
+        rounds = 100
+        early_stop = xgb.callback.EarlyStopping(
+            rounds=early_stopping_rounds,
+            metric_name='CustomErr',
+            data_name='Train',
+            abs_tol=tol
+        )
+        booster = xgb.train(
+            {'objective': 'binary:logistic',
+             'eval_metric': ['error', 'rmse'],
+             'tree_method': 'hist'}, D_train,
+            evals=[(D_train, 'Train'), (D_valid, 'Valid')],
+            feval=tm.eval_error_metric,
+            num_boost_round=rounds,
+            callbacks=[early_stop],
+            verbose_eval=False)
+        # 0 based index
+        assert booster.best_iteration == rounds - 1
+
     def test_early_stopping_skl(self):
         from sklearn.datasets import load_breast_cancer
         X, y = load_breast_cancer(return_X_y=True)
@@ -106,14 +163,71 @@ class TestCallbacks(unittest.TestCase):
         X, y = load_breast_cancer(return_X_y=True)
         cls = xgb.XGBClassifier()
         early_stopping_rounds = 5
+        early_stop = xgb.callback.EarlyStopping(rounds=early_stopping_rounds)
         cls.fit(X, y, eval_set=[(X, y)],
-                early_stopping_rounds=early_stopping_rounds,
-                eval_metric=tm.eval_error_metric)
+                eval_metric=tm.eval_error_metric,
+                callbacks=[early_stop])
         booster = cls.get_booster()
         dump = booster.get_dump(dump_format='json')
         assert len(dump) - booster.best_iteration == early_stopping_rounds + 1
 
+    def test_early_stopping_save_best_model(self):
+        from sklearn.datasets import load_breast_cancer
+        X, y = load_breast_cancer(return_X_y=True)
+        n_estimators = 100
+        cls = xgb.XGBClassifier(n_estimators=n_estimators)
+        early_stopping_rounds = 5
+        early_stop = xgb.callback.EarlyStopping(rounds=early_stopping_rounds,
+                                                save_best=True)
+        cls.fit(X, y, eval_set=[(X, y)],
+                eval_metric=tm.eval_error_metric, callbacks=[early_stop])
+        booster = cls.get_booster()
+        dump = booster.get_dump(dump_format='json')
+        assert len(dump) == booster.best_iteration + 1
+
+        early_stop = xgb.callback.EarlyStopping(rounds=early_stopping_rounds,
+                                                save_best=True)
+        cls = xgb.XGBClassifier(booster='gblinear', n_estimators=10)
+        with pytest.raises(ValueError):
+            cls.fit(X, y, eval_set=[(X, y)], eval_metric=tm.eval_error_metric,
+                    callbacks=[early_stop])
+
+        # No error
+        early_stop = xgb.callback.EarlyStopping(rounds=early_stopping_rounds,
+                                                save_best=False)
+        xgb.XGBClassifier(booster='gblinear', n_estimators=10).fit(
+            X, y, eval_set=[(X, y)],
+            eval_metric=tm.eval_error_metric,
+            callbacks=[early_stop])
+
+    def test_early_stopping_continuation(self):
+        from sklearn.datasets import load_breast_cancer
+        X, y = load_breast_cancer(return_X_y=True)
+        cls = xgb.XGBClassifier()
+        early_stopping_rounds = 5
+        early_stop = xgb.callback.EarlyStopping(rounds=early_stopping_rounds,
+                                                save_best=True)
+        cls.fit(X, y, eval_set=[(X, y)],
+                eval_metric=tm.eval_error_metric,
+                callbacks=[early_stop])
+        booster = cls.get_booster()
+        assert booster.num_boosted_rounds() == booster.best_iteration + 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'model.json')
+            cls.save_model(path)
+            cls = xgb.XGBClassifier()
+            cls.load_model(path)
+            assert cls._Booster is not None
+            early_stopping_rounds = 3
+            cls.fit(X, y, eval_set=[(X, y)], eval_metric=tm.eval_error_metric,
+                    early_stopping_rounds=early_stopping_rounds)
+            booster = cls.get_booster()
+            assert booster.num_boosted_rounds() == \
+                booster.best_iteration + early_stopping_rounds + 1
+
     def run_eta_decay(self, tree_method, deprecated_callback):
+        """Test learning rate scheduler, used by both CPU and GPU tests."""
         if deprecated_callback:
             scheduler = xgb.callback.reset_learning_rate
         else:
@@ -125,17 +239,23 @@ class TestCallbacks(unittest.TestCase):
         watchlist = [(dtest, 'eval'), (dtrain, 'train')]
         num_round = 4
 
+        if deprecated_callback:
+            warning_check = pytest.warns(UserWarning)
+        else:
+            warning_check = tm.noop_context()
+
         # learning_rates as a list
         # init eta with 0 to check whether learning_rates work
         param = {'max_depth': 2, 'eta': 0, 'verbosity': 0,
                  'objective': 'binary:logistic', 'eval_metric': 'error',
                  'tree_method': tree_method}
         evals_result = {}
-        bst = xgb.train(param, dtrain, num_round, watchlist,
-                        callbacks=[scheduler([
-                            0.8, 0.7, 0.6, 0.5
-                        ])],
-                        evals_result=evals_result)
+        with warning_check:
+            bst = xgb.train(param, dtrain, num_round, watchlist,
+                            callbacks=[scheduler([
+                                0.8, 0.7, 0.6, 0.5
+                            ])],
+                            evals_result=evals_result)
         eval_errors_0 = list(map(float, evals_result['eval']['error']))
         assert isinstance(bst, xgb.core.Booster)
         # validation error should decrease, if eta > 0
@@ -146,10 +266,11 @@ class TestCallbacks(unittest.TestCase):
                  'objective': 'binary:logistic', 'eval_metric': 'error',
                  'tree_method': tree_method}
         evals_result = {}
-        bst = xgb.train(param, dtrain, num_round, watchlist,
-                        callbacks=[scheduler(
-                            [0.8, 0.7, 0.6, 0.5])],
-                        evals_result=evals_result)
+        with warning_check:
+            bst = xgb.train(param, dtrain, num_round, watchlist,
+                            callbacks=[scheduler(
+                                [0.8, 0.7, 0.6, 0.5])],
+                            evals_result=evals_result)
         eval_errors_1 = list(map(float, evals_result['eval']['error']))
         assert isinstance(bst, xgb.core.Booster)
         # validation error should decrease, if learning_rate > 0
@@ -161,11 +282,12 @@ class TestCallbacks(unittest.TestCase):
             'eval_metric': 'error', 'tree_method': tree_method
         }
         evals_result = {}
-        bst = xgb.train(param, dtrain, num_round, watchlist,
-                        callbacks=[scheduler(
-                            [0, 0, 0, 0]
-                        )],
-                        evals_result=evals_result)
+        with warning_check:
+            bst = xgb.train(param, dtrain, num_round, watchlist,
+                            callbacks=[scheduler(
+                                [0, 0, 0, 0]
+                            )],
+                            evals_result=evals_result)
         eval_errors_2 = list(map(float, evals_result['eval']['error']))
         assert isinstance(bst, xgb.core.Booster)
         # validation error should not decrease, if eta/learning_rate = 0
@@ -176,11 +298,12 @@ class TestCallbacks(unittest.TestCase):
             return num_boost_round / (ithround + 1)
 
         evals_result = {}
-        bst = xgb.train(param, dtrain, num_round, watchlist,
-                        callbacks=[
-                            scheduler(eta_decay)
-                        ],
-                        evals_result=evals_result)
+        with warning_check:
+            bst = xgb.train(param, dtrain, num_round, watchlist,
+                            callbacks=[
+                                scheduler(eta_decay)
+                            ],
+                            evals_result=evals_result)
         eval_errors_3 = list(map(float, evals_result['eval']['error']))
 
         assert isinstance(bst, xgb.core.Booster)
@@ -190,20 +313,22 @@ class TestCallbacks(unittest.TestCase):
         for i in range(1, len(eval_errors_0)):
             assert eval_errors_3[i] != eval_errors_2[i]
 
-    def test_eta_decay_hist(self):
-        with pytest.deprecated_call():
-            self.run_eta_decay('hist', True)
-        self.run_eta_decay('hist', False)
+        with warning_check:
+            xgb.cv(param, dtrain, num_round, callbacks=[scheduler(eta_decay)])
 
-    def test_eta_decay_approx(self):
-        with pytest.deprecated_call():
-            self.run_eta_decay('approx', True)
-        self.run_eta_decay('approx', False)
-
-    def test_eta_decay_exact(self):
-        with pytest.deprecated_call():
-            self.run_eta_decay('exact', True)
-        self.run_eta_decay('exact', False)
+    @pytest.mark.parametrize(
+        "tree_method, deprecated_callback",
+        [
+            ("hist", True),
+            ("hist", False),
+            ("approx", True),
+            ("approx", False),
+            ("exact", True),
+            ("exact", False),
+        ],
+    )
+    def test_eta_decay(self, tree_method, deprecated_callback):
+        self.run_eta_decay(tree_method, deprecated_callback)
 
     def test_check_point(self):
         from sklearn.datasets import load_breast_cancer
@@ -232,3 +357,16 @@ class TestCallbacks(unittest.TestCase):
             for i in range(1, 10):
                 assert os.path.exists(
                     os.path.join(tmpdir, 'model_' + str(i) + '.pkl'))
+
+    def test_callback_list(self):
+        X, y = tm.get_boston()
+        m = xgb.DMatrix(X, y)
+        callbacks = [xgb.callback.EarlyStopping(rounds=10)]
+        for i in range(4):
+            xgb.train({'objective': 'reg:squarederror',
+                       'eval_metric': 'rmse'}, m,
+                      evals=[(m, 'Train')],
+                      num_boost_round=1,
+                      verbose_eval=True,
+                      callbacks=callbacks)
+        assert len(callbacks) == 1

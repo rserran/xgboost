@@ -1,5 +1,5 @@
 /*!
- * Copyright 2017-2018 by Contributors
+ * Copyright 2017-2021 by Contributors
  * \file updater_quantile_hist.h
  * \brief use quantized feature values to construct a tree
  * \author Philip Cho, Tianqi Chen, Egor Smirnov
@@ -11,13 +11,12 @@
 #include <rabit/rabit.h>
 #include <xgboost/tree_updater.h>
 
-#include <memory>
-#include <vector>
-#include <string>
-#include <queue>
 #include <iomanip>
-#include <unordered_map>
+#include <memory>
+#include <queue>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "xgboost/data.h"
 #include "xgboost/json.h"
@@ -99,7 +98,7 @@ class DistributedHistRowsAdder;
 // training parameters specific to this algorithm
 struct CPUHistMakerTrainParam
     : public XGBoostParameter<CPUHistMakerTrainParam> {
-  bool single_precision_histogram;
+  bool single_precision_histogram = false;
   // declare parameters
   DMLC_DECLARE_PARAMETER(CPUHistMakerTrainParam) {
     DMLC_DECLARE_FIELD(single_precision_histogram).set_default(false).describe(
@@ -119,15 +118,15 @@ class QuantileHistMaker: public TreeUpdater {
               DMatrix* dmat,
               const std::vector<RegTree*>& trees) override;
 
-  bool UpdatePredictionCache(const DMatrix* data,
-                             HostDeviceVector<bst_float>* out_preds) override;
+  bool UpdatePredictionCache(const DMatrix *data,
+                             VectorView<float> out_preds) override;
 
   void LoadConfig(Json const& in) override {
     auto const& config = get<Object const>(in);
     FromJson(config.at("train_param"), &this->param_);
     try {
       FromJson(config.at("cpu_hist_train_param"), &this->hist_maker_param_);
-    } catch (std::out_of_range& e) {
+    } catch (std::out_of_range&) {
       // XGBoost model is from 1.1.x, so 'cpu_hist_train_param' is missing.
       // We add this compatibility check because it's just recently that we (developers) began
       // persuade R users away from using saveRDS() for model serialization. Hopefully, one day,
@@ -191,7 +190,7 @@ class QuantileHistMaker: public TreeUpdater {
     /*! \brief current best solution */
     SplitEntry best;
     // constructor
-    explicit NodeEntry(const TrainParam& param)
+    explicit NodeEntry(const TrainParam&)
         : root_gain(0.0f), weight(0.0f) {}
   };
   // actual builder that runs the algorithm
@@ -229,7 +228,8 @@ class QuantileHistMaker: public TreeUpdater {
       if (param_.enable_feature_grouping > 0) {
         hist_builder_.BuildBlockHist(gpair, row_indices, gmatb, hist);
       } else {
-        hist_builder_.BuildHist(gpair, row_indices, gmat, hist, data_layout_ != kSparseData);
+        hist_builder_.BuildHist(gpair, row_indices, gmat, hist,
+                                data_layout_ != DataLayout::kSparseData);
       }
     }
 
@@ -242,7 +242,8 @@ class QuantileHistMaker: public TreeUpdater {
     }
 
     bool UpdatePredictionCache(const DMatrix* data,
-                               HostDeviceVector<bst_float>* p_out_preds);
+                               VectorView<float> out_preds);
+
     void SetHistSynchronizer(HistSynchronizer<GradientSumT>* sync);
     void SetHistRowsAdder(HistRowsAdder<GradientSumT>* adder);
 
@@ -403,6 +404,10 @@ class QuantileHistMaker: public TreeUpdater {
     common::ColumnSampler column_sampler_;
     // the internal row sets
     RowSetCollection row_set_collection_;
+    // tree rows that were not used for current training
+    std::vector<size_t> unused_rows_;
+    // feature vectors for subsampled prediction
+    std::vector<RegTree::FVec> feat_vecs_;
     // the temp space for split
     std::vector<RowSetCollection::Split> row_split_tloc_;
     std::vector<SplitEntry> best_split_tloc_;
@@ -416,8 +421,6 @@ class QuantileHistMaker: public TreeUpdater {
     /*! \brief feature with least # of bins. to be used for dense specialization
                of InitNewNode() */
     uint32_t fid_least_bins_;
-    /*! \brief local prediction cache; maps node id to leaf value */
-    std::vector<float> leaf_value_cache_;
 
     GHistBuilder<GradientSumT> hist_builder_;
     std::unique_ptr<TreeUpdater> pruner_;
@@ -429,6 +432,7 @@ class QuantileHistMaker: public TreeUpdater {
     // back pointers to tree and data matrix
     const RegTree* p_last_tree_;
     DMatrix const* const p_last_fmat_;
+    DMatrix* p_last_fmat_mutable_;
 
     using ExpandQueue =
        std::priority_queue<ExpandEntry, std::vector<ExpandEntry>,
@@ -437,12 +441,12 @@ class QuantileHistMaker: public TreeUpdater {
     std::unique_ptr<ExpandQueue> qexpand_loss_guided_;
     std::vector<ExpandEntry> qexpand_depth_wise_;
     // key is the node id which should be calculated by Subtraction Trick, value is the node which
-    // provides the evidence for substracts
+    // provides the evidence for subtraction
     std::vector<ExpandEntry> nodes_for_subtraction_trick_;
     // list of nodes whose histograms would be built explicitly.
     std::vector<ExpandEntry> nodes_for_explicit_hist_build_;
 
-    enum DataLayout { kDenseDataZeroBased, kDenseDataOneBased, kSparseData };
+    enum class DataLayout { kDenseDataZeroBased, kDenseDataOneBased, kSparseData };
     DataLayout data_layout_;
 
     common::Monitor builder_monitor_;

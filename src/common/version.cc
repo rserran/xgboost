@@ -16,7 +16,7 @@ namespace xgboost {
 
 const Version::TripletT Version::kInvalid {-1, -1, -1};
 
-Version::TripletT Version::Load(Json const& in, bool check) {
+Version::TripletT Version::Load(Json const& in) {
   if (get<Object const>(in).find("version") == get<Object const>(in).cend()) {
     return kInvalid;
   }
@@ -36,7 +36,7 @@ Version::TripletT Version::Load(Json const& in, bool check) {
 
 Version::TripletT Version::Load(dmlc::Stream* fi) {
   XGBoostVersionT major{0}, minor{0}, patch{0};
-  // This is only used in DMatrix serialization, so doesn't break model compability.
+  // This is only used in DMatrix serialization, so doesn't break model compatibility.
   std::string msg { "Incorrect version format found in binary file.  "
                     "Binary file from XGBoost < 1.0.0 is no longer supported. "
                     "Please generate it again." };

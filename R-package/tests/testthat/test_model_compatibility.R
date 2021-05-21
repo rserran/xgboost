@@ -39,6 +39,10 @@ run_booster_check <- function (booster, name) {
     testthat::expect_equal(config$learner$learner_train_param$objective, 'multi:softmax')
     testthat::expect_equal(as.numeric(config$learner$learner_model_param$num_class),
                            metadata$kClasses)
+  } else if (name == 'logitraw') {
+    testthat::expect_equal(get_num_tree(booster), metadata$kForests * metadata$kRounds)
+    testthat::expect_equal(as.numeric(config$learner$learner_model_param$num_class), 0)
+    testthat::expect_equal(config$learner$learner_train_param$objective, 'binary:logitraw')
   } else if (name == 'logit') {
     testthat::expect_equal(get_num_tree(booster), metadata$kForests * metadata$kRounds)
     testthat::expect_equal(as.numeric(config$learner$learner_model_param$num_class), 0)
@@ -79,6 +83,7 @@ test_that("Models from previous versions of XGBoost can be loaded", {
       if (is_rds && compareVersion(model_xgb_ver, '1.1.1.1') < 0) {
         booster <- readRDS(model_file)
         expect_warning(predict(booster, newdata = pred_data))
+        booster <- readRDS(model_file)
         expect_warning(run_booster_check(booster, name))
       } else {
         if (is_rds) {

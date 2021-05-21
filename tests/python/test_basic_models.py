@@ -1,6 +1,5 @@
 import numpy as np
 import xgboost as xgb
-import unittest
 import os
 import json
 import testing as tm
@@ -29,7 +28,7 @@ def json_model(model_path, parameters):
     return model
 
 
-class TestModels(unittest.TestCase):
+class TestModels:
     def test_glm(self):
         param = {'verbosity': 0, 'objective': 'binary:logistic',
                  'booster': 'gblinear', 'alpha': 0.0001, 'lambda': 1,
@@ -125,6 +124,20 @@ class TestModels(unittest.TestCase):
         predt_2 = bst.predict(dtrain)
         assert np.all(np.abs(predt_2 - predt_1) < 1e-6)
 
+    def test_boost_from_existing_model(self):
+        X = xgb.DMatrix(dpath + 'agaricus.txt.train')
+        booster = xgb.train({'tree_method': 'hist'}, X, num_boost_round=4)
+        assert booster.num_boosted_rounds() == 4
+        booster = xgb.train({'tree_method': 'hist'}, X, num_boost_round=4,
+                            xgb_model=booster)
+        assert booster.num_boosted_rounds() == 8
+        booster = xgb.train({'updater': 'prune', 'process_type': 'update'}, X,
+                            num_boost_round=4, xgb_model=booster)
+        # Trees are moved for update, the rounds is reduced.  This test is
+        # written for being compatible with current code (1.0.0).  If the
+        # behaviour is considered sub-optimal, feel free to change.
+        assert booster.num_boosted_rounds() == 4
+
     def test_custom_objective(self):
         param = {'max_depth': 2, 'eta': 1, 'objective': 'reg:logistic'}
         watchlist = [(dtest, 'eval'), (dtrain, 'train')]
@@ -204,17 +217,16 @@ class TestModels(unittest.TestCase):
         X = np.random.random((10, 3))
         y = np.random.randint(2, size=(10,))
 
-        dm1 = xgb.DMatrix(X, y)
-        dm2 = xgb.DMatrix(X, y, feature_names=("a", "b", "c"))
+        dm1 = xgb.DMatrix(X, y, feature_names=("a", "b", "c"))
+        dm2 = xgb.DMatrix(X, y)
 
         bst = xgb.train([], dm1)
         bst.predict(dm1)  # success
-        self.assertRaises(ValueError, bst.predict, dm2)
+        with pytest.raises(ValueError):
+            bst.predict(dm2)
         bst.predict(dm1)  # success
 
         bst = xgb.train([], dm2)
-        bst.predict(dm2)  # success
-        self.assertRaises(ValueError, bst.predict, dm1)
         bst.predict(dm2)  # success
 
     def test_model_binary_io(self):
@@ -325,3 +337,149 @@ class TestModels(unittest.TestCase):
         parameters = {'tree_method': 'hist', 'booster': 'dart',
                       'objective': 'multi:softmax'}
         validate_model(parameters)
+
+    @pytest.mark.skipif(**tm.no_sklearn())
+    def test_attributes(self):
+        from sklearn.datasets import load_iris
+        X, y = load_iris(return_X_y=True)
+        cls = xgb.XGBClassifier(n_estimators=2)
+        cls.fit(X, y, early_stopping_rounds=1, eval_set=[(X, y)])
+        assert cls.get_booster().best_ntree_limit == 2
+        assert cls.best_ntree_limit == cls.get_booster().best_ntree_limit
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "cls.json")
+            cls.save_model(path)
+
+            cls = xgb.XGBClassifier(n_estimators=2)
+            cls.load_model(path)
+            assert cls.get_booster().best_ntree_limit == 2
+            assert cls.best_ntree_limit == cls.get_booster().best_ntree_limit
+
+    @pytest.mark.skipif(**tm.no_sklearn())
+    @pytest.mark.parametrize('booster', ['gbtree', 'dart'])
+    def test_slice(self, booster):
+        from sklearn.datasets import make_classification
+        num_classes = 3
+        X, y = make_classification(n_samples=1000, n_informative=5,
+                                   n_classes=num_classes)
+        dtrain = xgb.DMatrix(data=X, label=y)
+        num_parallel_tree = 4
+        num_boost_round = 16
+        total_trees = num_parallel_tree * num_classes * num_boost_round
+        booster = xgb.train({
+            'num_parallel_tree': 4, 'subsample': 0.5, 'num_class': 3, 'booster': booster,
+            'objective': 'multi:softprob'},
+                            num_boost_round=num_boost_round, dtrain=dtrain)
+        assert len(booster.get_dump()) == total_trees
+        beg = 3
+        end = 7
+        sliced: xgb.Booster = booster[beg: end]
+
+        sliced_trees = (end - beg) * num_parallel_tree * num_classes
+        assert sliced_trees == len(sliced.get_dump())
+
+        sliced_trees = sliced_trees // 2
+        sliced: xgb.Booster = booster[beg: end: 2]
+        assert sliced_trees == len(sliced.get_dump())
+
+        sliced: xgb.Booster = booster[beg: ...]
+        sliced_trees = (num_boost_round - beg) * num_parallel_tree * num_classes
+        assert sliced_trees == len(sliced.get_dump())
+
+        sliced: xgb.Booster = booster[beg:]
+        sliced_trees = (num_boost_round - beg) * num_parallel_tree * num_classes
+        assert sliced_trees == len(sliced.get_dump())
+
+        sliced: xgb.Booster = booster[:end]
+        sliced_trees = end * num_parallel_tree * num_classes
+        assert sliced_trees == len(sliced.get_dump())
+
+        sliced: xgb.Booster = booster[...:end]
+        sliced_trees = end * num_parallel_tree * num_classes
+        assert sliced_trees == len(sliced.get_dump())
+
+        with pytest.raises(ValueError, match=r'>= 0'):
+            booster[-1: 0]
+
+        # we do not accept empty slice.
+        with pytest.raises(ValueError):
+            booster[1:1]
+        # stop can not be smaller than begin
+        with pytest.raises(ValueError, match=r'Invalid.*'):
+            booster[3:0]
+        with pytest.raises(ValueError, match=r'Invalid.*'):
+            booster[3:-1]
+        # negative step is not supported.
+        with pytest.raises(ValueError, match=r'.*>= 1.*'):
+            booster[0:2:-1]
+        # step can not be 0.
+        with pytest.raises(ValueError, match=r'.*>= 1.*'):
+            booster[0:2:0]
+
+        trees = [_ for _ in booster]
+        assert len(trees) == num_boost_round
+
+        with pytest.raises(TypeError):
+            booster["wrong type"]
+        with pytest.raises(IndexError):
+            booster[:num_boost_round+1]
+        with pytest.raises(ValueError):
+            booster[1, 2]       # too many dims
+        # setitem is not implemented as model is immutable during slicing.
+        with pytest.raises(TypeError):
+            booster[...:end] = booster
+
+        sliced_0 = booster[1:3]
+        np.testing.assert_allclose(
+            booster.predict(dtrain, iteration_range=(1, 3)), sliced_0.predict(dtrain)
+        )
+        sliced_1 = booster[3:7]
+        np.testing.assert_allclose(
+            booster.predict(dtrain, iteration_range=(3, 7)), sliced_1.predict(dtrain)
+        )
+
+        predt_0 = sliced_0.predict(dtrain, output_margin=True)
+        predt_1 = sliced_1.predict(dtrain, output_margin=True)
+
+        merged = predt_0 + predt_1 - 0.5  # base score.
+        single = booster[1:7].predict(dtrain, output_margin=True)
+        np.testing.assert_allclose(merged, single, atol=1e-6)
+
+        sliced_0 = booster[1:7:2]  # 1,3,5
+        sliced_1 = booster[2:8:2]  # 2,4,6
+
+        predt_0 = sliced_0.predict(dtrain, output_margin=True)
+        predt_1 = sliced_1.predict(dtrain, output_margin=True)
+
+        merged = predt_0 + predt_1 - 0.5
+        single = booster[1:7].predict(dtrain, output_margin=True)
+        np.testing.assert_allclose(merged, single, atol=1e-6)
+
+    @pytest.mark.skipif(**tm.no_pandas())
+    def test_feature_info(self):
+        import pandas as pd
+        rows = 100
+        cols = 10
+        X = rng.randn(rows, cols)
+        y = rng.randn(rows)
+        feature_names = ["test_feature_" + str(i) for i in range(cols)]
+        X_pd = pd.DataFrame(X, columns=feature_names)
+        X_pd.iloc[:, 3] = X_pd.iloc[:, 3].astype(np.int)
+
+        Xy = xgb.DMatrix(X_pd, y)
+        assert Xy.feature_types[3] == "int"
+        booster = xgb.train({}, dtrain=Xy, num_boost_round=1)
+
+        assert booster.feature_names == Xy.feature_names
+        assert booster.feature_names == feature_names
+        assert booster.feature_types == Xy.feature_types
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = tmpdir + "model.json"
+            booster.save_model(path)
+            booster = xgb.Booster()
+            booster.load_model(path)
+
+            assert booster.feature_names == Xy.feature_names
+            assert booster.feature_types == Xy.feature_types

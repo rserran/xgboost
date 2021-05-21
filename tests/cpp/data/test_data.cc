@@ -11,9 +11,9 @@ namespace xgboost {
 TEST(SparsePage, PushCSC) {
   std::vector<bst_row_t> offset {0};
   std::vector<Entry> data;
-  SparsePage page;
-  page.offset.HostVector() = offset;
-  page.data.HostVector() = data;
+  SparsePage batch;
+  batch.offset.HostVector() = offset;
+  batch.data.HostVector() = data;
 
   offset = {0, 1, 4};
   for (size_t i = 0; i < offset.back(); ++i) {
@@ -24,33 +24,34 @@ TEST(SparsePage, PushCSC) {
   other.offset.HostVector() = offset;
   other.data.HostVector() = data;
 
-  page.PushCSC(other);
+  batch.PushCSC(other);
 
-  ASSERT_EQ(page.offset.HostVector().size(), offset.size());
-  ASSERT_EQ(page.data.HostVector().size(), data.size());
+  ASSERT_EQ(batch.offset.HostVector().size(), offset.size());
+  ASSERT_EQ(batch.data.HostVector().size(), data.size());
   for (size_t i = 0; i < offset.size(); ++i) {
-    ASSERT_EQ(page.offset.HostVector()[i], offset[i]);
+    ASSERT_EQ(batch.offset.HostVector()[i], offset[i]);
   }
   for (size_t i = 0; i < data.size(); ++i) {
-    ASSERT_EQ(page.data.HostVector()[i].index, data[i].index);
+    ASSERT_EQ(batch.data.HostVector()[i].index, data[i].index);
   }
 
-  page.PushCSC(other);
-  ASSERT_EQ(page.offset.HostVector().size(), offset.size());
-  ASSERT_EQ(page.data.Size(), data.size() * 2);
+  batch.PushCSC(other);
+  ASSERT_EQ(batch.offset.HostVector().size(), offset.size());
+  ASSERT_EQ(batch.data.Size(), data.size() * 2);
 
   for (size_t i = 0; i < offset.size(); ++i) {
-    ASSERT_EQ(page.offset.HostVector()[i], offset[i] * 2);
+    ASSERT_EQ(batch.offset.HostVector()[i], offset[i] * 2);
   }
 
+  auto page = batch.GetView();
   auto inst = page[0];
-  ASSERT_EQ(inst.size(), 2);
+  ASSERT_EQ(inst.size(), 2ul);
   for (auto entry : inst) {
-    ASSERT_EQ(entry.index, 0);
+    ASSERT_EQ(entry.index, 0u);
   }
 
   inst = page[1];
-  ASSERT_EQ(inst.size(), 6);
+  ASSERT_EQ(inst.size(), 6ul);
   std::vector<size_t> indices_sol {1, 2, 3};
   for (size_t i = 0; i < inst.size(); ++i) {
     ASSERT_EQ(inst[i].index, indices_sol[i % 3]);
@@ -58,15 +59,12 @@ TEST(SparsePage, PushCSC) {
 }
 
 TEST(SparsePage, PushCSCAfterTranspose) {
-#if defined(__APPLE__)
-  LOG(WARNING) << "FIXME(trivialfis): Skipping `PushCSCAfterTranspose' for APPLE.";
-  return;
-#endif
   dmlc::TemporaryDirectory tmpdir;
   std::string filename = tmpdir.path + "/big.libsvm";
-  const int n_entries = 9;
+  size_t constexpr kPageSize = 1024, kEntriesPerCol = 3;
+  size_t constexpr kEntries = kPageSize * kEntriesPerCol * 2;
   std::unique_ptr<DMatrix> dmat =
-      CreateSparsePageDMatrix(n_entries, 64UL, filename);
+      CreateSparsePageDMatrix(kEntries, 64UL, filename);
   const int ncols = dmat->Info().num_col_;
   SparsePage page; // Consolidated sparse page
   for (const auto &batch : dmat->GetBatches<xgboost::SparsePage>()) {
@@ -76,12 +74,12 @@ TEST(SparsePage, PushCSCAfterTranspose) {
   }
 
   // Make sure that the final sparse page has the right number of entries
-  ASSERT_EQ(n_entries, page.data.Size());
+  ASSERT_EQ(kEntries, page.data.Size());
 
   // The feature value for a feature in each row should be identical, as that is
   // how the dmatrix has been created
   for (size_t i = 0; i < page.Size(); ++i) {
-    auto inst = page[i];
+    auto inst = page.GetView()[i];
     for (size_t j = 1; j < inst.size(); ++j) {
       ASSERT_EQ(inst[0].fvalue, inst[j].fvalue);
     }

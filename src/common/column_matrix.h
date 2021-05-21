@@ -43,7 +43,7 @@ class Column {
 
   BinIdxType GetFeatureBinIdx(size_t idx) const { return index_[idx]; }
 
-  const uint32_t GetBaseIdx() const { return index_base_; }
+  uint32_t GetBaseIdx() const { return index_base_; }
 
   common::Span<const BinIdxType> GetFeatureBinIdxPtr() const { return index_; }
 
@@ -179,12 +179,12 @@ class ColumnMatrix {
        but for ColumnMatrix we still have a chance to reduce the memory consumption */
     } else {
       if (bins_type_size_ == kUint8BinsTypeSize) {
-          SetIndex<uint8_t>(gmat.index.data<uint32_t>(), gmat, nrow, nfeature);
+          SetIndex<uint8_t>(gmat.index.data<uint32_t>(), gmat, nfeature);
       } else if (bins_type_size_ == kUint16BinsTypeSize) {
-          SetIndex<uint16_t>(gmat.index.data<uint32_t>(), gmat, nrow, nfeature);
+          SetIndex<uint16_t>(gmat.index.data<uint32_t>(), gmat, nfeature);
       } else {
           CHECK_EQ(bins_type_size_, kUint32BinsTypeSize);
-          SetIndex<uint32_t>(gmat.index.data<uint32_t>(), gmat, nrow, nfeature);
+          SetIndex<uint32_t>(gmat.index.data<uint32_t>(), gmat, nfeature);
       }
     }
   }
@@ -230,8 +230,7 @@ class ColumnMatrix {
     /* missing values make sense only for column with type kDenseColumn,
        and if no missing values were observed it could be handled much faster. */
     if (noMissingValues) {
-#pragma omp parallel for num_threads(omp_get_max_threads())
-      for (omp_ulong rid = 0; rid < nrow; ++rid) {
+      ParallelFor(omp_ulong(nrow), [&](omp_ulong rid) {
         const size_t ibegin = rid*nfeature;
         const size_t iend = (rid+1)*nfeature;
         size_t j = 0;
@@ -239,7 +238,7 @@ class ColumnMatrix {
             const size_t idx = feature_offsets_[j];
             local_index[idx + rid] = index[i];
         }
-      }
+      });
     } else {
       /* to handle rows in all batches, sum of all batch sizes equal to gmat.row_ptr.size() - 1 */
       size_t rbegin = 0;
@@ -271,7 +270,7 @@ class ColumnMatrix {
 
   template<typename T>
   inline void SetIndex(uint32_t* index, const GHistIndexMatrix& gmat,
-                       const size_t nrow, const size_t nfeature) {
+                       const size_t nfeature) {
     std::vector<size_t> num_nonzeros;
     num_nonzeros.resize(nfeature);
     std::fill(num_nonzeros.begin(), num_nonzeros.end(), 0);
@@ -311,18 +310,18 @@ class ColumnMatrix {
       rbegin += batch.Size();
     }
   }
-  const BinTypeSize GetTypeSize() const {
+  BinTypeSize GetTypeSize() const {
     return bins_type_size_;
   }
 
   // This is just an utility function
-  const bool NoMissingValues(const size_t n_elements,
+  bool NoMissingValues(const size_t n_elements,
                              const size_t n_row, const size_t n_features) {
     return n_elements == n_features * n_row;
   }
 
   // And this returns part of state
-  const bool AnyMissing() const {
+  bool AnyMissing() const {
     return any_missing_;
   }
 

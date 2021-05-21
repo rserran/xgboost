@@ -45,6 +45,7 @@ namely prediction and labels.  For implementing ``SLE``, we define:
 
     import numpy as np
     import xgboost as xgb
+    from typing import Tuple
 
     def gradient(predt: np.ndarray, dtrain: xgb.DMatrix) -> np.ndarray:
         '''Compute the gradient squared log error.'''
@@ -142,6 +143,6 @@ For fully reproducible source code and comparison plots, see `custom_rmsle.py <h
 Multi-class objective function
 ******************************
 
-A similiar demo for multi-class objective funtion is also available, see
+A similar demo for multi-class objective function is also available, see
 `demo/guide-python/custom_softmax.py <https://github.com/dmlc/xgboost/tree/master/demo/guide-python/custom_softmax.py>`_
 for details.

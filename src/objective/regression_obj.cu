@@ -19,6 +19,7 @@
 
 #include "../common/transform.h"
 #include "../common/common.h"
+#include "../common/threading_utils.h"
 #include "./regression_loss.h"
 
 
@@ -52,8 +53,7 @@ class RegLossObj : public ObjFunction {
   }
 
   void GetGradient(const HostDeviceVector<bst_float>& preds,
-                   const MetaInfo &info,
-                   int iter,
+                   const MetaInfo &info, int,
                    HostDeviceVector<GradientPair>* out_gpair) override {
     CHECK_EQ(preds.Size(), info.labels_.Size())
         << " " << "labels are not correctly provided"
@@ -114,7 +114,7 @@ class RegLossObj : public ObjFunction {
         [] XGBOOST_DEVICE(size_t _idx, common::Span<float> _preds) {
           _preds[_idx] = Loss::PredTransform(_preds[_idx]);
         }, common::Range{0, static_cast<int64_t>(io_preds->Size())},
-        tparam_->gpu_id)
+        io_preds->DeviceIdx())
         .Eval(io_preds);
   }
 
@@ -191,8 +191,7 @@ class PoissonRegression : public ObjFunction {
   }
 
   void GetGradient(const HostDeviceVector<bst_float>& preds,
-                   const MetaInfo &info,
-                   int iter,
+                   const MetaInfo &info, int,
                    HostDeviceVector<GradientPair> *out_gpair) override {
     CHECK_NE(info.labels_.Size(), 0U) << "label set cannot be empty";
     CHECK_EQ(preds.Size(), info.labels_.Size()) << "labels are not correctly provided";
@@ -240,7 +239,7 @@ class PoissonRegression : public ObjFunction {
           _preds[_idx] = expf(_preds[_idx]);
         },
         common::Range{0, static_cast<int64_t>(io_preds->Size())},
-        tparam_->gpu_id)
+        io_preds->DeviceIdx())
         .Eval(io_preds);
   }
   void EvalTransform(HostDeviceVector<bst_float> *io_preds) override {
@@ -272,7 +271,7 @@ class PoissonRegression : public ObjFunction {
 DMLC_REGISTER_PARAMETER(PoissonRegressionParam);
 
 XGBOOST_REGISTER_OBJECTIVE(PoissonRegression, "count:poisson")
-.describe("Possion regression for count data.")
+.describe("Poisson regression for count data.")
 .set_body([]() { return new PoissonRegression(); });
 
 
@@ -280,11 +279,10 @@ XGBOOST_REGISTER_OBJECTIVE(PoissonRegression, "count:poisson")
 class CoxRegression : public ObjFunction {
  public:
   void Configure(
-      const std::vector<std::pair<std::string, std::string> > &args) override {}
+      const std::vector<std::pair<std::string, std::string> >&) override {}
 
   void GetGradient(const HostDeviceVector<bst_float>& preds,
-                   const MetaInfo &info,
-                   int iter,
+                   const MetaInfo &info, int,
                    HostDeviceVector<GradientPair> *out_gpair) override {
     CHECK_NE(info.labels_.Size(), 0U) << "label set cannot be empty";
     CHECK_EQ(preds.Size(), info.labels_.Size()) << "labels are not correctly provided";
@@ -348,10 +346,9 @@ class CoxRegression : public ObjFunction {
   void PredTransform(HostDeviceVector<bst_float> *io_preds) override {
     std::vector<bst_float> &preds = io_preds->HostVector();
     const long ndata = static_cast<long>(preds.size()); // NOLINT(*)
-#pragma omp parallel for schedule(static)
-    for (long j = 0; j < ndata; ++j) {  // NOLINT(*)
+    common::ParallelFor(ndata, [&](long j) { // NOLINT(*)
       preds[j] = std::exp(preds[j]);
-    }
+    });
   }
   void EvalTransform(HostDeviceVector<bst_float> *io_preds) override {
     PredTransform(io_preds);
@@ -379,11 +376,10 @@ XGBOOST_REGISTER_OBJECTIVE(CoxRegression, "survival:cox")
 class GammaRegression : public ObjFunction {
  public:
   void Configure(
-      const std::vector<std::pair<std::string, std::string> > &args) override {}
+      const std::vector<std::pair<std::string, std::string> >&) override {}
 
   void GetGradient(const HostDeviceVector<bst_float> &preds,
-                   const MetaInfo &info,
-                   int iter,
+                   const MetaInfo &info, int,
                    HostDeviceVector<GradientPair> *out_gpair) override {
     CHECK_NE(info.labels_.Size(), 0U) << "label set cannot be empty";
     CHECK_EQ(preds.Size(), info.labels_.Size()) << "labels are not correctly provided";
@@ -408,7 +404,7 @@ class GammaRegression : public ObjFunction {
           bst_float p = _preds[_idx];
           bst_float w = is_null_weight ? 1.0f : _weights[_idx];
           bst_float y = _labels[_idx];
-          if (y < 0.0f) {
+          if (y <= 0.0f) {
             _label_correct[0] = 0;
           }
           _out_gpair[_idx] = GradientPair((1 - y / expf(p)) * w, y / expf(p) * w);
@@ -420,7 +416,7 @@ class GammaRegression : public ObjFunction {
     std::vector<int>& label_correct_h = label_correct_.HostVector();
     for (auto const flag : label_correct_h) {
       if (flag == 0) {
-        LOG(FATAL) << "GammaRegression: label must be nonnegative";
+        LOG(FATAL) << "GammaRegression: label must be positive.";
       }
     }
   }
@@ -430,7 +426,7 @@ class GammaRegression : public ObjFunction {
           _preds[_idx] = expf(_preds[_idx]);
         },
         common::Range{0, static_cast<int64_t>(io_preds->Size())},
-        tparam_->gpu_id)
+        io_preds->DeviceIdx())
         .Eval(io_preds);
   }
   void EvalTransform(HostDeviceVector<bst_float> *io_preds) override {
@@ -479,8 +475,7 @@ class TweedieRegression : public ObjFunction {
   }
 
   void GetGradient(const HostDeviceVector<bst_float>& preds,
-                   const MetaInfo &info,
-                   int iter,
+                   const MetaInfo &info, int,
                    HostDeviceVector<GradientPair> *out_gpair) override {
     CHECK_NE(info.labels_.Size(), 0U) << "label set cannot be empty";
     CHECK_EQ(preds.Size(), info.labels_.Size()) << "labels are not correctly provided";
@@ -534,7 +529,7 @@ class TweedieRegression : public ObjFunction {
           _preds[_idx] = expf(_preds[_idx]);
         },
         common::Range{0, static_cast<int64_t>(io_preds->Size())},
-        tparam_->gpu_id)
+        io_preds->DeviceIdx())
         .Eval(io_preds);
   }
 

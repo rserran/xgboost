@@ -5,6 +5,12 @@ list(REMOVE_ITEM CPU_SOURCES ${xgboost_SOURCE_DIR}/src/cli_main.cc)
 # Object library is necessary for jvm-package, which creates its own shared library.
 add_library(objxgboost OBJECT)
 target_sources(objxgboost PRIVATE ${CPU_SOURCES})
+# Skip files with factory object
+set_source_files_properties(
+  predictor/predictor.cc gbm/gbm.cc tree/tree_updater.cc metric/metric.cc objective/objective.cc
+  PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+target_sources(objxgboost PRIVATE ${RABIT_SOURCES})
+
 if (USE_CUDA)
   file(GLOB_RECURSE CUDA_SOURCES *.cu *.cuh)
   target_sources(objxgboost PRIVATE ${CUDA_SOURCES})
@@ -71,6 +77,11 @@ if (USE_OPENMP OR USE_CUDA)  # CUDA requires OpenMP
   find_package(OpenMP REQUIRED)
   target_link_libraries(objxgboost PUBLIC OpenMP::OpenMP_CXX)
 endif (USE_OPENMP OR USE_CUDA)
+
+if (RABIT_BUILD_MPI)
+  find_package(MPI REQUIRED)
+  target_link_libraries(objxgboost PUBLIC MPI::MPI_CXX)
+endif (RABIT_BUILD_MPI)
 
 # For MSVC: Call msvc_use_static_runtime() once again to completely
 # replace /MD with /MT. See https://github.com/dmlc/xgboost/issues/4462

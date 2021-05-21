@@ -60,9 +60,9 @@ This is a list of short codes introducing different functionalities of xgboost p
 Most of examples in this section are based on CLI or python version.
 However, the parameter settings can be applied to all versions
 
-- [Binary classification](binary_classification)
+- [Binary classification](CLI/binary_classification)
 - [Multiclass classification](multiclass_classification)
-- [Regression](regression)
+- [Regression](CLI/regression)
 - [Learning to Rank](rank)
 
 ### Benchmarks
@@ -103,12 +103,14 @@ Please send pull requests if you find ones that are missing here.
 - Darius Barušauskas, 1st place winner in [Predicting Red Hat Business Value](https://www.kaggle.com/c/predicting-red-hat-business-value). Link to [interview](https://medium.com/kaggle-blog/red-hat-business-value-competition-1st-place-winners-interview-darius-baru%C5%A1auskas-646692a2841b). Link to [discussion](https://www.kaggle.com/c/predicting-red-hat-business-value/discussion/23786)
 - David Austin, Weimin Wang, 1st place winner in [Iceberg-classifier-challenge](https://www.kaggle.com/c/statoil-iceberg-classifier-challenge/leaderboard) Link to [discussion](https://www.kaggle.com/c/statoil-iceberg-classifier-challenge/discussion/48241)
 - Kazuki Onodera, Kazuki Fujikawa, 2nd place winner in [OpenVaccine: COVID-19 mRNA Vaccine Degradation Prediction](https://www.kaggle.com/c/stanford-covid-vaccine/overview) Link to [Discussion](https://www.kaggle.com/c/stanford-covid-vaccine/discussion/189709)
--
+- Prarthana Bhat, 2nd place winner in [DYD Competition](https://datahack.analyticsvidhya.com/contest/date-your-data/). Link to [Solution](https://github.com/analyticsvidhya/DateYourData/blob/master/Prathna_Bhat_Model.R).
+
 ## Talks
 - [XGBoost: A Scalable Tree Boosting System](http://datascience.la/xgboost-workshop-and-meetup-talk-with-tianqi-chen/) (video+slides) by Tianqi Chen at the Los Angeles Data Science meetup
 
 ## Tutorials
 
+- [XGBoost Training with Dask, using Saturn Cloud](https://www.saturncloud.io/docs/tutorials/xgboost/)
 - [Machine Learning with XGBoost on Qubole Spark Cluster](https://www.qubole.com/blog/machine-learning-xgboost-qubole-spark-cluster/)
 - [XGBoost Official RMarkdown Tutorials](https://xgboost.readthedocs.org/en/latest/R-package/index.html#tutorials)
 - [An Introduction to XGBoost R Package](http://dmlc.ml/rstats/2016/03/10/xgboost.html) by Tong He
@@ -118,7 +120,7 @@ Please send pull requests if you find ones that are missing here.
 - [XGBoost - eXtreme Gradient Boosting](http://www.slideshare.net/ShangxuanZhang/xgboost) by Tong He
 - [How to use XGBoost algorithm in R in easy steps](http://www.analyticsvidhya.com/blog/2016/01/xgboost-algorithm-easy-steps/) by TAVISH SRIVASTAVA ([Chinese Translation 中文翻译](https://segmentfault.com/a/1190000004421821) by [HarryZhu](https://segmentfault.com/u/harryprince))
 - [Kaggle Solution: What’s Cooking ? (Text Mining Competition)](http://www.analyticsvidhya.com/blog/2015/12/kaggle-solution-cooking-text-mining-competition/) by MANISH SARASWAT
-- Better Optimization with Repeated Cross Validation and the XGBoost model - Machine Learning with R) by Manuel Amunategui ([Youtube Link](https://www.youtube.com/watch?v=Og7CGAfSr_Y)) ([Github Link](https://github.com/amunategui/BetterCrossValidation))
+- Better Optimization with Repeated Cross Validation and the XGBoost model - Machine Learning with R) by Manuel Amunategui ([Youtube Link](https://www.youtube.com/watch?v=Og7CGAfSr_Y)) ([GitHub Link](https://github.com/amunategui/BetterCrossValidation))
 - [XGBoost Rossman Parameter Tuning](https://www.kaggle.com/khozzy/rossmann-store-sales/xgboost-parameter-tuning-template/run/90168/notebook) by [Norbert Kozlowski](https://www.kaggle.com/khozzy)
 - [Featurizing log data before XGBoost](http://www.slideshare.net/DataRobot/featurizing-log-data-before-xgboost) by Xavier Conort, Owen Zhang etc
 - [West Nile Virus Competition Benchmarks & Tutorials](http://blog.kaggle.com/2015/07/21/west-nile-virus-competition-benchmarks-tutorials/) by [Anna Montoya](http://blog.kaggle.com/author/annamontoya/)
@@ -143,6 +145,8 @@ Send a PR to add a one sentence description:)
 ## Tools using XGBoost
 
 - [BayesBoost](https://github.com/mpearmain/BayesBoost) - Bayesian Optimization using xgboost and sklearn API
+- [FLAML](https://github.com/microsoft/FLAML) - An open source AutoML library 
+designed to automatically produce accurate machine learning models with low computational cost. FLAML includes [XGBoost as one of the default learners](https://github.com/microsoft/FLAML/blob/main/flaml/model.py) and can also be used as a fast hyperparameter tuning tool for XGBoost ([code example](https://github.com/microsoft/FLAML/blob/main/notebook/flaml_xgboost.ipynb)).
 - [gp_xgboost_gridsearch](https://github.com/vatsan/gp_xgboost_gridsearch) - In-database parallel grid-search for XGBoost on [Greenplum](https://github.com/greenplum-db/gpdb) using PL/Python
 - [tpot](https://github.com/rhiever/tpot) - A Python tool that automatically creates and optimizes machine learning pipelines using genetic programming.
 

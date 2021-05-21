@@ -1,13 +1,12 @@
 import xgboost as xgb
 import testing as tm
 import numpy as np
-import unittest
 import pytest
 
 rng = np.random.RandomState(1994)
 
 
-class TestEarlyStopping(unittest.TestCase):
+class TestEarlyStopping:
 
     @pytest.mark.skipif(**tm.no_sklearn())
     def test_early_stopping_nonparallel(self):
@@ -17,7 +16,7 @@ class TestEarlyStopping(unittest.TestCase):
         except ImportError:
             from sklearn.cross_validation import train_test_split
 
-        digits = load_digits(2)
+        digits = load_digits(n_class=2)
         X = digits['data']
         y = digits['target']
         X_train, X_test, y_train, y_test = train_test_split(X, y,
@@ -47,13 +46,13 @@ class TestEarlyStopping(unittest.TestCase):
     @staticmethod
     def assert_metrics_length(cv, expected_length):
         for key, value in cv.items():
-          assert len(value) == expected_length
+            assert len(value) == expected_length
 
     @pytest.mark.skipif(**tm.no_sklearn())
     def test_cv_early_stopping(self):
         from sklearn.datasets import load_digits
 
-        digits = load_digits(2)
+        digits = load_digits(n_class=2)
         X = digits['data']
         y = digits['target']
         dm = xgb.DMatrix(X, label=y)

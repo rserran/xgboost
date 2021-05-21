@@ -1,12 +1,11 @@
 # coding: utf-8
 # pylint: disable= invalid-name
 """Distributed XGBoost Rabit related API."""
-import sys
 import ctypes
 import pickle
 import numpy as np
 
-from .core import _LIB, c_str, STRING_TYPES
+from .core import _LIB, c_str, STRING_TYPES, _check_call
 
 
 def _init_rabit():
@@ -77,10 +76,9 @@ def tracker_print(msg):
         msg = str(msg)
     is_dist = _LIB.RabitIsDistributed()
     if is_dist != 0:
-        _LIB.RabitTrackerPrint(c_str(msg))
+        _check_call(_LIB.RabitTrackerPrint(c_str(msg)))
     else:
-        sys.stdout.write(msg)
-        sys.stdout.flush()
+        print(msg.strip(), flush=True)
 
 
 def get_processor_name():
@@ -120,18 +118,18 @@ def broadcast(data, root):
         s = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
         length.value = len(s)
     # run first broadcast
-    _LIB.RabitBroadcast(ctypes.byref(length),
-                        ctypes.sizeof(ctypes.c_ulong), root)
+    _check_call(_LIB.RabitBroadcast(ctypes.byref(length),
+                                    ctypes.sizeof(ctypes.c_ulong), root))
     if root != rank:
         dptr = (ctypes.c_char * length.value)()
         # run second
-        _LIB.RabitBroadcast(ctypes.cast(dptr, ctypes.c_void_p),
-                            length.value, root)
+        _check_call(_LIB.RabitBroadcast(ctypes.cast(dptr, ctypes.c_void_p),
+                                        length.value, root))
         data = pickle.loads(dptr.raw)
         del dptr
     else:
-        _LIB.RabitBroadcast(ctypes.cast(ctypes.c_char_p(s), ctypes.c_void_p),
-                            length.value, root)
+        _check_call(_LIB.RabitBroadcast(ctypes.cast(ctypes.c_char_p(s), ctypes.c_void_p),
+                                        length.value, root))
         del s
     return data
 
@@ -189,18 +187,18 @@ def allreduce(data, op, prepare_fun=None):
     if buf.dtype not in DTYPE_ENUM__:
         raise Exception('data type %s not supported' % str(buf.dtype))
     if prepare_fun is None:
-        _LIB.RabitAllreduce(buf.ctypes.data_as(ctypes.c_void_p),
-                            buf.size, DTYPE_ENUM__[buf.dtype],
-                            op, None, None)
+        _check_call(_LIB.RabitAllreduce(buf.ctypes.data_as(ctypes.c_void_p),
+                                        buf.size, DTYPE_ENUM__[buf.dtype],
+                                        op, None, None))
     else:
         func_ptr = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
 
         def pfunc(_):
             """prepare function."""
             prepare_fun(data)
-        _LIB.RabitAllreduce(buf.ctypes.data_as(ctypes.c_void_p),
-                            buf.size, DTYPE_ENUM__[buf.dtype],
-                            op, func_ptr(pfunc), None)
+        _check_call(_LIB.RabitAllreduce(buf.ctypes.data_as(ctypes.c_void_p),
+                                        buf.size, DTYPE_ENUM__[buf.dtype],
+                                        op, func_ptr(pfunc), None))
     return buf
 
 

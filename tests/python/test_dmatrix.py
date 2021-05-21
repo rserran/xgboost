@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
+import os
+import tempfile
 import numpy as np
 import xgboost as xgb
-import unittest
 import scipy.sparse
 import pytest
 from scipy.sparse import rand, csr_matrix
+
+import testing as tm
 
 rng = np.random.RandomState(1)
 
@@ -12,7 +15,7 @@ dpath = 'demo/data/'
 rng = np.random.RandomState(1994)
 
 
-class TestDMatrix(unittest.TestCase):
+class TestDMatrix:
     def test_warn_missing(self):
         from xgboost import data
         with pytest.warns(UserWarning):
@@ -34,7 +37,7 @@ class TestDMatrix(unittest.TestCase):
 
         with pytest.warns(UserWarning):
             csr = csr_matrix(x)
-            xgb.DMatrix(csr, y, missing=4)
+            xgb.DMatrix(csr.tocsc(), y, missing=4)
 
     def test_dmatrix_numpy_init(self):
         data = np.random.randn(5, 5)
@@ -48,15 +51,19 @@ class TestDMatrix(unittest.TestCase):
         assert dm.num_col() == 2
 
         # 0d array
-        self.assertRaises(ValueError, xgb.DMatrix, np.array(1))
+        with pytest.raises(ValueError):
+            xgb.DMatrix(np.array(1))
         # 1d array
-        self.assertRaises(ValueError, xgb.DMatrix, np.array([1, 2, 3]))
+        with pytest.raises(ValueError):
+            xgb.DMatrix(np.array([1, 2, 3]))
         # 3d array
         data = np.random.randn(5, 5, 5)
-        self.assertRaises(ValueError, xgb.DMatrix, data)
+        with pytest.raises(ValueError):
+            xgb.DMatrix(data)
         # object dtype
         data = np.array([['a', 'b'], ['c', 'd']])
-        self.assertRaises(ValueError, xgb.DMatrix, data)
+        with pytest.raises(ValueError):
+            xgb.DMatrix(data)
 
     def test_csr(self):
         indptr = np.array([0, 2, 3, 6])
@@ -106,56 +113,54 @@ class TestDMatrix(unittest.TestCase):
 
     def test_slice(self):
         X = rng.randn(100, 100)
-        y = rng.randint(low=0, high=3, size=100)
+        y = rng.randint(low=0, high=3, size=100).astype(np.float32)
         d = xgb.DMatrix(X, y)
-        np.testing.assert_equal(d.get_label(), y.astype(np.float32))
+        np.testing.assert_equal(d.get_label(), y)
 
         fw = rng.uniform(size=100).astype(np.float32)
         d.set_info(feature_weights=fw)
 
-        eval_res_0 = {}
-        booster = xgb.train(
-            {'num_class': 3, 'objective': 'multi:softprob',
-             'eval_metric': 'merror'},
-            d,
-            num_boost_round=2, evals=[(d, 'd')], evals_result=eval_res_0)
-
-        predt = booster.predict(d)
-        predt = predt.reshape(100 * 3, 1)
-
-        d.set_base_margin(predt)
+        # base margin is per-class in multi-class classifier
+        base_margin = rng.randn(100, 3).astype(np.float32)
+        d.set_base_margin(base_margin.flatten())
 
         ridxs = [1, 2, 3, 4, 5, 6]
         sliced = d.slice(ridxs)
 
-        sliced_margin = sliced.get_float_info('base_margin')
-        assert sliced_margin.shape[0] == len(ridxs) * 3
+        # Slicing works with label and other meta info fields
+        np.testing.assert_equal(sliced.get_label(), y[1:7])
+        np.testing.assert_equal(sliced.get_float_info('feature_weights'), fw)
+        np.testing.assert_equal(sliced.get_base_margin(), base_margin[1:7, :].flatten())
+        np.testing.assert_equal(sliced.get_base_margin(), sliced.get_float_info('base_margin'))
 
-        eval_res_1 = {}
-        xgb.train(
+        # Slicing a DMatrix results into a DMatrix that's equivalent to a DMatrix that's
+        # constructed from the corresponding NumPy slice
+        d2 = xgb.DMatrix(X[1:7, :], y[1:7])
+        d2.set_base_margin(base_margin[1:7, :].flatten())
+        eval_res = {}
+        _ = xgb.train(
             {'num_class': 3, 'objective': 'multi:softprob',
-             'eval_metric': 'merror'},
-            sliced,
-            num_boost_round=2, evals=[(sliced, 'd')], evals_result=eval_res_1)
+             'eval_metric': 'mlogloss'},
+            d,
+            num_boost_round=2, evals=[(d2, 'd2'), (sliced, 'sliced')], evals_result=eval_res)
+        np.testing.assert_equal(eval_res['d2']['mlogloss'], eval_res['sliced']['mlogloss'])
 
-        eval_res_0 = eval_res_0['d']['merror']
-        eval_res_1 = eval_res_1['d']['merror']
-
-        for i in range(len(eval_res_0)):
-            assert abs(eval_res_0[i] - eval_res_1[i]) < 0.02
+        ridxs_arr = np.array(ridxs)[1:]  # handles numpy slice correctly
+        sliced = d.slice(ridxs_arr)
+        np.testing.assert_equal(sliced.get_label(), y[2:7])
 
     def test_feature_names_slice(self):
         data = np.random.randn(5, 5)
 
         # different length
-        self.assertRaises(ValueError, xgb.DMatrix, data,
-                          feature_names=list('abcdef'))
+        with pytest.raises(ValueError):
+            xgb.DMatrix(data, feature_names=list('abcdef'))
         # contains duplicates
-        self.assertRaises(ValueError, xgb.DMatrix, data,
-                          feature_names=['a', 'b', 'c', 'd', 'd'])
+        with pytest.raises(ValueError):
+            xgb.DMatrix(data, feature_names=['a', 'b', 'c', 'd', 'd'])
         # contains symbol
-        self.assertRaises(ValueError, xgb.DMatrix, data,
-                          feature_names=['a', 'b', 'c', 'd', 'e<1'])
+        with pytest.raises(ValueError):
+            xgb.DMatrix(data, feature_names=['a', 'b', 'c', 'd', 'e<1'])
 
         dm = xgb.DMatrix(data)
         dm.feature_names = list('abcde')
@@ -170,14 +175,12 @@ class TestDMatrix(unittest.TestCase):
         dm.feature_types = list('qiqiq')
         assert dm.feature_types == list('qiqiq')
 
-        def incorrect_type_set():
+        with pytest.raises(ValueError):
             dm.feature_types = list('abcde')
-
-        self.assertRaises(ValueError, incorrect_type_set)
 
         # reset
         dm.feature_names = None
-        self.assertEqual(dm.feature_names, ['f0', 'f1', 'f2', 'f3', 'f4'])
+        assert dm.feature_names is None
         assert dm.feature_types is None
 
     def test_feature_names(self):
@@ -209,7 +212,25 @@ class TestDMatrix(unittest.TestCase):
 
             # different feature name must raises error
             dm = xgb.DMatrix(dummy, feature_names=list('abcde'))
-            self.assertRaises(ValueError, bst.predict, dm)
+            with pytest.raises(ValueError):
+                bst.predict(dm)
+
+    @pytest.mark.skipif(**tm.no_pandas())
+    def test_save_binary(self):
+        import pandas as pd
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'm.dmatrix')
+            data = pd.DataFrame({
+                "a": [0, 1],
+                "b": [2, 3],
+                "c": [4, 5]
+            })
+            m0 = xgb.DMatrix(data.loc[:, ["a", "b"]], data["c"])
+            assert m0.feature_names == ['a', 'b']
+            m0.save_binary(path)
+            m1 = xgb.DMatrix(path)
+            assert m0.feature_names == m1.feature_names
+            assert m0.feature_types == m1.feature_types
 
     def test_get_info(self):
         dtrain = xgb.DMatrix(dpath + 'agaricus.txt.train')
@@ -217,6 +238,19 @@ class TestDMatrix(unittest.TestCase):
         dtrain.get_float_info('weight')
         dtrain.get_float_info('base_margin')
         dtrain.get_uint_info('group_ptr')
+
+    def test_qid(self):
+        rows = 100
+        cols = 10
+        X, y = rng.randn(rows, cols), rng.randn(rows)
+        qid = rng.randint(low=0, high=10, size=rows, dtype=np.uint32)
+        qid = np.sort(qid)
+
+        Xy = xgb.DMatrix(X, y)
+        Xy.set_info(qid=qid)
+        group_ptr = Xy.get_uint_info('group_ptr')
+        assert group_ptr[0] == 0
+        assert group_ptr[-1] == rows
 
     def test_feature_weights(self):
         kRows = 10
@@ -234,9 +268,8 @@ class TestDMatrix(unittest.TestCase):
 
         fw -= 1
 
-        def assign_weight():
+        with pytest.raises(ValueError):
             m.set_info(feature_weights=fw)
-        self.assertRaises(ValueError, assign_weight)
 
     def test_sparse_dmatrix_csr(self):
         nrow = 100
@@ -251,6 +284,31 @@ class TestDMatrix(unittest.TestCase):
         bst = xgb.train(param, dtrain, 5, watchlist)
         bst.predict(dtrain)
 
+        i32 = csr_matrix((x.data.astype(np.int32), x.indices, x.indptr), shape=x.shape)
+        f32 = csr_matrix(
+            (i32.data.astype(np.float32), x.indices, x.indptr), shape=x.shape
+        )
+        di32 = xgb.DMatrix(i32)
+        df32 = xgb.DMatrix(f32)
+        dense = xgb.DMatrix(f32.toarray(), missing=0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "f32.dmatrix")
+            df32.save_binary(path)
+            with open(path, "rb") as fd:
+                df32_buffer = np.array(fd.read())
+            path = os.path.join(tmpdir, "f32.dmatrix")
+            di32.save_binary(path)
+            with open(path, "rb") as fd:
+                di32_buffer = np.array(fd.read())
+
+            path = os.path.join(tmpdir, "dense.dmatrix")
+            dense.save_binary(path)
+            with open(path, "rb") as fd:
+                dense_buffer = np.array(fd.read())
+
+            np.testing.assert_equal(df32_buffer, di32_buffer)
+            np.testing.assert_equal(df32_buffer, dense_buffer)
+
     def test_sparse_dmatrix_csc(self):
         nrow = 1000
         ncol = 100
@@ -263,3 +321,12 @@ class TestDMatrix(unittest.TestCase):
         param = {'max_depth': 3, 'objective': 'binary:logistic', 'verbosity': 0}
         bst = xgb.train(param, dtrain, 5, watchlist)
         bst.predict(dtrain)
+
+    def test_unknown_data(self):
+        class Data:
+            pass
+
+        with pytest.raises(TypeError):
+            with pytest.warns(UserWarning):
+                d = Data()
+                xgb.DMatrix(d)

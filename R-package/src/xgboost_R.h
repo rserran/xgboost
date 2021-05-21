@@ -22,6 +22,19 @@
 XGB_DLL SEXP XGCheckNullPtr_R(SEXP handle);
 
 /*!
+ * \brief Set global configuration
+ * \param json_str a JSON string representing the list of key-value pairs
+ * \return R_NilValue
+ */
+XGB_DLL SEXP XGBSetGlobalConfig_R(SEXP json_str);
+
+/*!
+ * \brief Get global configuration
+ * \return JSON string
+ */
+XGB_DLL SEXP XGBGetGlobalConfig_R();
+
+/*!
  * \brief load a data matrix
  * \param fname name of the content
  * \param silent whether print messages
@@ -102,6 +115,14 @@ XGB_DLL SEXP XGDMatrixNumCol_R(SEXP handle);
  * \param dmats a list of dmatrix handles that will be cached
  */
 XGB_DLL SEXP XGBoosterCreate_R(SEXP dmats);
+
+
+/*!
+ * \brief create xgboost learner, saving the pointer into an existing R object
+ * \param dmats a list of dmatrix handles that will be cached
+ * \param R_handle a clean R external pointer (not holding any object)
+ */
+XGB_DLL SEXP XGBoosterCreateInEmptyObj_R(SEXP dmats, SEXP R_handle);
 
 /*!
  * \brief set parameters

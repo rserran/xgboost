@@ -17,8 +17,8 @@ struct Version {
   using TripletT = std::tuple<XGBoostVersionT, XGBoostVersionT, XGBoostVersionT>;
   static const TripletT kInvalid;
 
-  // Save/Load version info to Json document
-  static TripletT Load(Json const& in, bool check = false);
+  // Save/Load version info to JSON document
+  static TripletT Load(Json const& in);
   static void Save(Json* out);
 
   // Save/Load version info to dmlc::Stream

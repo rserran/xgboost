@@ -17,6 +17,7 @@ sys.path.insert(0, CURRENT_DIR)
 # Options only effect `python setup.py install`, building `bdist_wheel`
 # requires using CMake directly.
 USER_OPTIONS = {
+    # libxgboost options.
     'use-openmp': (None, 'Build with OpenMP support.', 1),
     'use-cuda':   (None, 'Build with GPU acceleration.', 0),
     'use-nccl':   (None, 'Build with NCCL to enable distributed GPU support.', 0),
@@ -26,7 +27,9 @@ USER_OPTIONS = {
     'use-azure':  (None, 'Build with AZURE support.', 0),
     'use-s3':     (None, 'Build with S3 support', 0),
     'plugin-lz4': (None, 'Build lz4 plugin.', 0),
-    'plugin-dense-parser': (None, 'Build dense parser plugin.', 0)
+    'plugin-dense-parser': (None, 'Build dense parser plugin.', 0),
+    # Python specific
+    'use-system-libxgboost': (None, 'Use libxgboost.so in system path.', 0)
 }
 
 NEED_CLEAN_TREE = set()
@@ -102,9 +105,12 @@ class BuildExt(build_ext.build_ext):  # pylint: disable=too-many-ancestors
         for k, v in USER_OPTIONS.items():
             arg = k.replace('-', '_').upper()
             value = str(v[2])
-            cmake_cmd.append('-D' + arg + '=' + value)
-            if k == 'USE_OPENMP' and use_omp == 0:
+            if arg == 'USE_SYSTEM_LIBXGBOOST':
                 continue
+            if arg == 'USE_OPENMP' and use_omp == 0:
+                cmake_cmd.append("-D" + arg + "=0")
+                continue
+            cmake_cmd.append('-D' + arg + '=' + value)
 
         self.logger.info('Run CMake command: %s', str(cmake_cmd))
         subprocess.check_call(cmake_cmd, cwd=build_dir)
@@ -119,12 +125,10 @@ class BuildExt(build_ext.build_ext):  # pylint: disable=too-many-ancestors
 
     def build_cmake_extension(self):
         '''Configure and build using CMake'''
-        src_dir = 'xgboost'
-        try:
-            copy_tree(os.path.join(CURRENT_DIR, os.path.pardir),
-                      os.path.join(self.build_temp, src_dir))
-        except Exception:  # pylint: disable=broad-except
-            copy_tree(src_dir, os.path.join(self.build_temp, src_dir))
+        if USER_OPTIONS['use-system-libxgboost'][2]:
+            self.logger.info('Using system libxgboost.')
+            return
+
         build_dir = self.build_temp
         global BUILD_TEMP_DIR  # pylint: disable=global-statement
         BUILD_TEMP_DIR = build_dir
@@ -134,6 +138,13 @@ class BuildExt(build_ext.build_ext):  # pylint: disable=too-many-ancestors
         if os.path.exists(libxgboost):
             self.logger.info('Found shared library, skipping build.')
             return
+
+        src_dir = 'xgboost'
+        try:
+            copy_tree(os.path.join(CURRENT_DIR, os.path.pardir),
+                      os.path.join(self.build_temp, src_dir))
+        except Exception:  # pylint: disable=broad-except
+            copy_tree(src_dir, os.path.join(self.build_temp, src_dir))
 
         self.logger.info('Building from source. %s', libxgboost)
         if not os.path.exists(build_dir):
@@ -205,6 +216,15 @@ class InstallLib(install_lib.install_lib):
 
     def install(self):
         outfiles = super().install()
+
+        if USER_OPTIONS['use-system-libxgboost'][2] != 0:
+            self.logger.info('Using system libxgboost.')
+            lib_path = os.path.join(sys.prefix, 'lib')
+            msg = 'use-system-libxgboost is specified, but ' + lib_name() + \
+                ' is not found in: ' + lib_path
+            assert os.path.exists(os.path.join(lib_path, lib_name())), msg
+            return []
+
         lib_dir = os.path.join(self.install_dir, 'xgboost', 'lib')
         if not os.path.exists(lib_dir):
             os.mkdir(lib_dir)
@@ -251,7 +271,12 @@ class Install(install.install):  # pylint: disable=too-many-instance-attributes
         self.plugin_lz4 = 0
         self.plugin_dense_parser = 0
 
+        self.use_system_libxgboost = 0
+
     def run(self):
+        # setuptools will configure the options according to user supplied command line
+        # arguments, then here we propagate them into `USER_OPTIONS` for visibility to
+        # other sub-commands like `build_ext`.
         for k, v in USER_OPTIONS.items():
             arg = k.replace('-', '_')
             if hasattr(self, arg):
@@ -282,6 +307,7 @@ if __name__ == '__main__':
           description="XGBoost Python Package",
           long_description=open(os.path.join(CURRENT_DIR, 'README.rst'),
                                 encoding='utf-8').read(),
+          long_description_content_type="text/x-rst",
           install_requires=[
               'numpy',
               'scipy',

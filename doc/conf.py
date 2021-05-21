@@ -94,6 +94,8 @@ extensions = [
     'recommonmark'
 ]
 
+autodoc_typehints = "description"
+
 graphviz_output_format = 'png'
 plot_formats = [('svg', 300), ('png', 100), ('hires.png', 300)]
 plot_html_show_source_link = False
@@ -230,5 +232,6 @@ def generate_doxygen_xml(app):
         run_doxygen('..')
 
 
+# app.add_stylesheet() is deprecated. Use app.add_css_file()
 def setup(app):
-    app.add_stylesheet('custom.css')
+    app.add_css_file('custom.css')

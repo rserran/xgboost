@@ -6,11 +6,11 @@ from abc import ABC
 import collections
 import os
 import pickle
-from typing import Callable, List
+from typing import Callable, List, Optional, Union, Dict, Tuple
 import numpy
 
 from . import rabit
-from .core import EarlyStopException, CallbackEnv
+from .core import EarlyStopException, CallbackEnv, Booster, XGBoostError
 from .compat import STRING_TYPES
 
 
@@ -20,6 +20,8 @@ def _get_callback_context(env):
         context = 'train'
     elif env.model is None and env.cvfolds is not None:
         context = 'cv'
+    else:
+        raise ValueError("Unexpected input with both model and cvfolds.")
     return context
 
 
@@ -274,20 +276,25 @@ class TrainingCallback(ABC):
     .. versionadded:: 1.3.0
 
     '''
+
+    EvalsLog = Dict[str, Dict[str, Union[List[float], List[Tuple[float, float]]]]]
+
     def __init__(self):
         pass
 
     def before_training(self, model):
         '''Run before training starts.'''
+        return model
 
     def after_training(self, model):
         '''Run after training is finished.'''
+        return model
 
-    def before_iteration(self, model, epoch, evals_log):
+    def before_iteration(self, model, epoch: int, evals_log: EvalsLog) -> bool:
         '''Run before each iteration.  Return True when training should stop.'''
         return False
 
-    def after_iteration(self, model, epoch, evals_log):
+    def after_iteration(self, model, epoch: int, evals_log: EvalsLog) -> bool:
         '''Run after each iteration.  Return True when training should stop.'''
         return False
 
@@ -344,8 +351,13 @@ class CallbackContainer:
     .. versionadded:: 1.3.0
 
     '''
-    def __init__(self, callbacks: List[TrainingCallback],
-                 metric: Callable = None, is_cv: bool = False):
+
+    EvalsLog = TrainingCallback.EvalsLog
+
+    def __init__(self,
+                 callbacks: List[TrainingCallback],
+                 metric: Callable = None,
+                 is_cv: bool = False):
         self.callbacks = set(callbacks)
         if metric is not None:
             msg = 'metric must be callable object for monitoring.  For ' + \
@@ -353,7 +365,7 @@ class CallbackContainer:
                 ' will invoke monitor automatically.'
             assert callable(metric), msg
         self.metric = metric
-        self.history = collections.OrderedDict()
+        self.history: CallbackContainer.EvalsLog = collections.OrderedDict()
         self.is_cv = is_cv
 
         if self.is_cv:
@@ -362,14 +374,26 @@ class CallbackContainer:
     def before_training(self, model):
         '''Function called before training.'''
         for c in self.callbacks:
-            c.before_training(model=model)
+            model = c.before_training(model=model)
+            msg = 'before_training should return the model'
+            if self.is_cv:
+                assert isinstance(model.cvfolds, list), msg
+            else:
+                assert isinstance(model, Booster), msg
+        return model
 
     def after_training(self, model):
         '''Function called after training.'''
         for c in self.callbacks:
-            c.after_training(model)
+            model = c.after_training(model=model)
+            msg = 'after_training should return the model'
+            if self.is_cv:
+                assert isinstance(model.cvfolds, list), msg
+            else:
+                assert isinstance(model, Booster), msg
+        return model
 
-    def before_iteration(self, model, epoch, dtrain, evals):
+    def before_iteration(self, model, epoch, dtrain, evals) -> bool:
         '''Function called before training iteration.'''
         return any(c.before_iteration(model, epoch, self.history)
                    for c in self.callbacks)
@@ -395,7 +419,7 @@ class CallbackContainer:
                 self.history[data_name][metric_name] = [s]
         return False
 
-    def after_iteration(self, model, epoch, dtrain, evals):
+    def after_iteration(self, model, epoch, dtrain, evals) -> bool:
         '''Function called after training iteration.'''
         if self.is_cv:
             scores = model.eval(epoch, self.metric)
@@ -431,7 +455,7 @@ class LearningRateScheduler(TrainingCallback):
         rounds.
 
     '''
-    def __init__(self, learning_rates):
+    def __init__(self, learning_rates) -> None:
         assert callable(learning_rates) or \
             isinstance(learning_rates, collections.abc.Sequence)
         if callable(learning_rates):
@@ -440,67 +464,104 @@ class LearningRateScheduler(TrainingCallback):
             self.learning_rates = lambda epoch: learning_rates[epoch]
         super().__init__()
 
-    def after_iteration(self, model, epoch, evals_log):
+    def after_iteration(self, model, epoch, evals_log) -> bool:
         model.set_param('learning_rate', self.learning_rates(epoch))
+        return False
 
 
 # pylint: disable=too-many-instance-attributes
 class EarlyStopping(TrainingCallback):
-    ''' Callback function for early stopping
+    """Callback function for early stopping
 
     .. versionadded:: 1.3.0
 
     Parameters
     ----------
-    rounds : int
+    rounds
         Early stopping rounds.
-    metric_name : str
+    metric_name
         Name of metric that is used for early stopping.
-    data_name: str
+    data_name
         Name of dataset that is used for early stopping.
-    maximize : bool
+    maximize
         Whether to maximize evaluation metric.  None means auto (discouraged).
-    save_best : bool
-        Placeholder, the feature is not yet supported.
-    '''
+    save_best
+        Whether training should return the best model or the last model.
+    abs_tol
+        Absolute tolerance for early stopping condition.
+
+        .. versionadded:: 1.5.0
+
+        .. code-block:: python
+
+            clf = xgboost.XGBClassifier(tree_method="gpu_hist")
+            es = xgboost.callback.EarlyStopping(
+                rounds=2,
+                abs_tol=1e-3,
+                save_best=True,
+                maximize=False,
+                data_name="validation_0",
+                metric_name="mlogloss",
+            )
+
+            X, y = load_digits(return_X_y=True)
+            clf.fit(X, y, eval_set=[(X, y)], callbacks=[es])
+    """
     def __init__(self,
-                 rounds,
-                 metric_name=None,
-                 data_name=None,
-                 maximize=None,
-                 save_best=False):
+                 rounds: int,
+                 metric_name: Optional[str] = None,
+                 data_name: Optional[str] = None,
+                 maximize: Optional[bool] = None,
+                 save_best: Optional[bool] = False,
+                 abs_tol: float = 0) -> None:
         self.data = data_name
         self.metric_name = metric_name
         self.rounds = rounds
         self.save_best = save_best
-        # https://github.com/dmlc/xgboost/issues/5531
-        assert self.save_best is False, 'save best is not yet supported.'
-
         self.maximize = maximize
-        self.stopping_history = {}
+        self.stopping_history: CallbackContainer.EvalsLog = {}
+        self._tol = abs_tol
+        if self._tol < 0:
+            raise ValueError("tolerance must be greater or equal to 0.")
 
-        if self.maximize is not None:
-            if self.maximize:
-                self.improve_op = lambda x, y: x > y
-            else:
-                self.improve_op = lambda x, y: x < y
+        self.improve_op = None
 
-        self.current_rounds = 0
-        self.best_scores = {}
+        self.current_rounds: int = 0
+        self.best_scores: dict = {}
+        self.starting_round: int = 0
         super().__init__()
 
-    def _update_rounds(self, score, name, metric, model, epoch):
-        # Just to be compatibility with old behavior before 1.3.  We should let
-        # user to decide.
+    def before_training(self, model):
+        self.starting_round = model.num_boosted_rounds()
+        return model
+
+    def _update_rounds(self, score, name, metric, model, epoch) -> bool:
+        def get_s(x):
+            """get score if it's cross validation history."""
+            return x[0] if isinstance(x, tuple) else x
+
+        def maximize(new, best):
+            return numpy.greater(get_s(new) + self._tol, get_s(best))
+
+        def minimize(new, best):
+            return numpy.greater(get_s(best) + self._tol, get_s(new))
+
         if self.maximize is None:
+            # Just to be compatibility with old behavior before 1.3.  We should let
+            # user to decide.
             maximize_metrics = ('auc', 'aucpr', 'map', 'ndcg', 'auc@',
                                 'aucpr@', 'map@', 'ndcg@')
             if any(metric.startswith(x) for x in maximize_metrics):
-                self.improve_op = lambda x, y: x > y
                 self.maximize = True
             else:
-                self.improve_op = lambda x, y: x < y
                 self.maximize = False
+
+        if self.maximize:
+            self.improve_op = maximize
+        else:
+            self.improve_op = minimize
+
+        assert self.improve_op
 
         if not self.stopping_history:  # First round
             self.current_rounds = 0
@@ -525,7 +586,9 @@ class EarlyStopping(TrainingCallback):
             return True
         return False
 
-    def after_iteration(self, model, epoch, evals_log):
+    def after_iteration(self, model, epoch: int,
+                        evals_log: CallbackContainer.EvalsLog) -> bool:
+        epoch += self.starting_round  # training continuation
         msg = 'Must have at least 1 validation dataset for early stopping.'
         assert len(evals_log.keys()) >= 1, msg
         data_name = ''
@@ -551,6 +614,16 @@ class EarlyStopping(TrainingCallback):
         score = data_log[metric_name][-1]
         return self._update_rounds(score, data_name, metric_name, model, epoch)
 
+    def after_training(self, model):
+        try:
+            if self.save_best:
+                model = model[: int(model.attr("best_iteration")) + 1]
+        except XGBoostError as e:
+            raise XGBoostError(
+                "`save_best` is not applicable to current booster"
+            ) from e
+        return model
+
 
 class EvaluationMonitor(TrainingCallback):
     '''Print the evaluation result at each iteration.
@@ -564,38 +637,57 @@ class EvaluationMonitor(TrainingCallback):
         Extra user defined metric.
     rank : int
         Which worker should be used for printing the result.
+    period : int
+        How many epoches between printing.
     show_stdv : bool
         Used in cv to show standard deviation.  Users should not specify it.
     '''
-    def __init__(self, rank=0, show_stdv=False):
+    def __init__(self, rank=0, period=1, show_stdv=False) -> None:
         self.printer_rank = rank
         self.show_stdv = show_stdv
+        self.period = period
+        assert period > 0
+        # last error message, useful when early stopping and period are used together.
+        self._latest: Optional[str] = None
         super().__init__()
 
-    def _fmt_metric(self, data, metric, score, std):
+    def _fmt_metric(self, data, metric, score, std) -> str:
         if std is not None and self.show_stdv:
             msg = '\t{0}:{1:.5f}+{2:.5f}'.format(data + '-' + metric, score, std)
         else:
             msg = '\t{0}:{1:.5f}'.format(data + '-' + metric, score)
         return msg
 
-    def after_iteration(self, model, epoch, evals_log):
+    def after_iteration(self, model, epoch: int,
+                        evals_log: CallbackContainer.EvalsLog) -> bool:
         if not evals_log:
             return False
-        msg = f'[{epoch}]'
+
+        msg: str = f'[{epoch}]'
         if rabit.get_rank() == self.printer_rank:
             for data, metric in evals_log.items():
                 for metric_name, log in metric.items():
+                    stdv: Optional[float] = None
                     if isinstance(log[-1], tuple):
                         score = log[-1][0]
                         stdv = log[-1][1]
                     else:
                         score = log[-1]
-                        stdv = None
                     msg += self._fmt_metric(data, metric_name, score, stdv)
             msg += '\n'
-            rabit.tracker_print(msg)
+
+            if (epoch % self.period) == 0 or self.period == 1:
+                rabit.tracker_print(msg)
+                self._latest = None
+            else:
+                # There is skipped message
+                self._latest = msg
         return False
+
+    def after_training(self, model):
+        if rabit.get_rank() == self.printer_rank and self._latest is not None:
+            rabit.tracker_print(self._latest)
+        return model
 
 
 class TrainingCheckPoint(TrainingCallback):
@@ -628,7 +720,8 @@ class TrainingCheckPoint(TrainingCallback):
         self._epoch = 0
         super().__init__()
 
-    def after_iteration(self, model, epoch, evals_log):
+    def after_iteration(self, model, epoch: int,
+                        evals_log: CallbackContainer.EvalsLog) -> bool:
         if self._epoch == self._iterations:
             path = os.path.join(self._path, self._name + '_' + str(epoch) +
                                 ('.pkl' if self._as_pickle else '.json'))
@@ -640,6 +733,7 @@ class TrainingCheckPoint(TrainingCallback):
                 else:
                     model.save_model(path)
         self._epoch += 1
+        return False
 
 
 class LegacyCallbacks:
@@ -684,15 +778,17 @@ class LegacyCallbacks:
 
     def before_training(self, model):
         '''Nothing to do for legacy callbacks'''
+        return model
 
     def after_training(self, model):
         '''Nothing to do for legacy callbacks'''
+        return model
 
     def before_iteration(self, model, epoch, dtrain, evals):
         '''Called before each iteration.'''
         for cb in self.callbacks_before_iter:
             rank = rabit.get_rank()
-            cb(CallbackEnv(model=model,
+            cb(CallbackEnv(model=None if self.cvfolds is not None else model,
                            cvfolds=self.cvfolds,
                            iteration=epoch,
                            begin_iteration=self.start_iteration,
@@ -705,6 +801,7 @@ class LegacyCallbacks:
         '''Called after each iteration.'''
         evaluation_result_list = []
         if self.cvfolds is not None:
+            # dtrain is not used here.
             scores = model.eval(epoch, self.feval)
             self.aggregated_cv = _aggcv(scores)
             evaluation_result_list = self.aggregated_cv
@@ -723,7 +820,7 @@ class LegacyCallbacks:
         try:
             for cb in self.callbacks_after_iter:
                 rank = rabit.get_rank()
-                cb(CallbackEnv(model=model,
+                cb(CallbackEnv(model=None if self.cvfolds is not None else model,
                                cvfolds=self.cvfolds,
                                iteration=epoch,
                                begin_iteration=self.start_iteration,

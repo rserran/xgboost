@@ -8,12 +8,13 @@ dependencies:
 - pyyaml
 - cpplint
 - pylint
-- numpy
+- numpy=1.19.4
 - scipy
 - scikit-learn
 - pandas
 - matplotlib
 - dask
+- distributed
 - python-graphviz
 - hypothesis
 - astroid
@@ -23,13 +24,17 @@ dependencies:
 - mock
 - breathe
 - pytest
+- pytest-cov
 - python-kubernetes
 - urllib3
 - jsonschema
 - boto3
 - awscli
+- numba
+- llvmlite
 - pip:
   - shap
+  - ipython                     # required by shap at import time.
   - guzzle_sphinx_theme
   - datatable
   - modin[all]

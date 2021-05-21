@@ -25,7 +25,7 @@
 typedef unsigned long rbt_ulong;  // NOLINT(*)
 
 /*!
- * \brief intialize the rabit module,
+ * \brief initialize the rabit module,
  *  call this once before using anything
  *  The additional arguments is not necessary.
  *  Usually rabit will detect settings
@@ -41,7 +41,7 @@ RABIT_DLL bool RabitInit(int argc, char *argv[]);
  * call this function after you finished all jobs.
  * \return true if rabit is initialized successfully otherwise false
  */
-RABIT_DLL bool RabitFinalize(void);
+RABIT_DLL int RabitFinalize(void);
 
 /*!
  * \brief get rank of previous process in ring topology
@@ -73,7 +73,7 @@ RABIT_DLL int RabitIsDistributed(void);
  *    the user who monitors the tracker
  * \param msg the message to be printed
  */
-RABIT_DLL void RabitTrackerPrint(const char *msg);
+RABIT_DLL int RabitTrackerPrint(const char *msg);
 /*!
  * \brief get name of processor
  * \param out_name hold output string
@@ -87,12 +87,11 @@ RABIT_DLL void RabitGetProcessorName(char *out_name,
  * \brief broadcast an memory region to all others from root
  *
  *     Example: int a = 1; Broadcast(&a, sizeof(a), root);
- * \param sendrecv_data the pointer to send or recive buffer,
+ * \param sendrecv_data the pointer to send or receive buffer,
  * \param size the size of the data
  * \param root the root of process
  */
-RABIT_DLL void RabitBroadcast(void *sendrecv_data,
-                              rbt_ulong size, int root);
+RABIT_DLL int RabitBroadcast(void *sendrecv_data, rbt_ulong size, int root);
 
 /*!
  * \brief Allgather function, each node have a segment of data in the ring of sendrecvbuf,
@@ -110,12 +109,9 @@ RABIT_DLL void RabitBroadcast(void *sendrecv_data,
  * \return this function can return kSuccess, kSockError, kGetExcept, see ReturnType for details
  * \sa ReturnType
  */
-RABIT_DLL void RabitAllgather(void *sendrecvbuf,
-                                  size_t total_size,
-                                  size_t beginIndex,
-                                  size_t size_node_slice,
-                                  size_t size_prev_slice,
-                                  int enum_dtype);
+RABIT_DLL int RabitAllgather(void *sendrecvbuf, size_t total_size,
+                             size_t beginIndex, size_t size_node_slice,
+                             size_t size_prev_slice, int enum_dtype);
 
 /*!
  * \brief perform in-place allreduce, on sendrecvbuf
@@ -126,21 +122,18 @@ RABIT_DLL void RabitAllgather(void *sendrecvbuf,
  *     ...
  *     Allreduce<op::Sum>(&data[0], data.size());
  *     ...
- * \param sendrecvbuf buffer for both sending and recving data
+ * \param sendrecvbuf buffer for both sending and receiving data
  * \param count number of elements to be reduced
  * \param enum_dtype the enumeration of data type, see rabit::engine::mpi::DataType in engine.h of rabit include
  * \param enum_op the enumeration of operation type, see rabit::engine::mpi::OpType in engine.h of rabit
  * \param prepare_fun Lazy preprocessing function, if it is not NULL, prepare_fun(prepare_arg)
- *                    will be called by the function before performing Allreduce, to intialize the data in sendrecvbuf_.
+ *                    will be called by the function before performing Allreduce, to initialize the data in sendrecvbuf_.
  *                     If the result of Allreduce can be recovered directly, then prepare_func will NOT be called
-   * \param prepare_arg argument used to passed into the lazy preprocessing function
-   */
-RABIT_DLL void RabitAllreduce(void *sendrecvbuf,
-                              size_t count,
-                              int enum_dtype,
-                              int enum_op,
-                              void (*prepare_fun)(void *arg),
-                              void *prepare_arg);
+ * \param prepare_arg argument used to passed into the lazy preprocessing function
+ */
+RABIT_DLL int RabitAllreduce(void *sendrecvbuf, size_t count, int enum_dtype,
+                             int enum_op, void (*prepare_fun)(void *arg),
+                             void *prepare_arg);
 
 /*!
  * \brief load latest check point

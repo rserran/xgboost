@@ -69,20 +69,24 @@ class TreeGenerator {
     return result;
   }
 
-  virtual std::string Indicator(RegTree const& tree, int32_t nid, uint32_t depth) const {
+  virtual std::string Indicator(RegTree const& /*tree*/,
+                                int32_t /*nid*/, uint32_t /*depth*/) const {
     return "";
   }
-  virtual std::string Integer(RegTree const& tree, int32_t nid, uint32_t depth) const {
+  virtual std::string Integer(RegTree const& /*tree*/,
+                                int32_t /*nid*/, uint32_t /*depth*/) const {
     return "";
   }
-  virtual std::string Quantitive(RegTree const& tree, int32_t nid, uint32_t depth) const {
+  virtual std::string Quantitive(RegTree const& /*tree*/,
+                                int32_t /*nid*/, uint32_t /*depth*/) const {
     return "";
   }
-  virtual std::string NodeStat(RegTree const& tree, int32_t nid) const {
+  virtual std::string NodeStat(RegTree const& /*tree*/, int32_t /*nid*/) const {
     return "";
   }
 
-  virtual std::string PlainNode(RegTree const& tree, int32_t nid, uint32_t depth) const = 0;
+  virtual std::string PlainNode(RegTree const& /*tree*/,
+                                int32_t /*nid*/, uint32_t /*depth*/) const = 0;
 
   virtual std::string SplitNode(RegTree const& tree, int32_t nid, uint32_t depth) {
     auto const split_index = tree[nid].SplitIndex();
@@ -153,7 +157,7 @@ TreeGenerator* TreeGenerator::Create(std::string const& attrs, FeatureMap const&
   if (pos != std::string::npos) {
     name = attrs.substr(0, pos);
     params = attrs.substr(pos+1, attrs.length() - pos - 1);
-    // Eliminate all occurances of single quote string.
+    // Eliminate all occurrences of single quote string.
     size_t pos = std::string::npos;
     while ((pos = params.find('\'')) != std::string::npos) {
       params.replace(pos, 1, "\"");
@@ -179,7 +183,7 @@ class TextGenerator : public TreeGenerator {
   using SuperT = TreeGenerator;
 
  public:
-  TextGenerator(FeatureMap const& fmap, std::string const& attrs, bool with_stats) :
+  TextGenerator(FeatureMap const& fmap, bool with_stats) :
       TreeGenerator(fmap, with_stats) {}
 
   std::string LeafNode(RegTree const& tree, int32_t nid, uint32_t depth) const override {
@@ -196,7 +200,7 @@ class TextGenerator : public TreeGenerator {
     return result;
   }
 
-  std::string Indicator(RegTree const& tree, int32_t nid, uint32_t depth) const override {
+  std::string Indicator(RegTree const& tree, int32_t nid, uint32_t) const override {
     static std::string const kIndicatorTemplate = "{nid}:[{fname}] yes={yes},no={no}";
     int32_t nyes = tree[nid].DefaultLeft() ?
                    tree[nid].RightChild() : tree[nid].LeftChild();
@@ -288,14 +292,14 @@ class TextGenerator : public TreeGenerator {
 XGBOOST_REGISTER_TREE_IO(TextGenerator, "text")
 .describe("Dump text representation of tree")
 .set_body([](FeatureMap const& fmap, std::string const& attrs, bool with_stats) {
-            return new TextGenerator(fmap, attrs, with_stats);
+            return new TextGenerator(fmap, with_stats);
           });
 
 class JsonGenerator : public TreeGenerator {
   using SuperT = TreeGenerator;
 
  public:
-  JsonGenerator(FeatureMap const& fmap, std::string attrs, bool with_stats) :
+  JsonGenerator(FeatureMap const& fmap, bool with_stats) :
       TreeGenerator(fmap, with_stats) {}
 
   std::string Indent(uint32_t depth) const {
@@ -306,7 +310,7 @@ class JsonGenerator : public TreeGenerator {
     return result;
   }
 
-  std::string LeafNode(RegTree const& tree, int32_t nid, uint32_t depth) const override {
+  std::string LeafNode(RegTree const& tree, int32_t nid, uint32_t) const override {
     static std::string const kLeafTemplate =
         R"L({ "nodeid": {nid}, "leaf": {leaf} {stat}})L";
     static std::string const kStatTemplate =
@@ -381,7 +385,7 @@ class JsonGenerator : public TreeGenerator {
   std::string PlainNode(RegTree const& tree, int32_t nid, uint32_t depth) const override {
     auto cond = tree[nid].SplitCond();
     static std::string const kNodeTemplate =
-        R"I( "nodeid": {nid}, "depth": {depth}, "split": {fname}, )I"
+        R"I( "nodeid": {nid}, "depth": {depth}, "split": "{fname}", )I"
         R"I("split_condition": {cond}, "yes": {left}, "no": {right}, )I"
         R"I("missing": {missing})I";
     return SplitNodeImpl(tree, nid, kNodeTemplate, SuperT::ToStr(cond), depth);
@@ -426,7 +430,7 @@ class JsonGenerator : public TreeGenerator {
 XGBOOST_REGISTER_TREE_IO(JsonGenerator, "json")
 .describe("Dump json representation of tree")
 .set_body([](FeatureMap const& fmap, std::string const& attrs, bool with_stats) {
-            return new JsonGenerator(fmap, attrs, with_stats);
+            return new JsonGenerator(fmap, with_stats);
           });
 
 struct GraphvizParam : public XGBoostParameter<GraphvizParam> {
@@ -531,7 +535,7 @@ class GraphvizGenerator : public TreeGenerator {
  protected:
   // Only indicator is different, so we combine all different node types into this
   // function.
-  std::string PlainNode(RegTree const& tree, int32_t nid, uint32_t depth) const override {
+  std::string PlainNode(RegTree const& tree, int32_t nid, uint32_t) const override {
     auto split = tree[nid].SplitIndex();
     auto cond = tree[nid].SplitCond();
     static std::string const kNodeTemplate =
@@ -548,24 +552,27 @@ class GraphvizGenerator : public TreeGenerator {
         {"{params}", param_.condition_node_params}});
 
     static std::string const kEdgeTemplate =
-        "    {nid} -> {child} [label=\"{is_missing}\" color=\"{color}\"]\n";
+        "    {nid} -> {child} [label=\"{branch}\" color=\"{color}\"]\n";
     auto MatchFn = SuperT::Match;  // mingw failed to capture protected fn.
     auto BuildEdge =
-        [&tree, nid, MatchFn, this](int32_t child) {
+        [&tree, nid, MatchFn, this](int32_t child, bool left) {
+          // Is this the default child for missing value?
           bool is_missing = tree[nid].DefaultChild() == child;
+          std::string branch = std::string {left ? "yes" : "no"} +
+                               std::string {is_missing ? ", missing" : ""};
           std::string buffer = MatchFn(kEdgeTemplate, {
               {"{nid}",        std::to_string(nid)},
               {"{child}",      std::to_string(child)},
               {"{color}",      is_missing ? param_.yes_color : param_.no_color},
-              {"{is_missing}", is_missing ? "yes, missing": "no"}});
+              {"{branch}",     branch}});
           return buffer;
         };
-    result += BuildEdge(tree[nid].LeftChild());
-    result += BuildEdge(tree[nid].RightChild());
+    result += BuildEdge(tree[nid].LeftChild(), true);
+    result += BuildEdge(tree[nid].RightChild(), false);
     return result;
   };
 
-  std::string LeafNode(RegTree const& tree, int32_t nid, uint32_t depth) const override {
+  std::string LeafNode(RegTree const& tree, int32_t nid, uint32_t) const override {
     static std::string const kLeafTemplate =
         "    {nid} [ label=\"leaf={leaf-value}\" {params}]\n";
     auto result = SuperT::Match(kLeafTemplate, {
@@ -1062,7 +1069,7 @@ void RegTree::CalculateContributionsApprox(const RegTree::FVec &feat,
 // Used by TreeShap
 // data we keep about our decision path
 // note that pweight is included for convenience and is not tied with the other attributes
-// the pweight of the i'th path element is the permuation weight of paths with i-1 ones in them
+// the pweight of the i'th path element is the permutation weight of paths with i-1 ones in them
 struct PathElement {
   int feature_index;
   bst_float zero_fraction;
@@ -1116,7 +1123,7 @@ void UnwindPath(PathElement *unique_path, unsigned unique_depth,
   }
 }
 
-// determine what the total permuation weight would be if
+// determine what the total permutation weight would be if
 // we unwound a previous extension in the decision path
 bst_float UnwoundPathSum(const PathElement *unique_path, unsigned unique_depth,
                          unsigned path_index) {
