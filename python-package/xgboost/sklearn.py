@@ -374,6 +374,7 @@ class XGBModel(XGBModelBase):
         importance_type: str = "gain",
         gpu_id: Optional[int] = None,
         validate_parameters: Optional[bool] = None,
+        predictor: Optional[str] = None,
         **kwargs: Any
     ) -> None:
         if not SKLEARN_INSTALLED:
@@ -409,6 +410,7 @@ class XGBModel(XGBModelBase):
         self.importance_type = importance_type
         self.gpu_id = gpu_id
         self.validate_parameters = validate_parameters
+        self.predictor = predictor
 
     def _more_tags(self) -> Dict[str, bool]:
         '''Tags used for scikit-learn data validation.'''
@@ -687,7 +689,7 @@ class XGBModel(XGBModelBase):
             used for early stopping.
 
             If early stopping occurs, the model will have three additional fields:
-            ``clf.best_score``, ``clf.best_iteration`` and ``clf.best_ntree_limit``.
+            ``clf.best_score``, ``clf.best_iteration``.
         verbose :
             If `verbose` and an evaluation set is used, writes the evaluation metric
             measured on the validation set to stderr.
