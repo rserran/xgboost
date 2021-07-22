@@ -14,8 +14,8 @@ RUN \
     wget -O Miniconda3.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
     bash Miniconda3.sh -b -p /opt/python && \
     # CMake
-    wget -nv -nc https://cmake.org/files/v3.13/cmake-3.13.0-Linux-x86_64.sh --no-check-certificate && \
-    bash cmake-3.13.0-Linux-x86_64.sh --skip-license --prefix=/usr
+    wget -nv -nc https://cmake.org/files/v3.14/cmake-3.14.0-Linux-x86_64.sh --no-check-certificate && \
+    bash cmake-3.14.0-Linux-x86_64.sh --skip-license --prefix=/usr
 
 # NCCL2 (License: https://docs.nvidia.com/deeplearning/sdk/nccl-sla/index.html)
 RUN \
@@ -28,8 +28,8 @@ ENV PATH=/opt/python/bin:$PATH
 
 # Create new Conda environment with RMM
 RUN \
-    conda create -n gpu_test -c nvidia -c rapidsai -c conda-forge -c defaults \
-        python=3.7 rmm=0.18* cudatoolkit=$CUDA_VERSION_ARG
+    conda create -n gpu_test -c rapidsai-nightly -c rapidsai -c nvidia -c conda-forge -c defaults \
+        python=3.7 rmm=21.08* cudatoolkit=$CUDA_VERSION_ARG
 
 ENV GOSU_VERSION 1.10
 

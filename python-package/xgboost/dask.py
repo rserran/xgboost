@@ -182,7 +182,7 @@ def concat(value: Any) -> Any:  # pylint: disable=too-many-return-statements
        lazy_isinstance(value[0], 'cudf.core.series', 'Series'):
         from cudf import concat as CUDF_concat  # pylint: disable=import-error
         return CUDF_concat(value, axis=0)
-    if lazy_isinstance(value[0], 'cupy.core.core', 'ndarray'):
+    if lazy_isinstance(value[0], 'cupy._core.core', 'ndarray'):
         import cupy
         # pylint: disable=c-extension-no-member,no-member
         d = cupy.cuda.runtime.getDevice()
@@ -258,16 +258,13 @@ class DaskDMatrix:
         self.feature_names = feature_names
         self.feature_types = feature_types
         self.missing = missing
+        self.enable_categorical = enable_categorical
 
         if qid is not None and weight is not None:
             raise NotImplementedError("per-group weight is not implemented.")
         if group is not None:
             raise NotImplementedError(
                 "group structure is not implemented, use qid instead."
-            )
-        if enable_categorical:
-            raise NotImplementedError(
-                "categorical support is not enabled on `DaskDMatrix`."
             )
 
         if len(data.shape) != 2:
@@ -311,7 +308,7 @@ class DaskDMatrix:
         qid: Optional[_DaskCollection] = None,
         feature_weights: Optional[_DaskCollection] = None,
         label_lower_bound: Optional[_DaskCollection] = None,
-        label_upper_bound: Optional[_DaskCollection] = None
+        label_upper_bound: Optional[_DaskCollection] = None,
     ) -> "DaskDMatrix":
         '''Obtain references to local data.'''
 
@@ -430,6 +427,7 @@ class DaskDMatrix:
                 'feature_weights': self.feature_weights,
                 'meta_names': self.meta_names,
                 'missing': self.missing,
+                'enable_categorical': self.enable_categorical,
                 'parts': self.worker_map.get(worker_addr, None),
                 'is_quantile': self.is_quantile}
 
@@ -668,6 +666,7 @@ def _create_device_quantile_dmatrix(
     missing: float,
     parts: Optional[_DataParts],
     max_bin: int,
+    enable_categorical: bool,
 ) -> DeviceQuantileDMatrix:
     worker = distributed.get_worker()
     if parts is None:
@@ -680,6 +679,7 @@ def _create_device_quantile_dmatrix(
             feature_names=feature_names,
             feature_types=feature_types,
             max_bin=max_bin,
+            enable_categorical=enable_categorical,
         )
         return d
 
@@ -709,6 +709,7 @@ def _create_device_quantile_dmatrix(
         feature_types=feature_types,
         nthread=worker.nthreads,
         max_bin=max_bin,
+        enable_categorical=enable_categorical,
     )
     dmatrix.set_info(feature_weights=feature_weights)
     return dmatrix
@@ -720,6 +721,7 @@ def _create_dmatrix(
     feature_weights: Optional[Any],
     meta_names: List[str],
     missing: float,
+    enable_categorical: bool,
     parts: Optional[_DataParts]
 ) -> DMatrix:
     '''Get data that local to worker from DaskDMatrix.
@@ -734,9 +736,12 @@ def _create_dmatrix(
     if list_of_parts is None:
         msg = 'worker {address} has an empty DMatrix.  '.format(address=worker.address)
         LOGGER.warning(msg)
-        d = DMatrix(numpy.empty((0, 0)),
-                    feature_names=feature_names,
-                    feature_types=feature_types)
+        d = DMatrix(
+            numpy.empty((0, 0)),
+            feature_names=feature_names,
+            feature_types=feature_types,
+            enable_categorical=enable_categorical,
+        )
         return d
 
     T = TypeVar('T')
@@ -764,6 +769,7 @@ def _create_dmatrix(
         feature_names=feature_names,
         feature_types=feature_types,
         nthread=worker.nthreads,
+        enable_categorical=enable_categorical,
     )
     dmatrix.set_info(
         base_margin=_base_margin,
@@ -1194,13 +1200,14 @@ async def _predict_async(
     missing = data.missing
     meta_names = data.meta_names
 
-    def dispatched_predict(booster: Booster, part: Any) -> numpy.ndarray:
+    def dispatched_predict(booster: Booster, part: Tuple) -> numpy.ndarray:
         data = part[0]
         assert isinstance(part, tuple), type(part)
         base_margin = None
         for i, blob in enumerate(part[1:]):
             if meta_names[i] == "base_margin":
-                base_margin = blob
+                # segfault without copy. See https://github.com/dmlc/xgboost/issues/7111.
+                base_margin = blob.copy()
         with config.config_context(**global_config):
             m = DMatrix(
                 data,
@@ -1225,13 +1232,15 @@ async def _predict_async(
     all_parts = []
     all_orders = []
     all_shapes = []
+    all_workers: List[str] = []
     workers_address = list(data.worker_map.keys())
     for worker_addr in workers_address:
         list_of_parts = data.worker_map[worker_addr]
         all_parts.extend(list_of_parts)
+        all_workers.extend(len(list_of_parts) * [worker_addr])
         all_orders.extend([partition_order[part.key] for part in list_of_parts])
-    for part in all_parts:
-        s = client.submit(lambda part: part[0].shape[0], part)
+    for w, part in zip(all_workers, all_parts):
+        s = client.submit(lambda part: part[0].shape[0], part, workers=[w])
         all_shapes.append(s)
     all_shapes = await client.gather(all_shapes)
 
@@ -1241,8 +1250,8 @@ async def _predict_async(
     all_shapes = [shape for part, shape, order in parts_with_order]
 
     futures = []
-    for part in all_parts:
-        f = client.submit(dispatched_predict, _booster, part)
+    for w, part in zip(all_workers, all_parts):
+        f = client.submit(dispatched_predict, _booster, part, workers=[w])
         futures.append(f)
 
     # Constructing a dask array from list of numpy arrays
@@ -1642,6 +1651,7 @@ class DaskXGBRegressor(DaskScikitLearnBase, XGBRegressorBase):
             eval_group=None,
             eval_qid=None,
             missing=self.missing,
+            enable_categorical=self.enable_categorical,
         )
 
         if callable(self.objective):
@@ -1730,6 +1740,7 @@ class DaskXGBClassifier(DaskScikitLearnBase, XGBClassifierBase):
             eval_group=None,
             eval_qid=None,
             missing=self.missing,
+            enable_categorical=self.enable_categorical,
         )
 
         # pylint: disable=attribute-defined-outside-init
@@ -1927,6 +1938,7 @@ class DaskXGBRanker(DaskScikitLearnBase, XGBRankerMixIn):
             eval_group=None,
             eval_qid=eval_qid,
             missing=self.missing,
+            enable_categorical=self.enable_categorical,
         )
         if eval_metric is not None:
             if callable(eval_metric):

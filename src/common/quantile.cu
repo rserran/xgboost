@@ -61,7 +61,7 @@ void PruneImpl(int device,
                Span<FeatureType const> feature_types,
                Span<SketchEntry> out_cuts,
                ToSketchEntry to_sketch_entry) {
-  dh::LaunchN(device, out_cuts.size(), [=] __device__(size_t idx) {
+  dh::LaunchN(out_cuts.size(), [=] __device__(size_t idx) {
     size_t column_id = dh::SegmentId(cuts_ptr, idx);
     auto out_column = out_cuts.subspan(
         cuts_ptr[column_id], cuts_ptr[column_id + 1] - cuts_ptr[column_id]);
@@ -91,7 +91,6 @@ void PruneImpl(int device,
     }
 
     float w = back.rmin - front.rmax;
-    assert(w != 0);
     auto budget = static_cast<float>(d_out.size());
     assert(budget != 0);
     auto q = ((static_cast<float>(idx) * w) / (static_cast<float>(to) - 1.0f) + front.rmax);
@@ -210,6 +209,7 @@ void MergeImpl(int32_t device, Span<SketchEntry const> const &d_x,
                Span<bst_row_t const> const &x_ptr,
                Span<SketchEntry const> const &d_y,
                Span<bst_row_t const> const &y_ptr,
+               Span<FeatureType const> feature_types,
                Span<SketchEntry> out,
                Span<bst_row_t> out_ptr) {
   dh::safe_cuda(cudaSetDevice(device));
@@ -220,7 +220,7 @@ void MergeImpl(int32_t device, Span<SketchEntry const> const &d_x,
   auto d_merge_path = MergePath(d_x, x_ptr, d_y, y_ptr, out, out_ptr);
   auto d_out = out;
 
-  dh::LaunchN(device, d_out.size(), [=] __device__(size_t idx) {
+  dh::LaunchN(d_out.size(), [=] __device__(size_t idx) {
     auto column_id = dh::SegmentId(out_ptr, idx);
     idx -= out_ptr[column_id];
 
@@ -408,31 +408,6 @@ size_t SketchContainer::ScanInput(Span<SketchEntry> entries, Span<OffsetT> d_col
   return n_uniques;
 }
 
-size_t SketchContainer::Unique() {
-  timer_.Start(__func__);
-  dh::safe_cuda(cudaSetDevice(device_));
-  this->columns_ptr_.SetDevice(device_);
-  Span<OffsetT> d_column_scan = this->columns_ptr_.DeviceSpan();
-  CHECK_EQ(d_column_scan.size(), num_columns_ + 1);
-  Span<SketchEntry> entries = dh::ToSpan(this->Current());
-  HostDeviceVector<OffsetT> scan_out(d_column_scan.size());
-  scan_out.SetDevice(device_);
-  auto d_scan_out = scan_out.DeviceSpan();
-
-  d_column_scan = this->columns_ptr_.DeviceSpan();
-  size_t n_uniques = dh::SegmentedUnique(
-      d_column_scan.data(), d_column_scan.data() + d_column_scan.size(),
-      entries.data(), entries.data() + entries.size(), scan_out.DevicePointer(),
-      entries.data(),
-      detail::SketchUnique{});
-  this->columns_ptr_.Copy(scan_out);
-  CHECK(!this->columns_ptr_.HostCanRead());
-
-  this->Current().resize(n_uniques);
-  timer_.Stop(__func__);
-  return n_uniques;
-}
-
 void SketchContainer::Prune(size_t to) {
   timer_.Start(__func__);
   dh::safe_cuda(cudaSetDevice(device_));
@@ -490,13 +465,20 @@ void SketchContainer::Merge(Span<OffsetT const> d_that_columns_ptr,
   this->Other().resize(this->Current().size() + that.size());
   CHECK_EQ(d_that_columns_ptr.size(), this->columns_ptr_.Size());
 
-  MergeImpl(device_, this->Data(), this->ColumnsPtr(),
-            that, d_that_columns_ptr,
-            dh::ToSpan(this->Other()), columns_ptr_b_.DeviceSpan());
+  auto feature_types = this->FeatureTypes().ConstDeviceSpan();
+  MergeImpl(device_, this->Data(), this->ColumnsPtr(), that, d_that_columns_ptr,
+            feature_types, dh::ToSpan(this->Other()),
+            columns_ptr_b_.DeviceSpan());
   this->columns_ptr_.Copy(columns_ptr_b_);
   CHECK_EQ(this->columns_ptr_.Size(), num_columns_ + 1);
   this->Alternate();
 
+  if (this->HasCategorical()) {
+    auto d_feature_types = this->FeatureTypes().ConstDeviceSpan();
+    this->Unique([d_feature_types] __device__(size_t l_fidx, size_t r_fidx) {
+      return l_fidx == r_fidx && IsCat(d_feature_types, l_fidx);
+    });
+  }
   timer_.Stop(__func__);
 }
 
@@ -504,7 +486,7 @@ void SketchContainer::FixError() {
   dh::safe_cuda(cudaSetDevice(device_));
   auto d_columns_ptr = this->columns_ptr_.ConstDeviceSpan();
   auto in = dh::ToSpan(this->Current());
-  dh::LaunchN(device_, in.size(), [=] __device__(size_t idx) {
+  dh::LaunchN(in.size(), [=] __device__(size_t idx) {
     auto column_id = dh::SegmentId(d_columns_ptr, idx);
     auto in_column = in.subspan(d_columns_ptr[column_id],
                                 d_columns_ptr[column_id + 1] -
@@ -644,7 +626,7 @@ void SketchContainer::MakeCuts(HistogramCuts* p_cuts) {
   auto out_cut_values = p_cuts->cut_values_.DeviceSpan();
   auto d_ft = feature_types_.ConstDeviceSpan();
 
-  dh::LaunchN(0, total_bins, [=] __device__(size_t idx) {
+  dh::LaunchN(total_bins, [=] __device__(size_t idx) {
     auto column_id = dh::SegmentId(d_out_columns_ptr, idx);
     auto in_column = in_cut_values.subspan(d_in_columns_ptr[column_id],
                                            d_in_columns_ptr[column_id + 1] -

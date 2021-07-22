@@ -190,35 +190,22 @@ XGB_DLL int XGDMatrixCreateFromArrayInterface(char const* c_json_strs,
 #endif
 
 // Create from data iterator
-XGB_DLL int XGProxyDMatrixCreate(DMatrixHandle* out) {
+XGB_DLL int XGDMatrixCreateFromCallback(DataIterHandle iter,
+                                        DMatrixHandle proxy,
+                                        DataIterResetCallback *reset,
+                                        XGDMatrixCallbackNext *next,
+                                        char const* c_json_config,
+                                        DMatrixHandle *out) {
   API_BEGIN();
-  *out = new std::shared_ptr<xgboost::DMatrix>(new xgboost::data::DMatrixProxy);;
-  API_END();
-}
-
-XGB_DLL int
-XGDeviceQuantileDMatrixSetDataCudaArrayInterface(DMatrixHandle handle,
-                                                 char const *c_interface_str) {
-  API_BEGIN();
-  CHECK_HANDLE();
-  auto p_m = static_cast<std::shared_ptr<xgboost::DMatrix> *>(handle);
-  CHECK(p_m);
-  auto m =   static_cast<xgboost::data::DMatrixProxy*>(p_m->get());
-  CHECK(m) << "Current DMatrix type does not support set data.";
-  m->SetData(c_interface_str);
-  API_END();
-}
-
-XGB_DLL int
-XGDeviceQuantileDMatrixSetDataCudaColumnar(DMatrixHandle handle,
-                                           char const *c_interface_str) {
-  API_BEGIN();
-  CHECK_HANDLE();
-  auto p_m = static_cast<std::shared_ptr<xgboost::DMatrix> *>(handle);
-  CHECK(p_m);
-  auto m =   static_cast<xgboost::data::DMatrixProxy*>(p_m->get());
-  CHECK(m) << "Current DMatrix type does not support set data.";
-  m->SetData(c_interface_str);
+  auto config = Json::Load(StringView{c_json_config});
+  float missing = get<Number const>(config["missing"]);
+  std::string cache = get<String const>(config["cache_prefix"]);
+  int32_t n_threads = omp_get_max_threads();
+  if (!IsA<Null>(config["nthread"])) {
+    n_threads = get<Integer const>(config["nthread"]);
+  }
+  *out = new std::shared_ptr<xgboost::DMatrix>{xgboost::DMatrix::Create(
+      iter, proxy, reset, next, missing, n_threads, cache)};
   API_END();
 }
 
@@ -231,6 +218,63 @@ XGB_DLL int XGDeviceQuantileDMatrixCreateFromCallback(
     xgboost::DMatrix::Create(iter, proxy, reset, next, missing, nthread, max_bin)};
   API_END();
 }
+
+XGB_DLL int XGProxyDMatrixCreate(DMatrixHandle* out) {
+  API_BEGIN();
+  *out = new std::shared_ptr<xgboost::DMatrix>(new xgboost::data::DMatrixProxy);;
+  API_END();
+}
+
+XGB_DLL int
+XGProxyDMatrixSetDataCudaArrayInterface(DMatrixHandle handle,
+                                        char const *c_interface_str) {
+  API_BEGIN();
+  CHECK_HANDLE();
+  auto p_m = static_cast<std::shared_ptr<xgboost::DMatrix> *>(handle);
+  CHECK(p_m);
+  auto m =   static_cast<xgboost::data::DMatrixProxy*>(p_m->get());
+  CHECK(m) << "Current DMatrix type does not support set data.";
+  m->SetData(c_interface_str);
+  API_END();
+}
+
+XGB_DLL int XGProxyDMatrixSetDataCudaColumnar(DMatrixHandle handle,
+                                              char const *c_interface_str) {
+  API_BEGIN();
+  CHECK_HANDLE();
+  auto p_m = static_cast<std::shared_ptr<xgboost::DMatrix> *>(handle);
+  CHECK(p_m);
+  auto m =   static_cast<xgboost::data::DMatrixProxy*>(p_m->get());
+  CHECK(m) << "Current DMatrix type does not support set data.";
+  m->SetData(c_interface_str);
+  API_END();
+}
+
+XGB_DLL int XGProxyDMatrixSetDataDense(DMatrixHandle handle,
+                                       char const *c_interface_str) {
+  API_BEGIN();
+  CHECK_HANDLE();
+  auto p_m = static_cast<std::shared_ptr<xgboost::DMatrix> *>(handle);
+  CHECK(p_m);
+  auto m =   static_cast<xgboost::data::DMatrixProxy*>(p_m->get());
+  CHECK(m) << "Current DMatrix type does not support set data.";
+  m->SetArrayData(c_interface_str);
+  API_END();
+}
+
+XGB_DLL int XGProxyDMatrixSetDataCSR(DMatrixHandle handle, char const *indptr,
+                                     char const *indices, char const *data,
+                                     xgboost::bst_ulong ncol) {
+  API_BEGIN();
+  CHECK_HANDLE();
+  auto p_m = static_cast<std::shared_ptr<xgboost::DMatrix> *>(handle);
+  CHECK(p_m);
+  auto m =   static_cast<xgboost::data::DMatrixProxy*>(p_m->get());
+  CHECK(m) << "Current DMatrix type does not support set data.";
+  m->SetCSRData(indptr, indices, data, ncol, true);
+  API_END();
+}
+
 // End Create from data iterator
 
 XGB_DLL int XGDMatrixCreateFromCSREx(const size_t* indptr,
@@ -261,7 +305,7 @@ XGB_DLL int XGDMatrixCreateFromCSR(char const *indptr,
   API_END();
 }
 
-XGB_DLL int XGDMatrixCreateFromArray(char const *data,
+XGB_DLL int XGDMatrixCreateFromDense(char const *data,
                                      char const *c_json_config,
                                      DMatrixHandle *out) {
   API_BEGIN();
@@ -433,7 +477,7 @@ XGB_DLL int XGDMatrixGetStrFeatureInfo(DMatrixHandle handle, const char *field,
 }
 
 XGB_DLL int XGDMatrixSetDenseInfo(DMatrixHandle handle, const char *field,
-                                  void *data, xgboost::bst_ulong size,
+                                  void const *data, xgboost::bst_ulong size,
                                   int type) {
   API_BEGIN();
   CHECK_HANDLE();
@@ -662,9 +706,21 @@ XGB_DLL int XGBoosterPredictFromDMatrix(BoosterHandle handle,
   auto *learner = static_cast<Learner*>(handle);
   auto& entry = learner->GetThreadLocal().prediction_entry;
   auto p_m = *static_cast<std::shared_ptr<DMatrix> *>(dmat);
-  auto type = PredictionType(get<Integer const>(config["type"]));
-  auto iteration_begin = get<Integer const>(config["iteration_begin"]);
-  auto iteration_end = get<Integer const>(config["iteration_end"]);
+
+  auto const& j_config = get<Object const>(config);
+  auto type = PredictionType(get<Integer const>(j_config.at("type")));
+  auto iteration_begin = get<Integer const>(j_config.at("iteration_begin"));
+  auto iteration_end = get<Integer const>(j_config.at("iteration_end"));
+
+  auto ntree_limit_it = j_config.find("ntree_limit");
+  if (ntree_limit_it != j_config.cend() && !IsA<Null>(ntree_limit_it->second) &&
+      get<Integer const>(ntree_limit_it->second) != 0) {
+    CHECK(iteration_end == 0) <<
+        "Only one of the `ntree_limit` or `iteration_range` can be specified.";
+    LOG(WARNING) << "`ntree_limit` is deprecated, use `iteration_range` instead.";
+    iteration_end = GetIterationFromTreeLimit(get<Integer const>(ntree_limit_it->second), learner);
+  }
+
   bool approximate = type == PredictionType::kApproxContribution ||
                      type == PredictionType::kApproxInteraction;
   bool contribs = type == PredictionType::kContribution ||
@@ -915,14 +971,17 @@ XGB_DLL int XGBoosterSlice(BoosterHandle handle, int begin_layer,
   API_END();
 }
 
-inline void XGBoostDumpModelImpl(BoosterHandle handle, const FeatureMap &fmap,
+inline void XGBoostDumpModelImpl(BoosterHandle handle, FeatureMap* fmap,
                                  int with_stats, const char *format,
                                  xgboost::bst_ulong *len,
                                  const char ***out_models) {
   auto *bst = static_cast<Learner*>(handle);
+  bst->Configure();
+  GenerateFeatureMap(bst, {}, bst->GetNumFeature(), fmap);
+
   std::vector<std::string>& str_vecs = bst->GetThreadLocal().ret_vec_str;
   std::vector<const char*>& charp_vecs = bst->GetThreadLocal().ret_vec_charp;
-  str_vecs = bst->DumpModel(fmap, with_stats != 0, format);
+  str_vecs = bst->DumpModel(*fmap, with_stats != 0, format);
   charp_vecs.resize(str_vecs.size());
   for (size_t i = 0; i < str_vecs.size(); ++i) {
     charp_vecs[i] = str_vecs[i].c_str();
@@ -950,14 +1009,9 @@ XGB_DLL int XGBoosterDumpModelEx(BoosterHandle handle,
                                  const char*** out_models) {
   API_BEGIN();
   CHECK_HANDLE();
-  FeatureMap featmap;
-  if (strlen(fmap) != 0) {
-    std::unique_ptr<dmlc::Stream> fs(
-        dmlc::Stream::Create(fmap, "r"));
-    dmlc::istream is(fs.get());
-    featmap.LoadText(is);
-  }
-  XGBoostDumpModelImpl(handle, featmap, with_stats, format, len, out_models);
+  std::string uri{fmap};
+  FeatureMap featmap = LoadFeatureMap(uri);
+  XGBoostDumpModelImpl(handle, &featmap, with_stats, format, len, out_models);
   API_END();
 }
 
@@ -968,8 +1022,8 @@ XGB_DLL int XGBoosterDumpModelWithFeatures(BoosterHandle handle,
                                            int with_stats,
                                            xgboost::bst_ulong* len,
                                            const char*** out_models) {
-  return XGBoosterDumpModelExWithFeatures(handle, fnum, fname, ftype, with_stats,
-                                          "text", len, out_models);
+  return XGBoosterDumpModelExWithFeatures(handle, fnum, fname, ftype,
+                                          with_stats, "text", len, out_models);
 }
 
 XGB_DLL int XGBoosterDumpModelExWithFeatures(BoosterHandle handle,
@@ -986,7 +1040,7 @@ XGB_DLL int XGBoosterDumpModelExWithFeatures(BoosterHandle handle,
   for (int i = 0; i < fnum; ++i) {
     featmap.PushBack(i, fname[i], ftype[i]);
   }
-  XGBoostDumpModelImpl(handle, featmap, with_stats, format, len, out_models);
+  XGBoostDumpModelImpl(handle, &featmap, with_stats, format, len, out_models);
   API_END();
 }
 
@@ -1083,6 +1137,66 @@ XGB_DLL int XGBoosterGetStrFeatureInfo(BoosterHandle handle, const char *field,
   }
   *out_features = dmlc::BeginPtr(charp_vecs);
   *len = static_cast<xgboost::bst_ulong>(charp_vecs.size());
+  API_END();
+}
+
+XGB_DLL int XGBoosterFeatureScore(BoosterHandle handle, char const *json_config,
+                                  xgboost::bst_ulong *out_n_features,
+                                  char const ***out_features,
+                                  bst_ulong *out_dim,
+                                  bst_ulong const **out_shape,
+                                  float const **out_scores) {
+  API_BEGIN();
+  CHECK_HANDLE();
+  auto *learner = static_cast<Learner *>(handle);
+  auto config = Json::Load(StringView{json_config});
+  auto importance = get<String const>(config["importance_type"]);
+  std::string feature_map_uri;
+  if (!IsA<Null>(config["feature_map"])) {
+    feature_map_uri = get<String const>(config["feature_map"]);
+  }
+  FeatureMap feature_map = LoadFeatureMap(feature_map_uri);
+  std::vector<Json> custom_feature_names;
+  if (!IsA<Null>(config["feature_names"])) {
+    custom_feature_names = get<Array const>(config["feature_names"]);
+  }
+
+  auto& scores = learner->GetThreadLocal().ret_vec_float;
+  std::vector<bst_feature_t> features;
+  learner->CalcFeatureScore(importance, &features, &scores);
+
+  auto n_features = learner->GetNumFeature();
+  GenerateFeatureMap(learner, custom_feature_names, n_features, &feature_map);
+
+  auto& feature_names = learner->GetThreadLocal().ret_vec_str;
+  feature_names.resize(features.size());
+  auto& feature_names_c = learner->GetThreadLocal().ret_vec_charp;
+  feature_names_c.resize(features.size());
+
+  for (bst_feature_t i = 0; i < features.size(); ++i) {
+    feature_names[i] = feature_map.Name(features[i]);
+    feature_names_c[i] = feature_names[i].data();
+  }
+  *out_n_features = feature_names.size();
+
+  CHECK_LE(features.size(), scores.size());
+  auto &shape = learner->GetThreadLocal().prediction_shape;
+  if (scores.size() > features.size()) {
+    // Linear model multi-class model
+    CHECK_EQ(scores.size() % features.size(), 0ul);
+    auto n_classes = scores.size() / features.size();
+    *out_dim = 2;
+    shape = {n_features, n_classes};
+  } else {
+    CHECK_EQ(features.size(), scores.size());
+    *out_dim = 1;
+    shape.resize(1);
+    shape.front() = scores.size();
+  }
+
+  *out_shape = dmlc::BeginPtr(shape);
+  *out_scores = scores.data();
+  *out_features = dmlc::BeginPtr(feature_names_c);
   API_END();
 }
 

@@ -32,60 +32,59 @@ def train_result(param, dmat, num_rounds):
 
 
 class TestGPUUpdaters:
-    @given(parameter_strategy, strategies.integers(1, 20),
-           tm.dataset_strategy)
+    @given(parameter_strategy, strategies.integers(1, 20), tm.dataset_strategy)
     @settings(deadline=None)
     def test_gpu_hist(self, param, num_rounds, dataset):
-        param['tree_method'] = 'gpu_hist'
+        param["tree_method"] = "gpu_hist"
         param = dataset.set_params(param)
         result = train_result(param, dataset.get_dmat(), num_rounds)
         note(result)
-        assert tm.non_increasing(result['train'][dataset.metric])
+        assert tm.non_increasing(result["train"][dataset.metric])
 
     def run_categorical_basic(self, rows, cols, rounds, cats):
-        import pandas as pd
-        rng = np.random.RandomState(1994)
-
-        pd_dict = {}
-        for i in range(cols):
-            c = rng.randint(low=0, high=cats+1, size=rows)
-            pd_dict[str(i)] = pd.Series(c, dtype=np.int64)
-
-        df = pd.DataFrame(pd_dict)
-        label = df.iloc[:, 0]
-        for i in range(0, cols-1):
-            label += df.iloc[:, i]
-        label += 1
-        df = df.astype('category')
-        onehot = pd.get_dummies(df)
-        cat = df
+        onehot, label = tm.make_categorical(rows, cols, cats, True)
+        cat, _ = tm.make_categorical(rows, cols, cats, False)
 
         by_etl_results = {}
         by_builtin_results = {}
 
-        parameters = {'tree_method': 'gpu_hist', 'predictor': 'gpu_predictor'}
+        parameters = {"tree_method": "gpu_hist", "predictor": "gpu_predictor"}
 
-        m = xgb.DMatrix(onehot, label, enable_categorical=True)
-        xgb.train(parameters, m,
-                  num_boost_round=rounds,
-                  evals=[(m, 'Train')], evals_result=by_etl_results)
+        m = xgb.DMatrix(onehot, label, enable_categorical=False)
+        xgb.train(
+            parameters,
+            m,
+            num_boost_round=rounds,
+            evals=[(m, "Train")],
+            evals_result=by_etl_results,
+        )
 
         m = xgb.DMatrix(cat, label, enable_categorical=True)
-        xgb.train(parameters, m,
-                  num_boost_round=rounds,
-                  evals=[(m, 'Train')], evals_result=by_builtin_results)
+        xgb.train(
+            parameters,
+            m,
+            num_boost_round=rounds,
+            evals=[(m, "Train")],
+            evals_result=by_builtin_results,
+        )
+
+        # There are guidelines on how to specify tolerance based on considering output as
+        # random variables. But in here the tree construction is extremely sensitive to
+        # floating point errors. An 1e-5 error in a histogram bin can lead to an entirely
+        # different tree.  So even though the test is quite lenient, hypothesis can still
+        # pick up falsifying examples from time to time.
         np.testing.assert_allclose(
-            np.array(by_etl_results['Train']['rmse']),
-            np.array(by_builtin_results['Train']['rmse']),
-            rtol=1e-3)
-        assert tm.non_increasing(by_builtin_results['Train']['rmse'])
+            np.array(by_etl_results["Train"]["rmse"]),
+            np.array(by_builtin_results["Train"]["rmse"]),
+            rtol=1e-3,
+        )
+        assert tm.non_increasing(by_builtin_results["Train"]["rmse"])
 
     @given(strategies.integers(10, 400), strategies.integers(3, 8),
-           strategies.integers(1, 5), strategies.integers(4, 7))
+           strategies.integers(1, 2), strategies.integers(4, 7))
     @settings(deadline=None)
     @pytest.mark.skipif(**tm.no_pandas())
     def test_categorical(self, rows, cols, rounds, cats):
-        pytest.xfail(reason='TestGPUUpdaters::test_categorical is flaky')
         self.run_categorical_basic(rows, cols, rounds, cats)
 
     def test_categorical_32_cat(self):
@@ -113,7 +112,6 @@ class TestGPUUpdaters:
            tm.dataset_strategy)
     @settings(deadline=None)
     def test_external_memory(self, param, num_rounds, dataset):
-        pytest.xfail(reason='TestGPUUpdaters::test_external_memory is flaky')
         # We cannot handle empty dataset yet
         assume(len(dataset.y) > 0)
         param['tree_method'] = 'gpu_hist'

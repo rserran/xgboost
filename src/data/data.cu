@@ -19,17 +19,22 @@ void CopyInfoImpl(ArrayInterface column, HostDeviceVector<float>* out) {
     cudaPointerAttributes attr;
     dh::safe_cuda(cudaPointerGetAttributes(&attr, ptr));
     int32_t ptr_device = attr.device;
-    dh::safe_cuda(cudaSetDevice(ptr_device));
+    if (ptr_device >= 0) {
+      dh::safe_cuda(cudaSetDevice(ptr_device));
+    }
     return ptr_device;
   };
   auto ptr_device = SetDeviceToPtr(column.data);
 
+  if (column.num_rows == 0) {
+    return;
+  }
   out->SetDevice(ptr_device);
   out->Resize(column.num_rows);
 
   auto p_dst = thrust::device_pointer_cast(out->DevicePointer());
 
-  dh::LaunchN(ptr_device, column.num_rows, [=] __device__(size_t idx) {
+  dh::LaunchN(column.num_rows, [=] __device__(size_t idx) {
     p_dst[idx] = column.GetElement(idx, 0);
   });
 }
@@ -49,10 +54,11 @@ void CopyGroupInfoImpl(ArrayInterface column, std::vector<bst_group_t>* out) {
       << "Expected integer for group info.";
 
   auto ptr_device = SetDeviceToPtr(column.data);
+  CHECK_EQ(ptr_device, dh::CurrentDevice());
   dh::TemporaryArray<bst_group_t> temp(column.num_rows);
   auto d_tmp = temp.data();
 
-  dh::LaunchN(ptr_device, column.num_rows, [=] __device__(size_t idx) {
+  dh::LaunchN(column.num_rows, [=] __device__(size_t idx) {
     d_tmp[idx] = column.GetElement<size_t>(idx, 0);
   });
   auto length = column.num_rows;
@@ -73,8 +79,8 @@ void CopyQidImpl(ArrayInterface array_interface,
   dh::caching_device_vector<bool> flag(1);
   auto d_flag = dh::ToSpan(flag);
   auto d = SetDeviceToPtr(array_interface.data);
-  dh::LaunchN(d, 1, [=] __device__(size_t) { d_flag[0] = true; });
-  dh::LaunchN(d, array_interface.num_rows - 1, [=] __device__(size_t i) {
+  dh::LaunchN(1, [=] __device__(size_t) { d_flag[0] = true; });
+  dh::LaunchN(array_interface.num_rows - 1, [=] __device__(size_t i) {
     if (array_interface.GetElement<uint32_t>(i, 0) >
         array_interface.GetElement<uint32_t>(i + 1, 0)) {
       d_flag[0] = false;
@@ -122,7 +128,12 @@ void MetaInfo::SetInfo(const char * c_key, std::string const& interface_str) {
       << "MetaInfo: " << c_key << ". " << ArrayInterfaceErrors::Dimension(1);
   ArrayInterface array_interface(interface_str);
   std::string key{c_key};
-  array_interface.AsColumnVector();
+  if (!((array_interface.num_cols == 1 && array_interface.num_rows == 0) ||
+        (array_interface.num_cols == 0 && array_interface.num_rows == 1))) {
+    // Not an empty column, transform it.
+    array_interface.AsColumnVector();
+  }
+
   CHECK(!array_interface.valid.Data())
       << "Meta info " << key << " should be dense, found validity mask";
   if (array_interface.num_rows == 0) {
@@ -166,7 +177,7 @@ void MetaInfo::SetInfo(const char * c_key, std::string const& interface_str) {
 
 template <typename AdapterT>
 DMatrix* DMatrix::Create(AdapterT* adapter, float missing, int nthread,
-                         const std::string& cache_prefix, size_t page_size) {
+                         const std::string& cache_prefix) {
   CHECK_EQ(cache_prefix.size(), 0)
       << "Device memory construction is not currently supported with external "
          "memory.";
@@ -175,8 +186,8 @@ DMatrix* DMatrix::Create(AdapterT* adapter, float missing, int nthread,
 
 template DMatrix* DMatrix::Create<data::CudfAdapter>(
     data::CudfAdapter* adapter, float missing, int nthread,
-    const std::string& cache_prefix, size_t page_size);
+    const std::string& cache_prefix);
 template DMatrix* DMatrix::Create<data::CupyAdapter>(
     data::CupyAdapter* adapter, float missing, int nthread,
-    const std::string& cache_prefix, size_t page_size);
+    const std::string& cache_prefix);
 }  // namespace xgboost

@@ -238,6 +238,10 @@ void GenericParameter::ConfigureGpuId(bool require_gpu) {
 #endif  // defined(XGBOOST_USE_CUDA)
 }
 
+int32_t GenericParameter::Threads() const {
+  return common::OmpGetNumThreads(nthread);
+}
+
 using LearnerAPIThreadLocalStore =
     dmlc::ThreadLocalStore<std::map<Learner const *, XGBAPIThreadLocalEntry>>;
 
@@ -1032,6 +1036,8 @@ class LearnerImpl : public LearnerIO {
     out_impl->mparam_ = this->mparam_;
     out_impl->attributes_ = this->attributes_;
     out_impl->learner_model_param_ = this->learner_model_param_;
+    out_impl->SetFeatureNames(this->feature_names_);
+    out_impl->SetFeatureTypes(this->feature_types_);
     out_impl->LoadConfig(config);
     out_impl->Configure();
     return out_impl;
@@ -1191,6 +1197,13 @@ class LearnerImpl : public LearnerIO {
       LOG(FATAL) << "Unsupported prediction type:" << static_cast<int>(type);
     }
     *out_preds = &out_predictions.predictions;
+  }
+
+  void CalcFeatureScore(std::string const &importance_type,
+                        std::vector<bst_feature_t> *features,
+                        std::vector<float> *scores) override {
+    this->Configure();
+    gbm_->FeatureScore(importance_type, features, scores);
   }
 
   const std::map<std::string, std::string>& GetConfigurationArguments() const override {

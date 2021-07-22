@@ -25,6 +25,8 @@
 #include "../include/rabit/rabit.h"
 
 namespace xgboost {
+class GHistIndexMatrix;
+
 namespace common {
 /*!
  * \brief A single row in global histogram index.
@@ -108,7 +110,8 @@ class HistogramCuts {
   }
 };
 
-inline HistogramCuts SketchOnDMatrix(DMatrix *m, int32_t max_bins) {
+inline HistogramCuts SketchOnDMatrix(DMatrix *m, int32_t max_bins,
+                                     std::vector<float> const &hessian = {}) {
   HistogramCuts out;
   auto const& info = m->Info();
   const auto threads = omp_get_max_threads();
@@ -125,9 +128,9 @@ inline HistogramCuts SketchOnDMatrix(DMatrix *m, int32_t max_bins) {
     }
   }
   HostSketchContainer container(reduced, max_bins,
-                                HostSketchContainer::UseGroup(info));
+                                HostSketchContainer::UseGroup(info), threads);
   for (auto const &page : m->GetBatches<SparsePage>()) {
-    container.PushRowPage(page, info);
+    container.PushRowPage(page, info, hessian);
   }
   container.MakeCuts(&out);
   return out;
@@ -226,82 +229,14 @@ struct Index {
   Func func_;
 };
 
-
-/*!
- * \brief preprocessed global index matrix, in CSR format
- *
- *  Transform floating values to integer index in histogram This is a global histogram
- *  index for CPU histogram.  On GPU ellpack page is used.
- */
-struct GHistIndexMatrix {
-  /*! \brief row pointer to rows by element position */
-  std::vector<size_t> row_ptr;
-  /*! \brief The index data */
-  Index index;
-  /*! \brief hit count of each index */
-  std::vector<size_t> hit_count;
-  /*! \brief The corresponding cuts */
-  HistogramCuts cut;
-  DMatrix* p_fmat;
-  size_t max_num_bins;
-  // Create a global histogram matrix, given cut
-  void Init(DMatrix* p_fmat, int max_num_bins);
-
-  // specific method for sparse data as no possibility to reduce allocated memory
-  template <typename BinIdxType, typename GetOffset>
-  void SetIndexData(common::Span<BinIdxType> index_data_span,
-                    size_t batch_threads, const SparsePage &batch,
-                    size_t rbegin, size_t nbins, GetOffset get_offset) {
-    const xgboost::Entry *data_ptr = batch.data.HostVector().data();
-    const std::vector<bst_row_t> &offset_vec = batch.offset.HostVector();
-    const size_t batch_size = batch.Size();
-    CHECK_LT(batch_size, offset_vec.size());
-    BinIdxType* index_data = index_data_span.data();
-    ParallelFor(omp_ulong(batch_size), batch_threads, [&](omp_ulong i) {
-      const int tid = omp_get_thread_num();
-      size_t ibegin = row_ptr[rbegin + i];
-      size_t iend = row_ptr[rbegin + i + 1];
-      const size_t size = offset_vec[i + 1] - offset_vec[i];
-      SparsePage::Inst inst = {data_ptr + offset_vec[i], size};
-      CHECK_EQ(ibegin + inst.size(), iend);
-      for (bst_uint j = 0; j < inst.size(); ++j) {
-        uint32_t idx = cut.SearchBin(inst[j]);
-        index_data[ibegin + j] = get_offset(idx, j);
-        ++hit_count_tloc_[tid * nbins + idx];
-      }
-    });
-  }
-
-  void ResizeIndex(const size_t n_index,
-                   const bool isDense);
-
-  inline void GetFeatureCounts(size_t* counts) const {
-    auto nfeature = cut.Ptrs().size() - 1;
-    for (unsigned fid = 0; fid < nfeature; ++fid) {
-      auto ibegin = cut.Ptrs()[fid];
-      auto iend = cut.Ptrs()[fid + 1];
-      for (auto i = ibegin; i < iend; ++i) {
-        counts[fid] += hit_count[i];
-      }
-    }
-  }
-  inline bool IsDense() const {
-    return isDense_;
-  }
-
- private:
-  std::vector<size_t> hit_count_tloc_;
-  bool isDense_;
-};
-
 template <typename GradientIndex>
-int32_t XGBOOST_HOST_DEV_INLINE BinarySearchBin(bst_uint begin, bst_uint end,
+int32_t XGBOOST_HOST_DEV_INLINE BinarySearchBin(size_t begin, size_t end,
                                                 GradientIndex const &data,
                                                 uint32_t const fidx_begin,
                                                 uint32_t const fidx_end) {
-  uint32_t previous_middle = std::numeric_limits<uint32_t>::max();
+  size_t previous_middle = std::numeric_limits<size_t>::max();
   while (end != begin) {
-    auto middle = begin + (end - begin) / 2;
+    size_t middle = begin + (end - begin) / 2;
     if (middle == previous_middle) {
       break;
     }
@@ -321,47 +256,7 @@ int32_t XGBOOST_HOST_DEV_INLINE BinarySearchBin(bst_uint begin, bst_uint end,
   return -1;
 }
 
-struct GHistIndexBlock {
-  const size_t* row_ptr;
-  const uint32_t* index;
-
-  inline GHistIndexBlock(const size_t* row_ptr, const uint32_t* index)
-    : row_ptr(row_ptr), index(index) {}
-
-  // get i-th row
-  inline GHistIndexRow operator[](size_t i) const {
-    return {&index[0] + row_ptr[i], row_ptr[i + 1] - row_ptr[i]};
-  }
-};
-
 class ColumnMatrix;
-
-class GHistIndexBlockMatrix {
- public:
-  void Init(const GHistIndexMatrix& gmat,
-            const ColumnMatrix& colmat,
-            const tree::TrainParam& param);
-
-  inline GHistIndexBlock operator[](size_t i) const {
-    return {blocks_[i].row_ptr_begin, blocks_[i].index_begin};
-  }
-
-  inline size_t GetNumBlock() const {
-    return blocks_.size();
-  }
-
- private:
-  std::vector<size_t> row_ptr_;
-  std::vector<uint32_t> index_;
-  const HistogramCuts* cut_;
-  struct Block {
-    const size_t* row_ptr_begin;
-    const size_t* row_ptr_end;
-    const uint32_t* index_begin;
-    const uint32_t* index_end;
-  };
-  std::vector<Block> blocks_;
-};
 
 template<typename GradientSumT>
 using GHistRow = Span<xgboost::detail::GradientPairInternal<GradientSumT> >;
@@ -667,16 +562,11 @@ class GHistBuilder {
   GHistBuilder(size_t nthread, uint32_t nbins) : nthread_{nthread}, nbins_{nbins} {}
 
   // construct a histogram via histogram aggregation
+  template <bool any_missing>
   void BuildHist(const std::vector<GradientPair>& gpair,
                  const RowSetCollection::Elem row_indices,
                  const GHistIndexMatrix& gmat,
-                 GHistRowT hist,
-                 bool isDense);
-  // same, with feature grouping
-  void BuildBlockHist(const std::vector<GradientPair>& gpair,
-                      const RowSetCollection::Elem row_indices,
-                      const GHistIndexBlockMatrix& gmatb,
-                      GHistRowT hist);
+                 GHistRowT hist);
   // construct a histogram via subtraction trick
   void SubtractionTrick(GHistRowT self,
                         GHistRowT sibling,
@@ -691,6 +581,42 @@ class GHistBuilder {
   size_t nthread_ { 0 };
   /*! \brief number of all bins over all features */
   uint32_t nbins_ { 0 };
+};
+
+/*!
+ * \brief A C-style array with in-stack allocation. As long as the array is smaller than
+ * MaxStackSize, it will be allocated inside the stack. Otherwise, it will be
+ * heap-allocated.
+ */
+template<typename T, size_t MaxStackSize>
+class MemStackAllocator {
+ public:
+  explicit MemStackAllocator(size_t required_size): required_size_(required_size) {
+  }
+
+  T* Get() {
+    if (!ptr_) {
+      if (MaxStackSize >= required_size_) {
+        ptr_ = stack_mem_;
+      } else {
+        ptr_ =  reinterpret_cast<T*>(malloc(required_size_ * sizeof(T)));
+        do_free_ = true;
+      }
+    }
+
+    return ptr_;
+  }
+
+  ~MemStackAllocator() {
+    if (do_free_) free(ptr_);
+  }
+
+
+ private:
+  T* ptr_ = nullptr;
+  bool do_free_ = false;
+  size_t required_size_;
+  T stack_mem_[MaxStackSize];
 };
 }  // namespace common
 }  // namespace xgboost

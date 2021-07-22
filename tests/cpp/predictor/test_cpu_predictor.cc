@@ -86,14 +86,16 @@ TEST(CpuPredictor, Basic) {
   }
 }
 
-TEST(CpuPredictor, ExternalMemory) {
-  dmlc::TemporaryDirectory tmpdir;
-  std::string filename = tmpdir.path + "/big.libsvm";
 
+TEST(CpuPredictor, IterationRange) {
+  TestIterationRange("cpu_predictor");
+}
+
+TEST(CpuPredictor, ExternalMemory) {
   size_t constexpr kPageSize = 64, kEntriesPerCol = 3;
   size_t constexpr kEntries = kPageSize * kEntriesPerCol * 2;
 
-  std::unique_ptr<DMatrix> dmat = CreateSparsePageDMatrix(kEntries, kPageSize, filename);
+  std::unique_ptr<DMatrix> dmat = CreateSparsePageDMatrix(kEntries);
   auto lparam = CreateEmptyGenericParam(GPUIDX);
 
   std::unique_ptr<Predictor> cpu_predictor =
@@ -229,9 +231,17 @@ void TestUpdatePredictionCache(bool use_subsampling) {
   }
 }
 
+TEST(CPUPredictor, CategoricalPrediction) {
+  TestCategoricalPrediction("cpu_predictor");
+}
+
+TEST(CPUPredictor, CategoricalPredictLeaf) {
+  TestCategoricalPredictLeaf(StringView{"cpu_predictor"});
+}
+
 TEST(CpuPredictor, UpdatePredictionCache) {
-    TestUpdatePredictionCache(false);
-    TestUpdatePredictionCache(true);
+  TestUpdatePredictionCache(false);
+  TestUpdatePredictionCache(true);
 }
 
 TEST(CpuPredictor, LesserFeatures) {

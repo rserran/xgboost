@@ -66,6 +66,10 @@ void TestInplacePrediction(dmlc::any x, std::string predictor,
 void TestPredictionWithLesserFeatures(std::string preditor_name);
 
 void TestCategoricalPrediction(std::string name);
+
+void TestCategoricalPredictLeaf(StringView name);
+
+void TestIterationRange(std::string name);
 }  // namespace xgboost
 
 #endif  // XGBOOST_TEST_PREDICTOR_H_
