@@ -229,9 +229,9 @@ class InstallLib(install_lib.install_lib):
             os.mkdir(lib_dir)
         dst = os.path.join(self.install_dir, 'xgboost', 'lib', lib_name())
 
-        global BUILD_TEMP_DIR   # pylint: disable=global-statement
         libxgboost_path = lib_name()
 
+        assert BUILD_TEMP_DIR is not None
         dft_lib_dir = os.path.join(CURRENT_DIR, os.path.pardir, 'lib')
         build_dir = os.path.join(BUILD_TEMP_DIR, 'xgboost', 'lib')
 
@@ -302,7 +302,7 @@ if __name__ == '__main__':
 
     with open(os.path.join(CURRENT_DIR, 'README.rst'), encoding='utf-8') as fd:
         description = fd.read()
-    with open(os.path.join(CURRENT_DIR, 'xgboost/VERSION')) as fd:
+    with open(os.path.join(CURRENT_DIR, 'xgboost/VERSION'), encoding="ascii") as fd:
         version = fd.read().strip()
 
     setup(name='xgboost',

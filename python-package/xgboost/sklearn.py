@@ -23,14 +23,9 @@ from .compat import (
     XGBClassifierBase,
     XGBRegressorBase,
     XGBoostLabelEncoder,
-    DataFrame,
-    scipy_csr,
 )
 
-# Actually XGBoost supports a lot more data types including `scipy.sparse.csr_matrix` and
-# many others.  See `data.py` for a complete list.  The `array_like` here is just for
-# easier type checks.
-array_like = TypeVar("array_like", bound=Union[np.ndarray, DataFrame, scipy_csr])
+array_like = Any
 
 
 class XGBRankerMixIn:  # pylint: disable=too-few-public-methods
@@ -38,6 +33,17 @@ class XGBRankerMixIn:  # pylint: disable=too-few-public-methods
     classes."""
 
     _estimator_type = "ranker"
+
+
+def _check_rf_callback(
+    early_stopping_rounds: Optional[int],
+    callbacks: Optional[List[TrainingCallback]],
+) -> None:
+    if early_stopping_rounds is not None or callbacks is not None:
+        raise NotImplementedError(
+            "`early_stopping_rounds` and `callbacks` are not implemented for"
+            " random forest."
+        )
 
 
 _SklObjective = Optional[
@@ -174,8 +180,7 @@ __model_doc = f'''
         .. versionadded:: 1.5.0
 
         Experimental support for categorical data.  Do not set to true unless you are
-        interested in development. Only valid when `gpu_hist` and pandas dataframe are
-        used.
+        interested in development. Only valid when `gpu_hist` and dataframe are used.
 
     kwargs : dict, optional
         Keyword arguments for XGBoost Booster object.  Full documentation of
@@ -336,7 +341,7 @@ def _wrap_evaluation_matrices(
                 )
                 evals.append(m)
         nevals = len(evals)
-        eval_names = ["validation_{}".format(i) for i in range(nevals)]
+        eval_names = [f"validation_{i}" for i in range(nevals)]
         evals = list(zip(evals, eval_names))
     else:
         if any(
@@ -435,6 +440,9 @@ class XGBModel(XGBModelBase):
         '''Tags used for scikit-learn data validation.'''
         return {'allow_nan': True, 'no_validation': True}
 
+    def __sklearn_is_fitted__(self) -> bool:
+        return hasattr(self, "_Booster")
+
     def get_booster(self) -> Booster:
         """Get the underlying xgboost Booster of this model.
 
@@ -444,7 +452,7 @@ class XGBModel(XGBModelBase):
         -------
         booster : a xgboost booster of underlying model
         """
-        if not hasattr(self, '_Booster'):
+        if not self.__sklearn_is_fitted__():
             from sklearn.exceptions import NotFittedError
             raise NotFittedError('need to call fit or load_model beforehand')
         return self._Booster
@@ -524,7 +532,7 @@ class XGBModel(XGBModelBase):
                         stack.append(v)
 
             for k, v in internal.items():
-                if k in params.keys() and params[k] is None:
+                if k in params and params[k] is None:
                     params[k] = parse_parameter(v)
         except ValueError:
             pass
@@ -538,7 +546,7 @@ class XGBModel(XGBModelBase):
             'importance_type', 'kwargs', 'missing', 'n_estimators', 'use_label_encoder',
             "enable_categorical"
         }
-        filtered = dict()
+        filtered = {}
         for k, v in params.items():
             if k not in wrapper_specific and not callable(v):
                 filtered[k] = v
@@ -557,7 +565,7 @@ class XGBModel(XGBModelBase):
         return self._estimator_type  # pylint: disable=no-member
 
     def save_model(self, fname: Union[str, os.PathLike]) -> None:
-        meta = dict()
+        meta = {}
         for k, v in self.__dict__.items():
             if k == '_le':
                 meta['_le'] = self._le.to_json()
@@ -596,7 +604,7 @@ class XGBModel(XGBModelBase):
             )
             return
         meta = json.loads(meta_str)
-        states = dict()
+        states = {}
         for k, v in meta.items():
             if k == '_le':
                 self._le = XGBoostLabelEncoder()
@@ -1014,7 +1022,7 @@ class XGBModel(XGBModelBase):
             importance_type=self.importance_type if self.importance_type else dft()
         )
         if b.feature_names is None:
-            feature_names = ["f{0}".format(i) for i in range(self.n_features_in_)]
+            feature_names = [f"f{i}" for i in range(self.n_features_in_)]
         else:
             feature_names = b.feature_names
         # gblinear returns all features so the `get` in next line is only for gbtree.
@@ -1042,8 +1050,8 @@ class XGBModel(XGBModelBase):
         """
         if self.get_params()['booster'] != 'gblinear':
             raise AttributeError(
-                'Coefficients are not defined for Booster type {}'
-                .format(self.booster))
+                f"Coefficients are not defined for Booster type {self.booster}"
+            )
         b = self.get_booster()
         coef = np.array(json.loads(b.get_dump(dump_format='json')[0])['weight'])
         # Logic for multiclass classification
@@ -1072,8 +1080,8 @@ class XGBModel(XGBModelBase):
         """
         if self.get_params()['booster'] != 'gblinear':
             raise AttributeError(
-                'Intercept (bias) is not defined for Booster type {}'
-                .format(self.booster))
+                f"Intercept (bias) is not defined for Booster type {self.booster}"
+            )
         b = self.get_booster()
         return np.array(json.loads(b.get_dump(dump_format='json')[0])['bias'])
 
@@ -1289,7 +1297,7 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
         self,
         X: array_like,
         ntree_limit: Optional[int] = None,
-        validate_features: bool = False,
+        validate_features: bool = True,
         base_margin: Optional[array_like] = None,
         iteration_range: Optional[Tuple[int, int]] = None,
     ) -> np.ndarray:
@@ -1418,6 +1426,30 @@ class XGBRFClassifier(XGBClassifier):
     def get_num_boosting_rounds(self) -> int:
         return 1
 
+    # pylint: disable=unused-argument
+    @_deprecate_positional_args
+    def fit(
+        self,
+        X: array_like,
+        y: array_like,
+        *,
+        sample_weight: Optional[array_like] = None,
+        base_margin: Optional[array_like] = None,
+        eval_set: Optional[List[Tuple[array_like, array_like]]] = None,
+        eval_metric: Optional[Union[str, List[str], Metric]] = None,
+        early_stopping_rounds: Optional[int] = None,
+        verbose: Optional[bool] = True,
+        xgb_model: Optional[Union[Booster, str, XGBModel]] = None,
+        sample_weight_eval_set: Optional[List[array_like]] = None,
+        base_margin_eval_set: Optional[List[array_like]] = None,
+        feature_weights: Optional[array_like] = None,
+        callbacks: Optional[List[TrainingCallback]] = None
+    ) -> "XGBRFClassifier":
+        args = {k: v for k, v in locals().items() if k not in ("self", "__class__")}
+        _check_rf_callback(early_stopping_rounds, callbacks)
+        super().fit(**args)
+        return self
+
 
 @xgboost_model_doc(
     "Implementation of the scikit-learn API for XGBoost regression.",
@@ -1449,17 +1481,45 @@ class XGBRFRegressor(XGBRegressor):
         reg_lambda: float = 1e-5,
         **kwargs: Any
     ) -> None:
-        super().__init__(learning_rate=learning_rate, subsample=subsample,
-                         colsample_bynode=colsample_bynode,
-                         reg_lambda=reg_lambda, **kwargs)
+        super().__init__(
+            learning_rate=learning_rate,
+            subsample=subsample,
+            colsample_bynode=colsample_bynode,
+            reg_lambda=reg_lambda,
+            **kwargs
+        )
 
     def get_xgb_params(self) -> Dict[str, Any]:
         params = super().get_xgb_params()
-        params['num_parallel_tree'] = self.n_estimators
+        params["num_parallel_tree"] = self.n_estimators
         return params
 
     def get_num_boosting_rounds(self) -> int:
         return 1
+
+    # pylint: disable=unused-argument
+    @_deprecate_positional_args
+    def fit(
+        self,
+        X: array_like,
+        y: array_like,
+        *,
+        sample_weight: Optional[array_like] = None,
+        base_margin: Optional[array_like] = None,
+        eval_set: Optional[List[Tuple[array_like, array_like]]] = None,
+        eval_metric: Optional[Union[str, List[str], Metric]] = None,
+        early_stopping_rounds: Optional[int] = None,
+        verbose: Optional[bool] = True,
+        xgb_model: Optional[Union[Booster, str, XGBModel]] = None,
+        sample_weight_eval_set: Optional[List[array_like]] = None,
+        base_margin_eval_set: Optional[List[array_like]] = None,
+        feature_weights: Optional[array_like] = None,
+        callbacks: Optional[List[TrainingCallback]] = None
+    ) -> "XGBRFRegressor":
+        args = {k: v for k, v in locals().items() if k not in ("self", "__class__")}
+        _check_rf_callback(early_stopping_rounds, callbacks)
+        super().fit(**args)
+        return self
 
 
 @xgboost_model_doc(

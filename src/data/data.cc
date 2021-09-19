@@ -32,6 +32,7 @@ DMLC_REGISTRY_ENABLE(::xgboost::data::SparsePageFormatReg<::xgboost::SparsePage>
 DMLC_REGISTRY_ENABLE(::xgboost::data::SparsePageFormatReg<::xgboost::CSCPage>);
 DMLC_REGISTRY_ENABLE(::xgboost::data::SparsePageFormatReg<::xgboost::SortedCSCPage>);
 DMLC_REGISTRY_ENABLE(::xgboost::data::SparsePageFormatReg<::xgboost::EllpackPage>);
+DMLC_REGISTRY_ENABLE(::xgboost::data::SparsePageFormatReg<::xgboost::GHistIndexMatrix>);
 }  // namespace dmlc
 
 namespace {
@@ -199,10 +200,10 @@ void LoadFeatureType(std::vector<std::string>const& type_names, std::vector<Feat
       types->emplace_back(FeatureType::kNumerical);
     } else if (elem == "q") {
       types->emplace_back(FeatureType::kNumerical);
-    } else if (elem == "categorical") {
+    } else if (elem == "c") {
       types->emplace_back(FeatureType::kCategorical);
     } else {
-      LOG(FATAL) << "All feature_types must be one of {int, float, i, q, categorical}.";
+      LOG(FATAL) << "All feature_types must be one of {int, float, i, q, c}.";
     }
   }
 }
@@ -1089,5 +1090,6 @@ namespace data {
 
 // List of files that will be force linked in static links.
 DMLC_REGISTRY_LINK_TAG(sparse_page_raw_format);
+DMLC_REGISTRY_LINK_TAG(gradient_index_format);
 }  // namespace data
 }  // namespace xgboost

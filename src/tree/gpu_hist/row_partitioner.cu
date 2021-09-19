@@ -1,5 +1,5 @@
 /*!
- * Copyright 2017-2019 XGBoost contributors
+ * Copyright 2017-2021 XGBoost contributors
  */
 #include <thrust/iterator/discard_iterator.h>
 #include <thrust/iterator/transform_output_iterator.h>
@@ -10,16 +10,6 @@
 
 namespace xgboost {
 namespace tree {
-
-struct IndicateLeftTransform {
-  bst_node_t left_nidx;
-  explicit IndicateLeftTransform(bst_node_t left_nidx) : left_nidx(left_nidx) {}
-  __host__ __device__ __forceinline__ size_t
-  operator()(const bst_node_t& x) const {
-    return x == left_nidx ? 1 : 0;
-  }
-};
-
 struct IndexFlagTuple {
   size_t idx;
   size_t flag;
@@ -60,9 +50,6 @@ struct WriteResultsFunctor {
   }
 };
 
-// Change the value type of thrust discard iterator so we can use it with cub
-using DiscardOverload = thrust::discard_iterator<IndexFlagTuple>;
-
 // Implement partitioning via single scan operation using transform output to
 // write the result
 void RowPartitioner::SortPosition(common::Span<bst_node_t> position,
@@ -74,7 +61,7 @@ void RowPartitioner::SortPosition(common::Span<bst_node_t> position,
   WriteResultsFunctor write_results{left_nidx, position, position_out,
                                     ridx,      ridx_out, d_left_count};
   auto discard_write_iterator =
-      thrust::make_transform_output_iterator(DiscardOverload(), write_results);
+      thrust::make_transform_output_iterator(dh::TypedDiscard<IndexFlagTuple>(), write_results);
   auto counting = thrust::make_counting_iterator(0llu);
   auto input_iterator = dh::MakeTransformIterator<IndexFlagTuple>(
       counting, [=] __device__(size_t idx) {

@@ -1,5 +1,5 @@
 /*!
- * Copyright 2017-2020 by Contributors
+ * Copyright 2017-2021 by Contributors
  * \file hist_util.h
  * \brief Utility for fast histogram aggregation
  * \author Philip Cho, Tianqi Chen
@@ -111,7 +111,7 @@ class HistogramCuts {
 };
 
 inline HistogramCuts SketchOnDMatrix(DMatrix *m, int32_t max_bins,
-                                     std::vector<float> const &hessian = {}) {
+                                     Span<float> const hessian = {}) {
   HistogramCuts out;
   auto const& info = m->Info();
   const auto threads = omp_get_max_threads();
@@ -128,6 +128,7 @@ inline HistogramCuts SketchOnDMatrix(DMatrix *m, int32_t max_bins,
     }
   }
   HostSketchContainer container(reduced, max_bins,
+                                m->Info().feature_types.ConstHostSpan(),
                                 HostSketchContainer::UseGroup(info), threads);
   for (auto const &page : m->GetBatches<SparsePage>()) {
     container.PushRowPage(page, info, hessian);
@@ -136,7 +137,7 @@ inline HistogramCuts SketchOnDMatrix(DMatrix *m, int32_t max_bins,
   return out;
 }
 
-enum BinTypeSize {
+enum BinTypeSize : uint32_t {
   kUint8BinsTypeSize  = 1,
   kUint16BinsTypeSize = 2,
   kUint32BinsTypeSize = 4
@@ -204,6 +205,13 @@ struct Index {
     return data_.begin();
   }
   std::vector<uint8_t>::const_iterator end() const {  // NOLINT
+    return data_.end();
+  }
+
+  std::vector<uint8_t>::iterator begin() {  // NOLINT
+    return data_.begin();
+  }
+  std::vector<uint8_t>::iterator end() {  // NOLINT
     return data_.end();
   }
 
