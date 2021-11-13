@@ -143,7 +143,7 @@ void CheckRankingObjFunction(std::unique_ptr<xgboost::ObjFunction> const& obj,
 }
 
 xgboost::bst_float GetMetricEval(xgboost::Metric * metric,
-                                 xgboost::HostDeviceVector<xgboost::bst_float> preds,
+                                 xgboost::HostDeviceVector<xgboost::bst_float> const& preds,
                                  std::vector<xgboost::bst_float> labels,
                                  std::vector<xgboost::bst_float> weights,
                                  std::vector<xgboost::bst_uint> groups) {
@@ -172,12 +172,10 @@ SimpleLCG::StateType SimpleLCG::operator()() {
   state_ = (alpha_ * state_) % mod_;
   return state_;
 }
-SimpleLCG::StateType SimpleLCG::Min() const {
-  return seed_ * alpha_;
-}
-SimpleLCG::StateType SimpleLCG::Max() const {
-  return max_value_;
-}
+SimpleLCG::StateType SimpleLCG::Min() const { return min(); }
+SimpleLCG::StateType SimpleLCG::Max() const { return max(); }
+// Make sure it's compile time constant.
+static_assert(SimpleLCG::max() - SimpleLCG::min(), "");
 
 void RandomDataGenerator::GenerateDense(HostDeviceVector<float> *out) const {
   xgboost::SimpleRealUniformDistribution<bst_float> dist(lower_, upper_);
@@ -291,6 +289,7 @@ void RandomDataGenerator::GenerateCSR(
 
   xgboost::SimpleRealUniformDistribution<bst_float> dist(lower_, upper_);
   float sparsity = sparsity_ * (upper_ - lower_) + lower_;
+  SimpleRealUniformDistribution<bst_float> cat(0.0, max_cat_);
 
   h_rptr.emplace_back(0);
   for (size_t i = 0; i < rows_; ++i) {
@@ -298,7 +297,11 @@ void RandomDataGenerator::GenerateCSR(
     for (size_t j = 0; j < cols_; ++j) {
       auto g = dist(&lcg);
       if (g >= sparsity) {
-        g = dist(&lcg);
+        if (common::IsCat(ft_, j)) {
+          g = common::AsCat(cat(&lcg));
+        } else {
+          g = dist(&lcg);
+        }
         h_value.emplace_back(g);
         rptr++;
         h_cols.emplace_back(j);
@@ -347,10 +350,14 @@ RandomDataGenerator::GenerateDMatrix(bool with_label, bool float_label,
   }
   if (device_ >= 0) {
     out->Info().labels_.SetDevice(device_);
+    out->Info().feature_types.SetDevice(device_);
     for (auto const& page : out->GetBatches<SparsePage>()) {
       page.data.SetDevice(device_);
       page.offset.SetDevice(device_);
     }
+  }
+  if (!ft_.empty()) {
+    out->Info().feature_types.HostVector() = ft_;
   }
   return out;
 }
@@ -360,6 +367,32 @@ GetDMatrixFromData(const std::vector<float> &x, int num_rows, int num_columns){
   data::DenseAdapter adapter(x.data(), num_rows, num_columns);
   return std::shared_ptr<DMatrix>(new data::SimpleDMatrix(
       &adapter, std::numeric_limits<float>::quiet_NaN(), 1));
+}
+
+std::unique_ptr<DMatrix> CreateSparsePageDMatrix(bst_row_t n_samples, bst_feature_t n_features,
+                                                 size_t n_batches, std::string prefix) {
+  CHECK_GE(n_samples, n_batches);
+  ArrayIterForTest iter(0, n_samples, n_features, n_batches);
+
+  std::unique_ptr<DMatrix> dmat{
+      DMatrix::Create(static_cast<DataIterHandle>(&iter), iter.Proxy(), Reset, Next,
+                      std::numeric_limits<float>::quiet_NaN(), omp_get_max_threads(), prefix)};
+
+  auto row_page_path =
+      data::MakeId(prefix, dynamic_cast<data::SparsePageDMatrix*>(dmat.get())) + ".row.page";
+  EXPECT_TRUE(FileExists(row_page_path)) << row_page_path;
+
+  // Loop over the batches and count the number of pages
+  int64_t batch_count = 0;
+  int64_t row_count = 0;
+  for (const auto& batch : dmat->GetBatches<xgboost::SparsePage>()) {
+    batch_count++;
+    row_count += batch.Size();
+  }
+
+  EXPECT_GE(batch_count, n_batches);
+  EXPECT_EQ(row_count, dmat->Info().num_row_);
+  return dmat;
 }
 
 std::unique_ptr<DMatrix> CreateSparsePageDMatrix(size_t n_entries,

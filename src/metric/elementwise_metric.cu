@@ -14,6 +14,7 @@
 #include "metric_common.h"
 #include "../common/math.h"
 #include "../common/common.h"
+#include "../common/threading_utils.h"
 
 #if defined(XGBOOST_USE_CUDA)
 #include <thrust/execution_policy.h>  // thrust::cuda::par
@@ -34,29 +35,29 @@ class ElementWiseMetricsReduction {
  public:
   explicit ElementWiseMetricsReduction(EvalRow policy) : policy_(std::move(policy)) {}
 
-  PackedReduceResult CpuReduceMetrics(
-      const HostDeviceVector<bst_float>& weights,
-      const HostDeviceVector<bst_float>& labels,
-      const HostDeviceVector<bst_float>& preds) const {
+  PackedReduceResult
+  CpuReduceMetrics(const HostDeviceVector<bst_float> &weights,
+                   const HostDeviceVector<bst_float> &labels,
+                   const HostDeviceVector<bst_float> &preds,
+                   int32_t n_threads) const {
     size_t ndata = labels.Size();
 
     const auto& h_labels = labels.HostVector();
     const auto& h_weights = weights.HostVector();
     const auto& h_preds = preds.HostVector();
 
-    bst_float residue_sum = 0;
-    bst_float weights_sum = 0;
+    std::vector<double> score_tloc(n_threads, 0.0);
+    std::vector<double> weight_tloc(n_threads, 0.0);
 
-    dmlc::OMPException exc;
-#pragma omp parallel for reduction(+: residue_sum, weights_sum) schedule(static)
-    for (omp_ulong i = 0; i < ndata; ++i) {
-      exc.Run([&]() {
-        const bst_float wt = h_weights.size() > 0 ? h_weights[i] : 1.0f;
-        residue_sum += policy_.EvalRow(h_labels[i], h_preds[i]) * wt;
-        weights_sum += wt;
-      });
-    }
-    exc.Rethrow();
+    common::ParallelFor(ndata, n_threads, [&](size_t i) {
+      float wt = h_weights.size() > 0 ? h_weights[i] : 1.0f;
+      auto t_idx = omp_get_thread_num();
+      score_tloc[t_idx] += policy_.EvalRow(h_labels[i], h_preds[i]) * wt;
+      weight_tloc[t_idx] += wt;
+    });
+    double residue_sum = std::accumulate(score_tloc.cbegin(), score_tloc.cend(), 0.0);
+    double weights_sum = std::accumulate(weight_tloc.cbegin(), weight_tloc.cend(), 0.0);
+
     PackedReduceResult res { residue_sum, weights_sum };
     return res;
   }
@@ -85,9 +86,9 @@ class ElementWiseMetricsReduction {
         thrust::cuda::par(alloc),
         begin, end,
         [=] XGBOOST_DEVICE(size_t idx) {
-          bst_float weight = is_null_weight ? 1.0f : s_weights[idx];
+          float weight = is_null_weight ? 1.0f : s_weights[idx];
 
-          bst_float residue = d_policy.EvalRow(s_label[idx], s_preds[idx]);
+          float residue = d_policy.EvalRow(s_label[idx], s_preds[idx]);
           residue *= weight;
           return PackedReduceResult{ residue, weight };
         },
@@ -100,19 +101,19 @@ class ElementWiseMetricsReduction {
 #endif  // XGBOOST_USE_CUDA
 
   PackedReduceResult Reduce(
-      const GenericParameter &tparam,
-      int device,
+      const GenericParameter &ctx,
       const HostDeviceVector<bst_float>& weights,
       const HostDeviceVector<bst_float>& labels,
       const HostDeviceVector<bst_float>& preds) {
     PackedReduceResult result;
 
-    if (device < 0) {
-      result = CpuReduceMetrics(weights, labels, preds);
+    if (ctx.gpu_id < 0) {
+      auto n_threads = ctx.Threads();
+      result = CpuReduceMetrics(weights, labels, preds, n_threads);
     }
 #if defined(XGBOOST_USE_CUDA)
     else {  // NOLINT
-      device_ = device;
+      device_ = ctx.gpu_id;
       preds.SetDevice(device_);
       labels.SetDevice(device_);
       weights.SetDevice(device_);
@@ -140,7 +141,7 @@ struct EvalRowRMSE {
     bst_float diff = label - pred;
     return diff * diff;
   }
-  static bst_float GetFinal(bst_float esum, bst_float wsum) {
+  static double GetFinal(double esum, double wsum) {
     return wsum == 0 ? std::sqrt(esum) : std::sqrt(esum / wsum);
   }
 };
@@ -154,7 +155,7 @@ struct EvalRowRMSLE {
     bst_float diff = std::log1p(label) - std::log1p(pred);
     return diff * diff;
   }
-  static bst_float GetFinal(bst_float esum, bst_float wsum) {
+  static double GetFinal(double esum, double wsum) {
     return wsum == 0 ? std::sqrt(esum) : std::sqrt(esum / wsum);
   }
 };
@@ -167,7 +168,7 @@ struct EvalRowMAE {
   XGBOOST_DEVICE bst_float EvalRow(bst_float label, bst_float pred) const {
     return std::abs(label - pred);
   }
-  static bst_float GetFinal(bst_float esum, bst_float wsum) {
+  static double GetFinal(double esum, double wsum) {
     return wsum == 0 ? esum : esum / wsum;
   }
 };
@@ -179,7 +180,7 @@ struct EvalRowMAPE {
   XGBOOST_DEVICE bst_float EvalRow(bst_float label, bst_float pred) const {
     return std::abs((label - pred) / label);
   }
-  static bst_float GetFinal(bst_float esum, bst_float wsum) {
+  static double GetFinal(double esum, double wsum) {
     return wsum == 0 ? esum : esum / wsum;
   }
 };
@@ -201,7 +202,7 @@ struct EvalRowLogLoss {
     }
   }
 
-  static bst_float GetFinal(bst_float esum, bst_float wsum) {
+  static double GetFinal(double esum, double wsum) {
     return wsum == 0 ? esum : esum / wsum;
   }
 };
@@ -214,7 +215,7 @@ struct EvalRowMPHE {
     bst_float diff = label - pred;
     return std::sqrt( 1 + diff * diff) - 1;
   }
-  static bst_float GetFinal(bst_float esum, bst_float wsum) {
+  static double GetFinal(double esum, double wsum) {
     return wsum == 0 ? esum : esum / wsum;
   }
 };
@@ -243,13 +244,12 @@ struct EvalError {
     }
   }
 
-  XGBOOST_DEVICE bst_float EvalRow(
-      bst_float label, bst_float pred) const {
+  XGBOOST_DEVICE bst_float EvalRow(bst_float label, bst_float pred) const {
     // assume label is in [0,1]
     return pred > threshold_ ? 1.0f - label : label;
   }
 
-  static bst_float GetFinal(bst_float esum, bst_float wsum) {
+  static double GetFinal(double esum, double wsum) {
     return wsum == 0 ? esum : esum / wsum;
   }
 
@@ -269,7 +269,7 @@ struct EvalPoissonNegLogLik {
     return common::LogGamma(y + 1.0f) + py - std::log(py) * y;
   }
 
-  static bst_float GetFinal(bst_float esum, bst_float wsum) {
+  static double GetFinal(double esum, double wsum) {
     return wsum == 0 ? esum : esum / wsum;
   }
 };
@@ -290,7 +290,7 @@ struct EvalGammaDeviance {
     return std::log(predt / label) + label / predt - 1;
   }
 
-  static bst_float GetFinal(bst_float esum, bst_float wsum) {
+  static double GetFinal(double esum, double wsum) {
     if (wsum <= 0) {
       wsum = kRtEps;
     }
@@ -309,15 +309,14 @@ struct EvalGammaNLogLik {
     float constexpr kPsi = 1.0;
     bst_float theta = -1. / py;
     bst_float a = kPsi;
-    // b = -std::log(-theta);
-    float b = 1.0f;
-    // c = 1. / kPsi * std::log(y/kPsi) - std::log(y) - common::LogGamma(1. / kPsi);
-    //   = 1.0f      * std::log(y)      - std::log(y) - 0 = 0
+    float b = -std::log(-theta);
+    // c = 1. / kPsi^2 * std::log(y/kPsi) - std::log(y) - common::LogGamma(1. / kPsi);
+    //   = 1.0f        * std::log(y)      - std::log(y) - 0 = 0
     float c = 0;
     // general form for exponential family.
     return -((y * theta - b) / a + c);
   }
-  static bst_float GetFinal(bst_float esum, bst_float wsum) {
+  static double GetFinal(double esum, double wsum) {
     return wsum == 0 ? esum : esum / wsum;
   }
 };
@@ -343,7 +342,7 @@ struct EvalTweedieNLogLik {
     bst_float b = std::exp((2 - rho_) * std::log(p)) / (2 - rho_);
     return -a + b;
   }
-  static bst_float GetFinal(bst_float esum, bst_float wsum) {
+  static double GetFinal(double esum, double wsum) {
     return wsum == 0 ? esum : esum / wsum;
   }
 
@@ -360,16 +359,12 @@ struct EvalEWiseBase : public Metric {
   explicit EvalEWiseBase(char const* policy_param) :
     policy_{policy_param}, reducer_{policy_} {}
 
-  bst_float Eval(const HostDeviceVector<bst_float>& preds,
-                 const MetaInfo& info,
-                 bool distributed) override {
+  double Eval(const HostDeviceVector<bst_float> &preds, const MetaInfo &info,
+              bool distributed) override {
     CHECK_EQ(preds.Size(), info.labels_.Size())
         << "label and prediction size not match, "
         << "hint: use merror or mlogloss for multi-class classification";
-    int device = tparam_->gpu_id;
-
-    auto result =
-        reducer_.Reduce(*tparam_, device, info.weights_, info.labels_, preds);
+    auto result = reducer_.Reduce(*tparam_, info.weights_, info.labels_, preds);
 
     double dat[2] { result.Residue(), result.Weights() };
 

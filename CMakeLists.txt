@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14 FATAL_ERROR)
-project(xgboost LANGUAGES CXX C VERSION 1.5.0)
+project(xgboost LANGUAGES CXX C VERSION 1.6.0)
 include(cmake/Utils.cmake)
 list(APPEND CMAKE_MODULE_PATH "${xgboost_SOURCE_DIR}/cmake/modules")
 cmake_policy(SET CMP0022 NEW)
@@ -28,6 +28,7 @@ set_default_configuration_release()
 option(BUILD_C_DOC "Build documentation for C APIs using Doxygen." OFF)
 option(USE_OPENMP "Build with OpenMP support." ON)
 option(BUILD_STATIC_LIB "Build static library" OFF)
+option(FORCE_SHARED_CRT "Build with dynamic CRT on Windows (/MD)" OFF)
 option(RABIT_BUILD_MPI "Build MPI" OFF)
 ## Bindings
 option(JVM_BINDINGS "Build JVM bindings" OFF)
@@ -112,6 +113,9 @@ endif (ENABLE_ALL_WARNINGS)
 if (BUILD_STATIC_LIB AND (R_LIB OR JVM_BINDINGS))
   message(SEND_ERROR "Cannot build a static library libxgboost.a when R or JVM packages are enabled.")
 endif (BUILD_STATIC_LIB AND (R_LIB OR JVM_BINDINGS))
+if (PLUGIN_RMM AND (NOT BUILD_WITH_CUDA_CUB))
+  message(SEND_ERROR "Cannot build with RMM using cub submodule.")
+endif (PLUGIN_RMM AND (NOT BUILD_WITH_CUDA_CUB))
 
 #-- Sanitizer
 if (USE_SANITIZER)
@@ -132,6 +136,10 @@ if (USE_CUDA)
   set(GEN_CODE "")
   format_gencode_flags("${GPU_COMPUTE_VER}" GEN_CODE)
   add_subdirectory(${PROJECT_SOURCE_DIR}/gputreeshap)
+
+  if ((${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 11.4) AND (NOT BUILD_WITH_CUDA_CUB))
+    message(SEND_ERROR "`BUILD_WITH_CUDA_CUB` should be set to `ON` for CUDA >= 11.4")
+  endif ()
 endif (USE_CUDA)
 
 if (FORCE_COLORED_OUTPUT AND (CMAKE_GENERATOR STREQUAL "Ninja") AND
@@ -157,6 +165,9 @@ endif (USE_NCCL)
 
 # dmlc-core
 msvc_use_static_runtime()
+if (FORCE_SHARED_CRT)
+  set(DMLC_FORCE_SHARED_CRT ON)
+endif ()
 add_subdirectory(${xgboost_SOURCE_DIR}/dmlc-core)
 
 if (MSVC)

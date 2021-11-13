@@ -11,15 +11,16 @@
 #include <dmlc/any.h>
 #include <xgboost/base.h>
 #include <xgboost/feature_map.h>
-#include <xgboost/predictor.h>
 #include <xgboost/generic_parameters.h>
 #include <xgboost/host_device_vector.h>
 #include <xgboost/model.h>
+#include <xgboost/predictor.h>
+#include <xgboost/task.h>
 
-#include <utility>
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace xgboost {
@@ -155,9 +156,10 @@ class Learner : public Model, public Configurable, public dmlc::Serializable {
   /*!
    * \brief Calculate feature score.  See doc in C API for outputs.
    */
-  virtual void CalcFeatureScore(std::string const &importance_type,
-                                std::vector<bst_feature_t> *features,
-                                std::vector<float> *scores) = 0;
+  virtual void CalcFeatureScore(std::string const& importance_type,
+                                common::Span<int32_t const> trees,
+                                std::vector<bst_feature_t>* features,
+                                std::vector<float>* scores) = 0;
 
   /*
    * \brief Get number of boosted rounds from gradient booster.
@@ -307,11 +309,13 @@ struct LearnerModelParam {
   uint32_t num_feature { 0 };
   /* \brief number of classes, if it is multi-class classification  */
   uint32_t num_output_group { 0 };
+  /* \brief Current task, determined by objective. */
+  ObjInfo task{ObjInfo::kRegression};
 
   LearnerModelParam() = default;
   // As the old `LearnerModelParamLegacy` is still used by binary IO, we keep
   // this one as an immutable copy.
-  LearnerModelParam(LearnerModelParamLegacy const& user_param, float base_margin);
+  LearnerModelParam(LearnerModelParamLegacy const& user_param, float base_margin, ObjInfo t);
   /* \brief Whether this parameter is initialized with LearnerModelParamLegacy. */
   bool Initialized() const { return num_feature != 0; }
 };

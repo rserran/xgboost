@@ -1,4 +1,4 @@
-# pylint: disable=too-many-arguments, too-many-branches
+# pylint: disable=too-many-arguments, too-many-branches, too-many-lines
 # pylint: disable=too-many-return-statements, import-error
 '''Data dispatching for DMatrix.'''
 import ctypes
@@ -12,11 +12,16 @@ import numpy as np
 from .core import c_array, _LIB, _check_call, c_str
 from .core import _cuda_array_interface
 from .core import DataIter, _ProxyDMatrix, DMatrix
-from .compat import lazy_isinstance
+from .compat import lazy_isinstance, DataFrame
 
 c_bst_ulong = ctypes.c_uint64   # pylint: disable=invalid-name
 
 CAT_T = "c"
+
+# meta info that can be a matrix instead of vector.
+# For now it's base_margin for multi-class, but it can be extended to label once we have
+# multi-output.
+_matrix_meta = {"base_margin"}
 
 
 def _warn_unused_missing(data, missing):
@@ -217,36 +222,48 @@ _pandas_dtype_mapper = {
 }
 
 
+def _invalid_dataframe_dtype(data: Any) -> None:
+    # pandas series has `dtypes` but it's just a single object
+    # cudf series doesn't have `dtypes`.
+    if hasattr(data, "dtypes") and hasattr(data.dtypes, "__iter__"):
+        bad_fields = [
+            str(data.columns[i])
+            for i, dtype in enumerate(data.dtypes)
+            if dtype.name not in _pandas_dtype_mapper
+        ]
+        err = " Invalid columns:" + ", ".join(bad_fields)
+    else:
+        err = ""
+
+    msg = """DataFrame.dtypes for data must be int, float, bool or category.  When
+categorical type is supplied, DMatrix parameter `enable_categorical` must
+be set to `True`.""" + err
+    raise ValueError(msg)
+
+
 def _transform_pandas_df(
-    data,
+    data: DataFrame,
     enable_categorical: bool,
     feature_names: Optional[List[str]] = None,
     feature_types: Optional[List[str]] = None,
-    meta=None,
-    meta_type=None,
-):
+    meta: Optional[str] = None,
+    meta_type: Optional[str] = None,
+) -> Tuple[np.ndarray, Optional[List[str]], Optional[List[str]]]:
     import pandas as pd
     from pandas.api.types import is_sparse, is_categorical_dtype
 
-    if not all(dtype.name in _pandas_dtype_mapper or is_sparse(dtype) or
-               (is_categorical_dtype(dtype) and enable_categorical)
-               for dtype in data.dtypes):
-        bad_fields = [
-            str(data.columns[i]) for i, dtype in enumerate(data.dtypes)
-            if dtype.name not in _pandas_dtype_mapper
-        ]
-
-        msg = """DataFrame.dtypes for data must be int, float, bool or category.  When
-                categorical type is supplied, DMatrix parameter `enable_categorical` must
-                be set to `True`."""
-        raise ValueError(msg + ', '.join(bad_fields))
+    if not all(
+        dtype.name in _pandas_dtype_mapper
+        or is_sparse(dtype)
+        or (is_categorical_dtype(dtype) and enable_categorical)
+        for dtype in data.dtypes
+    ):
+        _invalid_dataframe_dtype(data)
 
     # handle feature names
     if feature_names is None and meta is None:
         if isinstance(data.columns, pd.MultiIndex):
-            feature_names = [
-                ' '.join([str(x) for x in i]) for i in data.columns
-            ]
+            feature_names = [" ".join([str(x) for x in i]) for i in data.columns]
         elif isinstance(data.columns, (pd.Int64Index, pd.RangeIndex)):
             feature_names = list(map(str, data.columns))
         else:
@@ -263,21 +280,24 @@ def _transform_pandas_df(
             else:
                 feature_types.append(_pandas_dtype_mapper[dtype.name])
 
-    # handle categorical codes.
+    # handle category codes.
     transformed = pd.DataFrame()
     if enable_categorical:
         for i, dtype in enumerate(data.dtypes):
             if is_categorical_dtype(dtype):
-                transformed[data.columns[i]] = data[data.columns[i]].cat.codes
+                # pandas uses -1 as default missing value for categorical data
+                transformed[data.columns[i]] = (
+                    data[data.columns[i]]
+                    .cat.codes.astype(np.float32)
+                    .replace(-1.0, np.NaN)
+                )
             else:
                 transformed[data.columns[i]] = data[data.columns[i]]
     else:
         transformed = data
 
-    if meta and len(data.columns) > 1:
-        raise ValueError(
-            f"DataFrame for {meta} cannot have multiple columns"
-        )
+    if meta and len(data.columns) > 1 and meta not in _matrix_meta:
+        raise ValueError(f"DataFrame for {meta} cannot have multiple columns")
 
     dtype = meta_type if meta_type else np.float32
     arr = transformed.values
@@ -287,17 +307,17 @@ def _transform_pandas_df(
 
 
 def _from_pandas_df(
-    data,
+    data: DataFrame,
     enable_categorical: bool,
-    missing,
-    nthread,
+    missing: float,
+    nthread: int,
     feature_names: Optional[List[str]],
     feature_types: Optional[List[str]],
-):
+) -> Tuple[ctypes.c_void_p, Optional[List[str]], Optional[List[str]]]:
     data, feature_names, feature_types = _transform_pandas_df(
-        data, enable_categorical, feature_names, feature_types)
-    return _from_numpy_array(data, missing, nthread, feature_names,
-                             feature_types)
+        data, enable_categorical, feature_names, feature_types
+    )
+    return _from_numpy_array(data, missing, nthread, feature_names, feature_types)
 
 
 def _is_pandas_series(data):
@@ -306,6 +326,18 @@ def _is_pandas_series(data):
     except ImportError:
         return False
     return isinstance(data, pd.Series)
+
+
+def _meta_from_pandas_series(
+    data, name: str, dtype: Optional[str], handle: ctypes.c_void_p
+) -> None:
+    """Help transform pandas series for meta data like labels"""
+    data = data.values.astype('float')
+    from pandas.api.types import is_sparse
+    if is_sparse(data):
+        data = data.to_dense()
+    assert len(data.shape) == 1 or data.shape[1] == 0 or data.shape[1] == 1
+    _meta_from_numpy(data, name, dtype, handle)
 
 
 def _is_modin_series(data):
@@ -318,13 +350,26 @@ def _is_modin_series(data):
 
 def _from_pandas_series(
     data,
-    missing,
-    nthread,
-    feature_types: Optional[List[str]],
+    missing: float,
+    nthread: int,
+    enable_categorical: bool,
     feature_names: Optional[List[str]],
+    feature_types: Optional[List[str]],
 ):
+    from pandas.api.types import is_categorical_dtype
+
+    if (data.dtype.name not in _pandas_dtype_mapper) and not (
+        is_categorical_dtype(data.dtype) and enable_categorical
+    ):
+        _invalid_dataframe_dtype(data)
+    if enable_categorical and is_categorical_dtype(data.dtype):
+        data = data.cat.codes
     return _from_numpy_array(
-        data.values.astype("float"), missing, nthread, feature_names, feature_types
+        data.values.reshape(data.shape[0], 1).astype("float"),
+        missing,
+        nthread,
+        feature_names,
+        feature_types,
     )
 
 
@@ -346,9 +391,9 @@ def _transform_dt_df(
 ):
     """Validate feature names and types if data table"""
     if meta and data.shape[1] > 1:
-        raise ValueError(
-            'DataTable for label or weight cannot have multiple columns')
+        raise ValueError('DataTable for meta info cannot have multiple columns')
     if meta:
+        meta_type = "float" if meta_type is None else meta_type
         # below requires new dt version
         # extract first column
         data = data.to_numpy()[:, 0].astype(meta_type)
@@ -428,31 +473,39 @@ def _is_cudf_df(data):
     return hasattr(cudf, 'DataFrame') and isinstance(data, cudf.DataFrame)
 
 
-def _cudf_array_interfaces(data) -> Tuple[list, bytes]:
+def _cudf_array_interfaces(data, cat_codes: list) -> bytes:
     """Extract CuDF __cuda_array_interface__.  This is special as it returns a new list of
     data and a list of array interfaces.  The data is list of categorical codes that
     caller can safely ignore, but have to keep their reference alive until usage of array
     interface is finished.
 
     """
-    from cudf.utils.dtypes import is_categorical_dtype
-    cat_codes = []
+    try:
+        from cudf.api.types import is_categorical_dtype
+    except ImportError:
+        from cudf.utils.dtypes import is_categorical_dtype
+
     interfaces = []
     if _is_cudf_ser(data):
-        interfaces.append(data.__cuda_array_interface__)
+        if is_categorical_dtype(data.dtype):
+            interface = cat_codes[0].__cuda_array_interface__
+        else:
+            interface = data.__cuda_array_interface__
+        if "mask" in interface:
+            interface["mask"] = interface["mask"].__cuda_array_interface__
+        interfaces.append(interface)
     else:
-        for col in data:
+        for i, col in enumerate(data):
             if is_categorical_dtype(data[col].dtype):
-                codes = data[col].cat.codes
+                codes = cat_codes[i]
                 interface = codes.__cuda_array_interface__
-                cat_codes.append(codes)
             else:
                 interface = data[col].__cuda_array_interface__
             if "mask" in interface:
                 interface["mask"] = interface["mask"].__cuda_array_interface__
             interfaces.append(interface)
     interfaces_str = bytes(json.dumps(interfaces, indent=2), "utf-8")
-    return cat_codes, interfaces_str
+    return interfaces_str
 
 
 def _transform_cudf_df(
@@ -461,27 +514,62 @@ def _transform_cudf_df(
     feature_types: Optional[List[str]],
     enable_categorical: bool,
 ):
-    from cudf.utils.dtypes import is_categorical_dtype
+    try:
+        from cudf.api.types import is_categorical_dtype
+    except ImportError:
+        from cudf.utils.dtypes import is_categorical_dtype
 
+    if _is_cudf_ser(data):
+        dtypes = [data.dtype]
+    else:
+        dtypes = data.dtypes
+
+    if not all(
+        dtype.name in _pandas_dtype_mapper
+        or (is_categorical_dtype(dtype) and enable_categorical)
+        for dtype in dtypes
+    ):
+        _invalid_dataframe_dtype(data)
+
+    # handle feature names
     if feature_names is None:
         if _is_cudf_ser(data):
             feature_names = [data.name]
         elif lazy_isinstance(data.columns, "cudf.core.multiindex", "MultiIndex"):
             feature_names = [" ".join([str(x) for x in i]) for i in data.columns]
+        elif (
+            lazy_isinstance(data.columns, "cudf.core.index", "RangeIndex")
+            or lazy_isinstance(data.columns, "cudf.core.index", "Int64Index")
+            # Unique to cuDF, no equivalence in pandas 1.3.3
+            or lazy_isinstance(data.columns, "cudf.core.index", "Int32Index")
+        ):
+            feature_names = list(map(str, data.columns))
         else:
             feature_names = data.columns.format()
+
+    # handle feature types
     if feature_types is None:
         feature_types = []
-        if _is_cudf_ser(data):
-            dtypes = [data.dtype]
-        else:
-            dtypes = data.dtypes
         for dtype in dtypes:
             if is_categorical_dtype(dtype) and enable_categorical:
                 feature_types.append(CAT_T)
             else:
                 feature_types.append(_pandas_dtype_mapper[dtype.name])
-    return data, feature_names, feature_types
+
+    # handle categorical data
+    cat_codes = []
+    if _is_cudf_ser(data):
+        # unlike pandas, cuDF uses NA for missing data.
+        if is_categorical_dtype(data.dtype) and enable_categorical:
+            codes = data.cat.codes
+            cat_codes.append(codes)
+    else:
+        for col in data:
+            if is_categorical_dtype(data[col].dtype) and enable_categorical:
+                codes = data[col].cat.codes
+                cat_codes.append(codes)
+
+    return data, cat_codes, feature_names, feature_types
 
 
 def _from_cudf_df(
@@ -492,10 +580,10 @@ def _from_cudf_df(
     feature_types: Optional[List[str]],
     enable_categorical: bool,
 ) -> Tuple[ctypes.c_void_p, Any, Any]:
-    data, feature_names, feature_types = _transform_cudf_df(
+    data, cat_codes, feature_names, feature_types = _transform_cudf_df(
         data, feature_names, feature_types, enable_categorical
     )
-    _, interfaces_str = _cudf_array_interfaces(data)
+    interfaces_str = _cudf_array_interfaces(data, cat_codes)
     handle = ctypes.c_void_p()
     config = bytes(json.dumps({"missing": missing, "nthread": nthread}), "utf-8")
     _check_call(
@@ -700,8 +788,9 @@ def dispatch_data_backend(
         return _from_pandas_df(data, enable_categorical, missing, threads,
                                feature_names, feature_types)
     if _is_pandas_series(data):
-        return _from_pandas_series(data, missing, threads, feature_names,
-                                   feature_types)
+        return _from_pandas_series(
+            data, missing, threads, enable_categorical, feature_names, feature_types
+        )
     if _is_cudf_df(data) or _is_cudf_ser(data):
         return _from_cudf_df(
             data, missing, threads, feature_names, feature_types, enable_categorical
@@ -725,8 +814,9 @@ def dispatch_data_backend(
         return _from_pandas_df(data, enable_categorical, missing, threads,
                                feature_names, feature_types)
     if _is_modin_series(data):
-        return _from_pandas_series(data, missing, threads, feature_names,
-                                   feature_types)
+        return _from_pandas_series(
+            data, missing, threads, enable_categorical, feature_names, feature_types
+        )
     if _has_array_protocol(data):
         array = np.asarray(data)
         return _from_numpy_array(array, missing, threads, feature_names, feature_types)
@@ -747,19 +837,27 @@ def _to_data_type(dtype: str, name: str):
     return dtype_map[dtype]
 
 
-def _validate_meta_shape(data, name: str) -> None:
+def _validate_meta_shape(data: Any, name: str) -> None:
     if hasattr(data, "shape"):
+        msg = f"Invalid shape: {data.shape} for {name}"
+        if name in _matrix_meta:
+            if len(data.shape) > 2:
+                raise ValueError(msg)
+            return
+
         if len(data.shape) > 2 or (
             len(data.shape) == 2 and (data.shape[1] != 0 and data.shape[1] != 1)
         ):
             raise ValueError(f"Invalid shape: {data.shape} for {name}")
 
 
-def _meta_from_numpy(data, field, dtype, handle):
+def _meta_from_numpy(
+    data: np.ndarray, field: str, dtype, handle: ctypes.c_void_p
+) -> None:
     data = _maybe_np_slice(data, dtype)
     interface = data.__array_interface__
     assert interface.get('mask', None) is None, 'Masked array is not supported'
-    size = data.shape[0]
+    size = data.size
 
     c_type = _to_data_type(str(data.dtype), field)
     ptr = interface['data'][0]
@@ -782,17 +880,13 @@ def _meta_from_tuple(data, field, dtype, handle):
     return _meta_from_list(data, field, dtype, handle)
 
 
-def _meta_from_cudf_df(data, field, handle):
-    if len(data.columns) != 1:
-        raise ValueError(
-            'Expecting meta-info to contain a single column')
-    data = data[data.columns[0]]
-
-    interface = bytes(json.dumps([data.__cuda_array_interface__],
-                                 indent=2), 'utf-8')
-    _check_call(_LIB.XGDMatrixSetInfoFromInterface(handle,
-                                                   c_str(field),
-                                                   interface))
+def _meta_from_cudf_df(data, field: str, handle: ctypes.c_void_p) -> None:
+    if field not in _matrix_meta:
+        _meta_from_cudf_series(data.iloc[:, 0], field, handle)
+    else:
+        data = data.values
+        interface = _cuda_array_interface(data)
+        _check_call(_LIB.XGDMatrixSetInfoFromInterface(handle, c_str(field), interface))
 
 
 def _meta_from_cudf_series(data, field, handle):
@@ -812,14 +906,15 @@ def _meta_from_cupy_array(data, field, handle):
                                                    interface))
 
 
-def _meta_from_dt(data, field, dtype, handle):
-    data, _, _ = _transform_dt_df(data, None, None)
+def _meta_from_dt(data, field: str, dtype, handle: ctypes.c_void_p):
+    data, _, _ = _transform_dt_df(data, None, None, field, dtype)
     _meta_from_numpy(data, field, dtype, handle)
 
 
 def dispatch_meta_backend(matrix: DMatrix, data, name: str, dtype: str = None):
     '''Dispatch for meta info.'''
     handle = matrix.handle
+    assert handle is not None
     _validate_meta_shape(data, name)
     if data is None:
         return
@@ -838,9 +933,7 @@ def dispatch_meta_backend(matrix: DMatrix, data, name: str, dtype: str = None):
         _meta_from_numpy(data, name, dtype, handle)
         return
     if _is_pandas_series(data):
-        data = data.values.astype('float')
-        assert len(data.shape) == 1 or data.shape[1] == 0 or data.shape[1] == 1
-        _meta_from_numpy(data, name, dtype, handle)
+        _meta_from_pandas_series(data, name, dtype, handle)
         return
     if _is_dlpack(data):
         data = _transform_dlpack(data)
@@ -859,8 +952,7 @@ def dispatch_meta_backend(matrix: DMatrix, data, name: str, dtype: str = None):
         _meta_from_dt(data, name, dtype, handle)
         return
     if _is_modin_df(data):
-        data, _, _ = _transform_pandas_df(
-            data, False, meta=name, meta_type=dtype)
+        data, _, _ = _transform_pandas_df(data, False, meta=name, meta_type=dtype)
         _meta_from_numpy(data, name, dtype, handle)
         return
     if _is_modin_series(data):
@@ -910,30 +1002,38 @@ def _proxy_transform(
         )
     if _is_cupy_array(data):
         data = _transform_cupy_array(data)
-        return data, feature_names, feature_types
+        return data, None, feature_names, feature_types
     if _is_dlpack(data):
-        return _transform_dlpack(data), feature_names, feature_types
+        return _transform_dlpack(data), None, feature_names, feature_types
     if _is_numpy_array(data):
-        return data, feature_names, feature_types
+        return data, None, feature_names, feature_types
     if _is_scipy_csr(data):
-        return data, feature_names, feature_types
+        return data, None, feature_names, feature_types
     if _is_pandas_df(data):
         arr, feature_names, feature_types = _transform_pandas_df(
             data, enable_categorical, feature_names, feature_types
         )
-        return arr, feature_names, feature_types
+        return arr, None, feature_names, feature_types
     raise TypeError("Value type is not supported for data iterator:" + str(type(data)))
 
 
-def dispatch_proxy_set_data(proxy: _ProxyDMatrix, data: Any, allow_host: bool) -> None:
+def dispatch_proxy_set_data(
+    proxy: _ProxyDMatrix,
+    data: Any,
+    cat_codes: Optional[list],
+    allow_host: bool,
+) -> None:
     """Dispatch for DeviceQuantileDMatrix."""
     if not _is_cudf_ser(data) and not _is_pandas_series(data):
         _check_data_shape(data)
+
     if _is_cudf_df(data):
-        proxy._set_data_from_cuda_columnar(data)  # pylint: disable=W0212
+        # pylint: disable=W0212
+        proxy._set_data_from_cuda_columnar(data, cat_codes)
         return
     if _is_cudf_ser(data):
-        proxy._set_data_from_cuda_columnar(data)  # pylint: disable=W0212
+        # pylint: disable=W0212
+        proxy._set_data_from_cuda_columnar(data, cat_codes)
         return
     if _is_cupy_array(data):
         proxy._set_data_from_cuda_interface(data)  # pylint: disable=W0212

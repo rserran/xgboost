@@ -148,7 +148,8 @@ From the command line on Linux starting from the XGBoost directory:
 
   mkdir build
   cd build
-  cmake .. -DUSE_CUDA=ON
+  # For CUDA toolkit >= 11.4, `BUILD_WITH_CUDA_CUB` is required.
+  cmake .. -DUSE_CUDA=ON -DBUILD_WITH_CUDA_CUB=ON
   make -j4
 
 .. note:: Specifying compute capability
@@ -522,14 +523,7 @@ XGBoost uses `Sphinx <https://www.sphinx-doc.org/en/stable/>`_ for documentation
 
 * Python dependencies
 
-  - sphinx
-  - breathe
-  - guzzle_sphinx_theme
-  - recommonmark
-  - mock
-  - sh
-  - graphviz
-  - matplotlib
+  Checkout the ``requirements.txt`` file under ``doc/``
 
 Under ``xgboost/doc`` directory, run ``make <format>`` with ``<format>`` replaced by the format you want.  For a list of supported formats, run ``make help`` under the same directory.
 

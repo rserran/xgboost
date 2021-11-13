@@ -159,13 +159,12 @@ struct LearnerModelParamLegacy : public dmlc::Parameter<LearnerModelParamLegacy>
   }
 };
 
-LearnerModelParam::LearnerModelParam(
-    LearnerModelParamLegacy const &user_param, float base_margin)
-    : base_score{base_margin}, num_feature{user_param.num_feature},
-      num_output_group{user_param.num_class == 0
-                       ? 1
-                       : static_cast<uint32_t>(user_param.num_class)}
-{}
+LearnerModelParam::LearnerModelParam(LearnerModelParamLegacy const& user_param, float base_margin,
+                                     ObjInfo t)
+    : base_score{base_margin},
+      num_feature{user_param.num_feature},
+      num_output_group{user_param.num_class == 0 ? 1 : static_cast<uint32_t>(user_param.num_class)},
+      task{t} {}
 
 struct LearnerTrainParam : public XGBoostParameter<LearnerTrainParam> {
   // data split mode, can be row, col, or none.
@@ -339,8 +338,8 @@ class LearnerConfiguration : public Learner {
     // - model is created from scratch.
     // - model is configured second time due to change of parameter
     if (!learner_model_param_.Initialized() || mparam_.base_score != mparam_backup.base_score) {
-      learner_model_param_ = LearnerModelParam(mparam_,
-                                               obj_->ProbToMargin(mparam_.base_score));
+      learner_model_param_ =
+          LearnerModelParam(mparam_, obj_->ProbToMargin(mparam_.base_score), obj_->Task());
     }
 
     this->ConfigureGBM(old_tparam, args);
@@ -568,9 +567,9 @@ class LearnerConfiguration : public Learner {
       ss << "\"" << diff.back() << "\"";
       ss << R"W( } might not be used.
 
-  This may not be accurate due to some parameters are only used in language bindings but
-  passed down to XGBoost core.  Or some parameters are not used but slip through this
-  verification. Please open an issue if you find above cases.
+  This could be a false alarm, with some parameters getting used by language bindings but
+  then being mistakenly passed down to XGBoost core, or some parameter actually being used
+  but getting flagged wrongly here. Please open an issue if you find any such cases.
 
 )W";
       LOG(WARNING) << ss.str();
@@ -832,7 +831,7 @@ class LearnerIO : public LearnerConfiguration {
     }
 
     learner_model_param_ =
-        LearnerModelParam(mparam_, obj_->ProbToMargin(mparam_.base_score));
+        LearnerModelParam(mparam_, obj_->ProbToMargin(mparam_.base_score), obj_->Task());
     if (attributes_.find("objective") != attributes_.cend()) {
       auto obj_str = attributes_.at("objective");
       auto j_obj = Json::Load({obj_str.c_str(), obj_str.size()});
@@ -1062,9 +1061,10 @@ class LearnerImpl : public LearnerIO {
     monitor_.Start("UpdateOneIter");
     TrainingObserver::Instance().Update(iter);
     this->Configure();
-    if (generic_parameters_.seed_per_iteration || rabit::IsDistributed()) {
+    if (generic_parameters_.seed_per_iteration) {
       common::GlobalRandom().seed(generic_parameters_.seed * kRandSeedMagic + iter);
     }
+
     this->CheckDataSplitMode();
     this->ValidateDMatrix(train.get(), true);
 
@@ -1089,9 +1089,10 @@ class LearnerImpl : public LearnerIO {
                     HostDeviceVector<GradientPair>* in_gpair) override {
     monitor_.Start("BoostOneIter");
     this->Configure();
-    if (generic_parameters_.seed_per_iteration || rabit::IsDistributed()) {
+    if (generic_parameters_.seed_per_iteration) {
       common::GlobalRandom().seed(generic_parameters_.seed * kRandSeedMagic + iter);
     }
+
     this->CheckDataSplitMode();
     this->ValidateDMatrix(train.get(), true);
     auto local_cache = this->GetPredictionCache();
@@ -1108,6 +1109,7 @@ class LearnerImpl : public LearnerIO {
     this->Configure();
 
     std::ostringstream os;
+    os.precision(std::numeric_limits<double>::max_digits10);
     os << '[' << iter << ']' << std::setiosflags(std::ios::fixed);
     if (metrics_.size() == 0 && tparam_.disable_default_eval_metric <= 0) {
       auto warn_default_eval_metric = [](const std::string& objective, const std::string& before,
@@ -1117,12 +1119,8 @@ class LearnerImpl : public LearnerIO {
                      << before << "' to '" << after << "'. Explicitly set eval_metric if you'd "
                      << "like to restore the old behavior.";
       };
-      if (tparam_.objective == "binary:logistic") {
-        warn_default_eval_metric(tparam_.objective, "error", "logloss", "1.3.0");
-      } else if (tparam_.objective == "binary:logitraw") {
+      if (tparam_.objective == "binary:logitraw") {
         warn_default_eval_metric(tparam_.objective, "auc", "logloss", "1.4.0");
-      } else if ((tparam_.objective == "multi:softmax" || tparam_.objective == "multi:softprob")) {
-        warn_default_eval_metric(tparam_.objective, "merror", "mlogloss", "1.3.0");
       }
       metrics_.emplace_back(Metric::Create(obj_->DefaultEvalMetric(), &generic_parameters_));
       metrics_.back()->Configure({cfg_.begin(), cfg_.end()});
@@ -1214,11 +1212,10 @@ class LearnerImpl : public LearnerIO {
     *out_preds = &out_predictions.predictions;
   }
 
-  void CalcFeatureScore(std::string const &importance_type,
-                        std::vector<bst_feature_t> *features,
-                        std::vector<float> *scores) override {
+  void CalcFeatureScore(std::string const& importance_type, common::Span<int32_t const> trees,
+                        std::vector<bst_feature_t>* features, std::vector<float>* scores) override {
     this->Configure();
-    gbm_->FeatureScore(importance_type, features, scores);
+    gbm_->FeatureScore(importance_type, trees, features, scores);
   }
 
   const std::map<std::string, std::string>& GetConfigurationArguments() const override {

@@ -23,6 +23,9 @@
 
 #include "hist/evaluate_splits.h"
 #include "hist/histogram.h"
+#include "hist/expand_entry.h"
+#include "hist/param.h"
+
 #include "constraints.h"
 #include "./param.h"
 #include "./driver.h"
@@ -89,55 +92,10 @@ using xgboost::common::GHistBuilder;
 using xgboost::common::ColumnMatrix;
 using xgboost::common::Column;
 
-// training parameters specific to this algorithm
-struct CPUHistMakerTrainParam
-    : public XGBoostParameter<CPUHistMakerTrainParam> {
-  bool single_precision_histogram = false;
-  // declare parameters
-  DMLC_DECLARE_PARAMETER(CPUHistMakerTrainParam) {
-    DMLC_DECLARE_FIELD(single_precision_histogram).set_default(false).describe(
-        "Use single precision to build histograms.");
-  }
-};
-
-/* tree growing policies */
-struct CPUExpandEntry {
-  static const int kRootNid  = 0;
-  static const int kEmptyNid = -1;
-  int nid;
-  int depth;
-  SplitEntry split;
-
-  CPUExpandEntry() = default;
-  CPUExpandEntry(int nid, int depth, bst_float loss_chg)
-      : nid(nid), depth(depth) {
-    split.loss_chg = loss_chg;
-  }
-
-  bool IsValid(TrainParam const &param, int32_t num_leaves) const {
-    bool invalid = split.loss_chg <= kRtEps ||
-                   (param.max_depth > 0 && this->depth == param.max_depth) ||
-                   (param.max_leaves > 0 && num_leaves == param.max_leaves);
-    return !invalid;
-  }
-
-  bst_float GetLossChange() const {
-    return split.loss_chg;
-  }
-
-  int GetNodeId() const {
-    return nid;
-  }
-
-  int GetDepth() const {
-    return depth;
-  }
-};
-
 /*! \brief construct a tree using quantized feature values */
 class QuantileHistMaker: public TreeUpdater {
  public:
-  QuantileHistMaker() {
+  explicit QuantileHistMaker(ObjInfo task) : task_{task} {
     updater_monitor_.Init("QuantileHistMaker");
   }
   void Configure(const Args& args) override;
@@ -147,7 +105,7 @@ class QuantileHistMaker: public TreeUpdater {
               const std::vector<RegTree*>& trees) override;
 
   bool UpdatePredictionCache(const DMatrix *data,
-                             VectorView<float> out_preds) override;
+                             linalg::VectorView<float> out_preds) override;
 
   void LoadConfig(Json const& in) override {
     auto const& config = get<Object const>(in);
@@ -196,12 +154,15 @@ class QuantileHistMaker: public TreeUpdater {
     using GHistRowT = GHistRow<GradientSumT>;
     using GradientPairT = xgboost::detail::GradientPairInternal<GradientSumT>;
     // constructor
-    explicit Builder(const size_t n_trees, const TrainParam &param,
-                     std::unique_ptr<TreeUpdater> pruner, DMatrix const *fmat)
-        : n_trees_(n_trees), param_(param), pruner_(std::move(pruner)),
-          p_last_tree_(nullptr), p_last_fmat_(fmat),
-          histogram_builder_{
-              new HistogramBuilder<GradientSumT, CPUExpandEntry>} {
+    explicit Builder(const size_t n_trees, const TrainParam& param,
+                     std::unique_ptr<TreeUpdater> pruner, DMatrix const* fmat, ObjInfo task)
+        : n_trees_(n_trees),
+          param_(param),
+          pruner_(std::move(pruner)),
+          p_last_tree_(nullptr),
+          p_last_fmat_(fmat),
+          histogram_builder_{new HistogramBuilder<GradientSumT, CPUExpandEntry>},
+          task_{task} {
       builder_monitor_.Init("Quantile::Builder");
     }
     ~Builder();
@@ -213,7 +174,7 @@ class QuantileHistMaker: public TreeUpdater {
                         RegTree* p_tree);
 
     bool UpdatePredictionCache(const DMatrix* data,
-                               VectorView<float> out_preds);
+                               linalg::VectorView<float> out_preds);
 
    protected:
     // initialize temp data structure
@@ -303,6 +264,7 @@ class QuantileHistMaker: public TreeUpdater {
     DataLayout data_layout_;
     std::unique_ptr<HistogramBuilder<GradientSumT, CPUExpandEntry>>
         histogram_builder_;
+    ObjInfo task_;
 
     common::Monitor builder_monitor_;
   };
@@ -323,6 +285,7 @@ class QuantileHistMaker: public TreeUpdater {
   std::unique_ptr<Builder<double>> double_builder_;
 
   std::unique_ptr<TreeUpdater> pruner_;
+  ObjInfo task_;
 };
 }  // namespace tree
 }  // namespace xgboost

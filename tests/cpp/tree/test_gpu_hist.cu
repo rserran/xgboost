@@ -275,7 +275,8 @@ void TestHistogramIndexImpl() {
   int constexpr kNRows = 1000, kNCols = 10;
 
   // Build 2 matrices and build a histogram maker with that
-  tree::GPUHistMakerSpecialised<GradientPairPrecise> hist_maker, hist_maker_ext;
+  tree::GPUHistMakerSpecialised<GradientPairPrecise> hist_maker{ObjInfo{ObjInfo::kRegression}},
+      hist_maker_ext{ObjInfo{ObjInfo::kRegression}};
   std::unique_ptr<DMatrix> hist_maker_dmat(
     CreateSparsePageDMatrixWithRC(kNRows, kNCols, 0, true));
 
@@ -333,7 +334,7 @@ int32_t TestMinSplitLoss(DMatrix* dmat, float gamma, HostDeviceVector<GradientPa
     {"gamma", std::to_string(gamma)}
   };
 
-  tree::GPUHistMakerSpecialised<GradientPairPrecise> hist_maker;
+  tree::GPUHistMakerSpecialised<GradientPairPrecise> hist_maker{ObjInfo{ObjInfo::kRegression}};
   GenericParameter generic_param(CreateEmptyGenericParam(0));
   hist_maker.Configure(args, &generic_param);
 
@@ -394,15 +395,13 @@ void UpdateTree(HostDeviceVector<GradientPair>* gpair, DMatrix* dmat,
       {"sampling_method", sampling_method},
   };
 
-  tree::GPUHistMakerSpecialised<GradientPairPrecise> hist_maker;
+  tree::GPUHistMakerSpecialised<GradientPairPrecise> hist_maker{ObjInfo{ObjInfo::kRegression}};
   GenericParameter generic_param(CreateEmptyGenericParam(0));
   hist_maker.Configure(args, &generic_param);
 
   hist_maker.Update(gpair, dmat, {tree});
-  hist_maker.UpdatePredictionCache(
-      dmat,
-      VectorView<float>{
-          MatrixView<float>(preds, {preds->Size(), 1}, preds->DeviceIdx()), 0});
+  auto cache = linalg::VectorView<float>{preds->DeviceSpan(), {preds->Size()}, 0};
+  hist_maker.UpdatePredictionCache(dmat, cache);
 }
 
 TEST(GpuHist, UniformSampling) {
@@ -469,13 +468,14 @@ TEST(GpuHist, ExternalMemory) {
   constexpr size_t kCols = 2;
   constexpr size_t kPageSize = 1024;
 
-  // Create an in-memory DMatrix.
-  std::unique_ptr<DMatrix> dmat(CreateSparsePageDMatrixWithRC(kRows, kCols, 0, true));
+  dmlc::TemporaryDirectory tmpdir;
 
   // Create a DMatrix with multiple batches.
-  dmlc::TemporaryDirectory tmpdir;
-  std::unique_ptr<DMatrix>
-      dmat_ext(CreateSparsePageDMatrixWithRC(kRows, kCols, kPageSize, true, tmpdir));
+  std::unique_ptr<DMatrix> dmat_ext(
+      CreateSparsePageDMatrix(kRows, kCols, kRows / kPageSize, tmpdir.path + "/cache"));
+
+  // Create a single batch DMatrix.
+  std::unique_ptr<DMatrix> dmat(CreateSparsePageDMatrix(kRows, kCols, 1, tmpdir.path + "/cache"));
 
   auto gpair = GenerateRandomGradients(kRows);
 
@@ -504,13 +504,14 @@ TEST(GpuHist, ExternalMemoryWithSampling) {
   const std::string kSamplingMethod = "gradient_based";
   common::GlobalRandom().seed(0);
 
-  // Create an in-memory DMatrix.
-  std::unique_ptr<DMatrix> dmat(CreateSparsePageDMatrixWithRC(kRows, kCols, 0, true));
+  dmlc::TemporaryDirectory tmpdir;
+
+  // Create a single batch DMatrix.
+  std::unique_ptr<DMatrix> dmat(CreateSparsePageDMatrix(kRows, kCols, 1, tmpdir.path + "/cache"));
 
   // Create a DMatrix with multiple batches.
-  dmlc::TemporaryDirectory tmpdir;
-  std::unique_ptr<DMatrix>
-      dmat_ext(CreateSparsePageDMatrixWithRC(kRows, kCols, kPageSize, true, tmpdir));
+  std::unique_ptr<DMatrix> dmat_ext(
+      CreateSparsePageDMatrix(kRows, kCols, kRows / kPageSize, tmpdir.path + "/cache"));
 
   auto gpair = GenerateRandomGradients(kRows);
 
@@ -539,7 +540,8 @@ TEST(GpuHist, ExternalMemoryWithSampling) {
 
 TEST(GpuHist, ConfigIO) {
   GenericParameter generic_param(CreateEmptyGenericParam(0));
-  std::unique_ptr<TreeUpdater> updater {TreeUpdater::Create("grow_gpu_hist", &generic_param) };
+  std::unique_ptr<TreeUpdater> updater{
+      TreeUpdater::Create("grow_gpu_hist", &generic_param, ObjInfo{ObjInfo::kRegression})};
   updater->Configure(Args{});
 
   Json j_updater { Object() };

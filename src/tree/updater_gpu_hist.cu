@@ -181,8 +181,6 @@ struct GPUHistMakerDevice {
 
   dh::PinnedMemory pinned;
 
-  std::vector<cudaStream_t> streams{};
-
   common::Monitor monitor;
   TreeEvaluator tree_evaluator;
   common::ColumnSampler column_sampler;
@@ -228,9 +226,6 @@ struct GPUHistMakerDevice {
 
   ~GPUHistMakerDevice() {  // NOLINT
     dh::safe_cuda(cudaSetDevice(device_id));
-    for (auto& stream : streams) {
-      dh::safe_cuda(cudaStreamDestroy(stream));
-    }
   }
 
   // Reset values for each update iteration
@@ -501,7 +496,7 @@ struct GPUHistMakerDevice {
         });
   }
 
-  void UpdatePredictionCache(VectorView<float> out_preds_d) {
+  void UpdatePredictionCache(linalg::VectorView<float> out_preds_d) {
     dh::safe_cuda(cudaSetDevice(device_id));
     CHECK_EQ(out_preds_d.DeviceIdx(), device_id);
     auto d_ridx = row_partitioner->GetRows();
@@ -517,13 +512,13 @@ struct GPUHistMakerDevice {
     auto d_node_sum_gradients = device_node_sum_gradients.data().get();
     auto evaluator = tree_evaluator.GetEvaluator<GPUTrainingParam>();
 
-    dh::LaunchN(d_ridx.size(), [=] __device__(int local_idx) {
+    dh::LaunchN(d_ridx.size(), [=, out_preds_d = out_preds_d] __device__(
+                                   int local_idx) mutable {
       int pos = d_position[local_idx];
       bst_float weight = evaluator.CalcWeight(
           pos, param_d, GradStats{d_node_sum_gradients[pos]});
       static_assert(!std::is_const<decltype(out_preds_d)>::value, "");
-      auto v_predt = out_preds_d;  // for some reason out_preds_d is const by both nvcc and clang.
-      v_predt[d_ridx[local_idx]] += weight * param_d.learning_rate;
+      out_preds_d(d_ridx[local_idx]) += weight * param_d.learning_rate;
     });
     row_partitioner.reset();
   }
@@ -585,6 +580,9 @@ struct GPUHistMakerDevice {
       CHECK_LT(candidate.split.fvalue, std::numeric_limits<bst_cat_t>::max())
           << "Categorical feature value too large.";
       auto cat = common::AsCat(candidate.split.fvalue);
+      if (cat < 0) {
+        common::InvalidCategory();
+      }
       std::vector<uint32_t> split_cats(LBitField32::ComputeStorageSize(std::max(cat+1, 1)), 0);
       LBitField32 cats_bits(split_cats);
       cats_bits.Set(cat);
@@ -700,7 +698,7 @@ struct GPUHistMakerDevice {
         int right_child_nidx = tree[candidate.nid].RightChild();
         // Only create child entries if needed
         if (GPUExpandEntry::ChildIsValid(param, tree.GetDepth(left_child_nidx),
-                                      num_leaves)) {
+                                         num_leaves)) {
           monitor.Start("UpdatePosition");
           this->UpdatePosition(candidate.nid, p_tree);
           monitor.Stop("UpdatePosition");
@@ -734,7 +732,7 @@ struct GPUHistMakerDevice {
 template <typename GradientSumT>
 class GPUHistMakerSpecialised {
  public:
-  GPUHistMakerSpecialised() = default;
+  explicit GPUHistMakerSpecialised(ObjInfo task) : task_{task} {};
   void Configure(const Args& args, GenericParameter const* generic_param) {
     param_.UpdateAllowUnknown(args);
     generic_param_ = generic_param;
@@ -836,7 +834,8 @@ class GPUHistMakerSpecialised {
     maker->UpdateTree(gpair, p_fmat, p_tree, &reducer_);
   }
 
-  bool UpdatePredictionCache(const DMatrix* data, VectorView<bst_float> p_out_preds) {
+  bool UpdatePredictionCache(const DMatrix *data,
+                             linalg::VectorView<bst_float> p_out_preds) {
     if (maker == nullptr || p_last_fmat_ == nullptr || p_last_fmat_ != data) {
       return false;
     }
@@ -861,12 +860,14 @@ class GPUHistMakerSpecialised {
 
   DMatrix* p_last_fmat_ { nullptr };
   int device_{-1};
+  ObjInfo task_;
 
   common::Monitor monitor_;
 };
 
 class GPUHistMaker : public TreeUpdater {
  public:
+  explicit GPUHistMaker(ObjInfo task) : task_{task} {}
   void Configure(const Args& args) override {
     // Used in test to count how many configurations are performed
     LOG(DEBUG) << "[GPU Hist]: Configure";
@@ -880,11 +881,11 @@ class GPUHistMaker : public TreeUpdater {
       param = double_maker_->param_;
     }
     if (hist_maker_param_.single_precision_histogram) {
-      float_maker_.reset(new GPUHistMakerSpecialised<GradientPair>());
+      float_maker_.reset(new GPUHistMakerSpecialised<GradientPair>(task_));
       float_maker_->param_ = param;
       float_maker_->Configure(args, tparam_);
     } else {
-      double_maker_.reset(new GPUHistMakerSpecialised<GradientPairPrecise>());
+      double_maker_.reset(new GPUHistMakerSpecialised<GradientPairPrecise>(task_));
       double_maker_->param_ = param;
       double_maker_->Configure(args, tparam_);
     }
@@ -894,10 +895,10 @@ class GPUHistMaker : public TreeUpdater {
     auto const& config = get<Object const>(in);
     FromJson(config.at("gpu_hist_train_param"), &this->hist_maker_param_);
     if (hist_maker_param_.single_precision_histogram) {
-      float_maker_.reset(new GPUHistMakerSpecialised<GradientPair>());
+      float_maker_.reset(new GPUHistMakerSpecialised<GradientPair>(task_));
       FromJson(config.at("train_param"), &float_maker_->param_);
     } else {
-      double_maker_.reset(new GPUHistMakerSpecialised<GradientPairPrecise>());
+      double_maker_.reset(new GPUHistMakerSpecialised<GradientPairPrecise>(task_));
       FromJson(config.at("train_param"), &double_maker_->param_);
     }
   }
@@ -920,8 +921,9 @@ class GPUHistMaker : public TreeUpdater {
     }
   }
 
-  bool UpdatePredictionCache(const DMatrix *data,
-                             VectorView<bst_float> p_out_preds) override {
+  bool
+  UpdatePredictionCache(const DMatrix *data,
+                        linalg::VectorView<bst_float> p_out_preds) override {
     if (hist_maker_param_.single_precision_histogram) {
       return float_maker_->UpdatePredictionCache(data, p_out_preds);
     } else {
@@ -935,6 +937,7 @@ class GPUHistMaker : public TreeUpdater {
 
  private:
   GPUHistMakerTrainParam hist_maker_param_;
+  ObjInfo task_;
   std::unique_ptr<GPUHistMakerSpecialised<GradientPair>> float_maker_;
   std::unique_ptr<GPUHistMakerSpecialised<GradientPairPrecise>> double_maker_;
 };
@@ -942,7 +945,7 @@ class GPUHistMaker : public TreeUpdater {
 #if !defined(GTEST_TEST)
 XGBOOST_REGISTER_TREE_UPDATER(GPUHistMaker, "grow_gpu_hist")
     .describe("Grow tree with GPU.")
-    .set_body([]() { return new GPUHistMaker(); });
+    .set_body([](ObjInfo task) { return new GPUHistMaker(task); });
 #endif  // !defined(GTEST_TEST)
 
 }  // namespace tree

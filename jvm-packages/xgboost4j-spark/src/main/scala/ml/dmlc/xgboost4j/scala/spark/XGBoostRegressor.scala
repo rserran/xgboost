@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2014 by Contributors
+ Copyright (c) 2014,2021 by Contributors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package ml.dmlc.xgboost4j.scala.spark
 import scala.collection.{AbstractIterator, Iterator, mutable}
 import scala.collection.JavaConverters._
 
-import ml.dmlc.xgboost4j.java.{Rabit, XGBoost => JXGBoost}
+import ml.dmlc.xgboost4j.java.Rabit
 import ml.dmlc.xgboost4j.{LabeledPoint => XGBLabeledPoint}
 import ml.dmlc.xgboost4j.scala.spark.params.{DefaultXGBoostParamsReader, _}
 import ml.dmlc.xgboost4j.scala.{Booster, DMatrix, XGBoost => SXGBoost}
@@ -27,8 +27,7 @@ import ml.dmlc.xgboost4j.scala.{EvalTrait, ObjectiveTrait}
 import org.apache.hadoop.fs.Path
 
 import org.apache.spark.TaskContext
-import org.apache.spark.ml.linalg.{DenseVector, SparseVector, Vector}
-import org.apache.spark.ml.param.shared.HasWeightCol
+import org.apache.spark.ml.linalg.Vector
 import org.apache.spark.ml.util._
 import org.apache.spark.ml._
 import org.apache.spark.ml.param._
@@ -37,7 +36,6 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 import org.json4s.DefaultFormats
-import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.broadcast.Broadcast
 
@@ -173,27 +171,16 @@ class XGBoostRegressor (
       set(objectiveType, "regression")
     }
 
-    val weight = if (!isDefined(weightCol) || $(weightCol).isEmpty) lit(1.0) else col($(weightCol))
-    val baseMargin = if (!isDefined(baseMarginCol) || $(baseMarginCol).isEmpty) {
-      lit(Float.NaN)
-    } else {
-      col($(baseMarginCol))
-    }
-    val group = if (!isDefined(groupCol) || $(groupCol).isEmpty) lit(-1) else col($(groupCol))
-    val trainingSet: RDD[XGBLabeledPoint] = DataUtils.convertDataFrameToXGBLabeledPointRDDs(
-      col($(labelCol)), col($(featuresCol)), weight, baseMargin, Some(group),
-      $(numWorkers), needDeterministicRepartitioning, dataset.asInstanceOf[DataFrame]).head
-    val evalRDDMap = getEvalSets(xgboostParams).map {
-      case (name, dataFrame) => (name,
-        DataUtils.convertDataFrameToXGBLabeledPointRDDs(col($(labelCol)), col($(featuresCol)),
-          weight, baseMargin, Some(group), $(numWorkers), needDeterministicRepartitioning,
-          dataFrame).head)
-    }
     transformSchema(dataset.schema, logging = true)
-    val derivedXGBParamMap = MLlib2XGBoostParams
+
+    // Packing with all params plus params user defined
+    val derivedXGBParamMap = xgboostParams ++ MLlib2XGBoostParams
+    val buildTrainingData = PreXGBoost.buildDatasetToRDD(this, dataset, derivedXGBParamMap)
+
     // All non-null param maps in XGBoostRegressor are in derivedXGBParamMap.
-    val (_booster, _metrics) = XGBoost.trainDistributed(trainingSet, derivedXGBParamMap,
-      hasGroup = group != lit(-1), evalRDDMap)
+    val (_booster, _metrics) = XGBoost.trainDistributed(dataset.sparkSession.sparkContext,
+      buildTrainingData, derivedXGBParamMap)
+
     val model = new XGBoostRegressionModel(uid, _booster)
     val summary = XGBoostTrainingSummary(_metrics)
     model.setSummary(summary)
@@ -262,7 +249,7 @@ class XGBoostRegressionModel private[ml] (
    */
   override def predict(features: Vector): Double = {
     import DataUtils._
-    val dm = new DMatrix(XGBoost.processMissingValues(
+    val dm = new DMatrix(processMissingValues(
       Iterator(features.asXGB),
       $(missing),
       $(allowNonZeroForMissing)
@@ -303,7 +290,7 @@ class XGBoostRegressionModel private[ml] (
           }
 
           val dm = new DMatrix(
-            XGBoost.processMissingValues(
+            processMissingValues(
               features.map(_.asXGB),
               $(missing),
               $(allowNonZeroForMissing)

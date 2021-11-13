@@ -1,7 +1,6 @@
 XGBoost Python Feature Walkthrough
 ==================================
 * [Basic walkthrough of wrappers](basic_walkthrough.py)
-* [Customize loss function, and evaluation metric](custom_objective.py)
 * [Re-implement RMSLE as customized metric and objective](custom_rmsle.py)
 * [Re-Implement `multi:softmax` objective as customized objective](custom_softmax.py)
 * [Boosting from existing prediction](boost_from_prediction.py)
@@ -16,3 +15,5 @@ XGBoost Python Feature Walkthrough
 * [External Memory](external_memory.py)
 * [Training continuation](continuation.py)
 * [Feature weights for column sampling](feature_weights.py)
+* [Basic Categorical data support](categorical.py)
+* [Compare builtin categorical data support with one-hot encoding](cat_in_the_dat.py)

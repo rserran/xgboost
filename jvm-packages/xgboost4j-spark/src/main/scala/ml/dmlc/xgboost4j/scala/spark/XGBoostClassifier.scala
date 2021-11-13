@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2014 by Contributors
+ Copyright (c) 2014,2021 by Contributors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -26,7 +26,6 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.linalg._
 import org.apache.spark.ml.param._
-import org.apache.spark.ml.param.shared.HasWeightCol
 import org.apache.spark.ml.util._
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
@@ -39,7 +38,7 @@ import scala.collection.{AbstractIterator, Iterator, mutable}
 
 class XGBoostClassifier (
     override val uid: String,
-    private val xgboostParams: Map[String, Any])
+    private[spark] val xgboostParams: Map[String, Any])
   extends ProbabilisticClassifier[Vector, XGBoostClassifier, XGBoostClassificationModel]
     with XGBoostClassifierParams with DefaultParamsWritable {
 
@@ -177,26 +176,15 @@ class XGBoostClassifier (
         "\'num_class\' in xgboost params.")
     }
 
-    val weight = if (!isDefined(weightCol) || $(weightCol).isEmpty) lit(1.0) else col($(weightCol))
-    val baseMargin = if (!isDefined(baseMarginCol) || $(baseMarginCol).isEmpty) {
-      lit(Float.NaN)
-    } else {
-      col($(baseMarginCol))
-    }
-
-    val trainingSet: RDD[XGBLabeledPoint] = DataUtils.convertDataFrameToXGBLabeledPointRDDs(
-      col($(labelCol)), col($(featuresCol)), weight, baseMargin,
-      None, $(numWorkers), needDeterministicRepartitioning, dataset.asInstanceOf[DataFrame]).head
-    val evalRDDMap = getEvalSets(xgboostParams).map {
-      case (name, dataFrame) => (name,
-        DataUtils.convertDataFrameToXGBLabeledPointRDDs(col($(labelCol)), col($(featuresCol)),
-          weight, baseMargin, None, $(numWorkers), needDeterministicRepartitioning, dataFrame).head)
-    }
+    // Packing with all params plus params user defined
+    val derivedXGBParamMap = xgboostParams ++ MLlib2XGBoostParams
+    val buildTrainingData = PreXGBoost.buildDatasetToRDD(this, dataset, derivedXGBParamMap)
     transformSchema(dataset.schema, logging = true)
-    val derivedXGBParamMap = MLlib2XGBoostParams
+
     // All non-null param maps in XGBoostClassifier are in derivedXGBParamMap.
-    val (_booster, _metrics) = XGBoost.trainDistributed(trainingSet, derivedXGBParamMap,
-      hasGroup = false, evalRDDMap)
+    val (_booster, _metrics) = XGBoost.trainDistributed(dataset.sparkSession.sparkContext,
+      buildTrainingData, derivedXGBParamMap)
+
     val model = new XGBoostClassificationModel(uid, _numClasses, _booster)
     val summary = XGBoostTrainingSummary(_metrics)
     model.setSummary(summary)
@@ -266,7 +254,7 @@ class XGBoostClassificationModel private[ml](
    */
   override def predict(features: Vector): Double = {
     import DataUtils._
-    val dm = new DMatrix(XGBoost.processMissingValues(
+    val dm = new DMatrix(processMissingValues(
       Iterator(features.asXGB),
       $(missing),
       $(allowNonZeroForMissing)
@@ -325,7 +313,7 @@ class XGBoostClassificationModel private[ml](
           }
 
           val dm = new DMatrix(
-            XGBoost.processMissingValues(
+            processMissingValues(
               features.map(_.asXGB),
               $(missing),
               $(allowNonZeroForMissing)

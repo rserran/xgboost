@@ -3,6 +3,7 @@ import os
 import urllib
 import zipfile
 import sys
+from typing import Optional
 from contextlib import contextmanager
 from io import StringIO
 from xgboost.compat import SKLEARN_INSTALLED, PANDAS_INSTALLED
@@ -177,7 +178,7 @@ class TestDataset:
         self.metric = metric
         self.X, self.y = get_dataset()
         self.w = None
-        self.margin = None
+        self.margin: Optional[np.ndarray] = None
 
     def set_params(self, params_in):
         params_in['objective'] = self.objective
@@ -315,7 +316,7 @@ _unweighted_datasets_strategy = strategies.sampled_from(
 
 @strategies.composite
 def _dataset_weight_margin(draw):
-    data = draw(_unweighted_datasets_strategy)
+    data: TestDataset = draw(_unweighted_datasets_strategy)
     if draw(strategies.booleans()):
         data.w = draw(arrays(np.float64, (len(data.y)), elements=strategies.floats(0.1, 2.0)))
     if draw(strategies.booleans()):
@@ -324,6 +325,8 @@ def _dataset_weight_margin(draw):
             num_class = int(np.max(data.y) + 1)
         data.margin = draw(
             arrays(np.float64, (len(data.y) * num_class), elements=strategies.floats(0.5, 1.0)))
+        if num_class != 1:
+            data.margin = data.margin.reshape(data.y.shape[0], num_class)
 
     return data
 
@@ -338,6 +341,7 @@ def non_increasing(L, tolerance=1e-4):
 
 
 def eval_error_metric(predt, dtrain: xgb.DMatrix):
+    """Evaluation metric for xgb.train"""
     label = dtrain.get_label()
     r = np.zeros(predt.shape)
     gt = predt > 0.5
@@ -347,6 +351,16 @@ def eval_error_metric(predt, dtrain: xgb.DMatrix):
     le = predt <= 0.5
     r[le] = label[le]
     return 'CustomErr', np.sum(r)
+
+
+def eval_error_metric_skl(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    """Evaluation metric that looks like metrics provided by sklearn."""
+    r = np.zeros(y_score.shape)
+    gt = y_score > 0.5
+    r[gt] = 1 - y_true[gt]
+    le = y_score <= 0.5
+    r[le] = y_true[le]
+    return np.sum(r)
 
 
 def softmax(x):

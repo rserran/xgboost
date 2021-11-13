@@ -229,16 +229,19 @@ void GBTree::DoBoost(DMatrix* p_fmat,
   auto device = tparam_.tree_method != TreeMethod::kGPUHist
                     ? GenericParameter::kCpuId
                     : generic_param_->gpu_id;
-  auto out = MatrixView<float>(
-      &predt->predictions,
-      {static_cast<size_t>(p_fmat->Info().num_row_), static_cast<size_t>(ngroup)}, device);
+  auto out = linalg::TensorView<float, 2>{
+      device == GenericParameter::kCpuId ? predt->predictions.HostSpan()
+                                         : predt->predictions.DeviceSpan(),
+      {static_cast<size_t>(p_fmat->Info().num_row_),
+       static_cast<size_t>(ngroup)},
+      device};
   CHECK_NE(ngroup, 0);
   if (ngroup == 1) {
     std::vector<std::unique_ptr<RegTree>> ret;
     BoostNewTrees(in_gpair, p_fmat, 0, &ret);
     const size_t num_new_trees = ret.size();
     new_trees.push_back(std::move(ret));
-    auto v_predt = VectorView<float>{out, 0};
+    auto v_predt = out.Slice(linalg::All(), 0);
     if (updaters_.size() > 0 && num_new_trees == 1 &&
         predt->predictions.Size() > 0 &&
         updaters_.back()->UpdatePredictionCache(p_fmat, v_predt)) {
@@ -257,7 +260,7 @@ void GBTree::DoBoost(DMatrix* p_fmat,
       BoostNewTrees(&tmp, p_fmat, gid, &ret);
       const size_t num_new_trees = ret.size();
       new_trees.push_back(std::move(ret));
-      auto v_predt = VectorView<float>{out, static_cast<size_t>(gid)};
+      auto v_predt = out.Slice(linalg::All(), gid);
       if (!(updaters_.size() > 0 && predt->predictions.Size() > 0 &&
             num_new_trees == 1 &&
             updaters_.back()->UpdatePredictionCache(p_fmat, v_predt))) {
@@ -306,7 +309,8 @@ void GBTree::InitUpdater(Args const& cfg) {
 
   // create new updaters
   for (const std::string& pstr : ups) {
-    std::unique_ptr<TreeUpdater> up(TreeUpdater::Create(pstr.c_str(), generic_param_));
+    std::unique_ptr<TreeUpdater> up(
+        TreeUpdater::Create(pstr.c_str(), generic_param_, model_.learner_model_param->task));
     up->Configure(cfg);
     updaters_.push_back(std::move(up));
   }
@@ -391,7 +395,8 @@ void GBTree::LoadConfig(Json const& in) {
   auto const& j_updaters = get<Object const>(in["updater"]);
   updaters_.clear();
   for (auto const& kv : j_updaters) {
-    std::unique_ptr<TreeUpdater> up(TreeUpdater::Create(kv.first, generic_param_));
+    std::unique_ptr<TreeUpdater> up(
+        TreeUpdater::Create(kv.first, generic_param_, model_.learner_model_param->task));
     up->LoadConfig(kv.second);
     updaters_.push_back(std::move(up));
   }

@@ -53,10 +53,6 @@ General Parameters
 
   - Flag to disable default metric. Set to 1 or ``true`` to disable.
 
-* ``num_pbuffer`` [set automatically by XGBoost, no need to be set by user]
-
-  - Size of prediction buffer, normally set to number of training instances. The buffers are used to save the prediction results of last boosting step.
-
 * ``num_feature`` [set automatically by XGBoost, no need to be set by user]
 
   - Feature dimension used in boosting, set to maximum dimension of the feature
@@ -366,8 +362,8 @@ Specify the learning task and the corresponding learning objective. The objectiv
   - ``rank:pairwise``: Use LambdaMART to perform pairwise ranking where the pairwise loss is minimized
   - ``rank:ndcg``: Use LambdaMART to perform list-wise ranking where `Normalized Discounted Cumulative Gain (NDCG) <http://en.wikipedia.org/wiki/NDCG>`_ is maximized
   - ``rank:map``: Use LambdaMART to perform list-wise ranking where `Mean Average Precision (MAP) <http://en.wikipedia.org/wiki/Mean_average_precision#Mean_average_precision>`_ is maximized
-  - ``reg:gamma``: gamma regression with log-link. Output is a mean of gamma distribution. It might be useful, e.g., for modeling insurance claims severity, or for any outcome that might be `gamma-distributed <https://en.wikipedia.org/wiki/Gamma_distribution#Applications>`_.
-  - ``reg:tweedie``: Tweedie regression with log-link. It might be useful, e.g., for modeling total loss in insurance, or for any outcome that might be `Tweedie-distributed <https://en.wikipedia.org/wiki/Tweedie_distribution#Applications>`_.
+  - ``reg:gamma``: gamma regression with log-link. Output is a mean of gamma distribution. It might be useful, e.g., for modeling insurance claims severity, or for any outcome that might be `gamma-distributed <https://en.wikipedia.org/wiki/Gamma_distribution#Occurrence_and_applications>`_.
+  - ``reg:tweedie``: Tweedie regression with log-link. It might be useful, e.g., for modeling total loss in insurance, or for any outcome that might be `Tweedie-distributed <https://en.wikipedia.org/wiki/Tweedie_distribution#Occurrence_and_applications>`_.
 
 * ``base_score`` [default=0.5]
 
@@ -390,16 +386,20 @@ Specify the learning task and the corresponding learning objective. The objectiv
     - ``error@t``: a different than 0.5 binary classification threshold value could be specified by providing a numerical value through 't'.
     - ``merror``: Multiclass classification error rate. It is calculated as ``#(wrong cases)/#(all cases)``.
     - ``mlogloss``: `Multiclass logloss <http://scikit-learn.org/stable/modules/generated/sklearn.metrics.log_loss.html>`_.
-    - ``auc``: `Receiver Operating Characteristic Area under the Curve <http://en.wikipedia.org/wiki/Receiver_operating_characteristic#Area_under_curve>`_.
+    - ``auc``: `Receiver Operating Characteristic Area under the Curve <https://en.wikipedia.org/wiki/Receiver_operating_characteristic#Area_under_the_curve>`_.
       Available for classification and learning-to-rank tasks.
 
       - When used with binary classification, the objective should be ``binary:logistic`` or similar functions that work on probability.
       - When used with multi-class classification, objective should be ``multi:softprob`` instead of ``multi:softmax``, as the latter doesn't output probability.  Also the AUC is calculated by 1-vs-rest with reference class weighted by class prevalence.
       - When used with LTR task, the AUC is computed by comparing pairs of documents to count correctly sorted pairs.  This corresponds to pairwise learning to rank.  The implementation has some issues with average AUC around groups and distributed workers not being well-defined.
       - On a single machine the AUC calculation is exact. In a distributed environment the AUC is a weighted average over the AUC of training rows on each node - therefore, distributed AUC is an approximation sensitive to the distribution of data across workers. Use another metric in distributed environments if precision and reproducibility are important.
-      - If input dataset contains only negative or positive samples the output is `NaN`.
+      - When input dataset contains only negative or positive samples, the output is `NaN`.  The behavior is implementation defined, for instance, ``scikit-learn`` returns :math:`0.5` instead.
 
-    - ``aucpr``: `Area under the PR curve <https://en.wikipedia.org/wiki/Precision_and_recall>`_. Available for binary classification and learning-to-rank tasks.
+    - ``aucpr``: `Area under the PR curve <https://en.wikipedia.org/wiki/Precision_and_recall>`_.
+      Available for classification and learning-to-rank tasks.
+
+      After XGBoost 1.6, both of the requirements and restrictions for using ``aucpr`` in classification problem are similar to ``auc``.  For ranking task, only binary relevance label :math:`y \in [0, 1]` is supported.  Different from ``map (mean average precision)``, ``aucpr`` calculates the *interpolated* area under precision recall curve using continuous interpolation.
+
     - ``ndcg``: `Normalized Discounted Cumulative Gain <http://en.wikipedia.org/wiki/NDCG>`_
     - ``map``: `Mean Average Precision <http://en.wikipedia.org/wiki/Mean_average_precision#Mean_average_precision>`_
     - ``ndcg@n``, ``map@n``: 'n' can be assigned as an integer to cut off the top positions in the lists for evaluation.
@@ -420,7 +420,7 @@ Specify the learning task and the corresponding learning objective. The objectiv
 
 * ``seed_per_iteration`` [default=false]
 
-  - Seed PRNG determnisticly via iterator number, this option will be switched on automatically on distributed mode.
+  - Seed PRNG determnisticly via iterator number.
 
 ***********************
 Command Line Parameters

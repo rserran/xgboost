@@ -5,6 +5,7 @@ import pytest
 
 sys.path.append("tests/python")
 import testing as tm
+from test_dmatrix import set_base_margin_info
 
 
 def dmatrix_from_cudf(input_type, DMatrixT, missing=np.NAN):
@@ -142,6 +143,8 @@ def _test_cudf_metainfo(DMatrixT):
                           dmat_cudf.get_float_info('base_margin'))
     assert np.array_equal(dmat.get_uint_info('group_ptr'), dmat_cudf.get_uint_info('group_ptr'))
 
+    set_base_margin_info(df, DMatrixT, "gpu_hist")
+
 
 class TestFromColumnar:
     '''Tests for constructing DMatrix from data structure conforming Apache
@@ -186,6 +189,37 @@ Arrow specification.'''
         assert len(Xy.feature_types) == X.shape[1]
         assert all(t == "c" for t in Xy.feature_types)
 
+        # test missing value
+        X = cudf.DataFrame({"f0": ["a", "b", np.NaN]})
+        X["f0"] = X["f0"].astype("category")
+        df, cat_codes, _, _ = xgb.data._transform_cudf_df(
+            X, None, None, enable_categorical=True
+        )
+        for col in cat_codes:
+            assert col.has_nulls
+
+        y = [0, 1, 2]
+        with pytest.raises(ValueError):
+            xgb.DMatrix(X, y)
+        Xy = xgb.DMatrix(X, y, enable_categorical=True)
+        assert Xy.num_row() == 3
+        assert Xy.num_col() == 1
+
+        with pytest.raises(ValueError):
+            xgb.DeviceQuantileDMatrix(X, y)
+
+        Xy = xgb.DeviceQuantileDMatrix(X, y, enable_categorical=True)
+        assert Xy.num_row() == 3
+        assert Xy.num_col() == 1
+
+        X = X["f0"]
+        with pytest.raises(ValueError):
+            xgb.DMatrix(X, y)
+
+        Xy = xgb.DMatrix(X, y, enable_categorical=True)
+        assert Xy.num_row() == 3
+        assert Xy.num_col() == 1
+
 
 @pytest.mark.skipif(**tm.no_cudf())
 @pytest.mark.skipif(**tm.no_cupy())
@@ -208,7 +242,7 @@ def test_cudf_training_with_sklearn():
     y_cudf_series = ss(data=y.iloc[:, 0])
 
     for y_obj in [y_cudf, y_cudf_series]:
-        clf = xgb.XGBClassifier(gpu_id=0, tree_method='gpu_hist', use_label_encoder=False)
+        clf = xgb.XGBClassifier(gpu_id=0, tree_method='gpu_hist')
         clf.fit(X_cudf, y_obj, sample_weight=cudf_weights, base_margin=cudf_base_margin,
                 eval_set=[(X_cudf, y_obj)])
         pred = clf.predict(X_cudf)

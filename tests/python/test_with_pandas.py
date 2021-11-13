@@ -3,6 +3,7 @@ import numpy as np
 import xgboost as xgb
 import testing as tm
 import pytest
+from test_dmatrix import set_base_margin_info
 
 try:
     import pandas as pd
@@ -138,8 +139,21 @@ class TestPandas:
             X, enable_categorical=True
         )
 
-        assert np.issubdtype(transformed[:, 0].dtype, np.integer)
         assert transformed[:, 0].min() == 0
+
+        # test missing value
+        X = pd.DataFrame({"f0": ["a", "b", np.NaN]})
+        X["f0"] = X["f0"].astype("category")
+        arr, _, _ = xgb.data._transform_pandas_df(X, enable_categorical=True)
+        assert not np.any(arr == -1.0)
+
+        X = X["f0"]
+        with pytest.raises(ValueError):
+            xgb.DMatrix(X, y)
+
+        Xy = xgb.DMatrix(X, y, enable_categorical=True)
+        assert Xy.num_row() == 3
+        assert Xy.num_col() == 1
 
     def test_pandas_sparse(self):
         import pandas as pd
@@ -191,6 +205,9 @@ class TestPandas:
         assert data.num_col() == kCols
 
         np.testing.assert_array_equal(data.get_weight(), w)
+
+    def test_base_margin(self):
+        set_base_margin_info(pd.DataFrame, xgb.DMatrix, "hist")
 
     def test_cv_as_pandas(self):
         dm = xgb.DMatrix(dpath + 'agaricus.txt.train')

@@ -7,7 +7,7 @@ import sys
 import numpy as np
 import scipy
 import json
-from typing import List, Tuple, Dict, Optional, Type, Any
+from typing import List, Tuple, Dict, Optional, Type, Any, Callable
 import asyncio
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
@@ -182,6 +182,50 @@ def test_dask_predict_shape_infer(client: "Client") -> None:
     assert prediction.shape[1] == 3
 
 
+def run_boost_from_prediction_multi_clasas(
+    X: xgb.dask._DaskCollection,
+    y: xgb.dask._DaskCollection,
+    tree_method: str,
+    client: "Client"
+) -> None:
+    model_0 = xgb.dask.DaskXGBClassifier(
+        learning_rate=0.3, random_state=0, n_estimators=4, tree_method=tree_method
+    )
+    model_0.fit(X=X, y=y)
+    margin = xgb.dask.inplace_predict(
+        client, model_0.get_booster(), X, predict_type="margin"
+    )
+
+    model_1 = xgb.dask.DaskXGBClassifier(
+        learning_rate=0.3, random_state=0, n_estimators=4, tree_method=tree_method
+    )
+    model_1.fit(X=X, y=y, base_margin=margin)
+    predictions_1 = xgb.dask.predict(
+        client,
+        model_1.get_booster(),
+        xgb.dask.DaskDMatrix(client, X, base_margin=margin),
+        output_margin=True
+    )
+
+    model_2 = xgb.dask.DaskXGBClassifier(
+        learning_rate=0.3, random_state=0, n_estimators=8, tree_method=tree_method
+    )
+    model_2.fit(X=X, y=y)
+    predictions_2 = xgb.dask.inplace_predict(
+        client, model_2.get_booster(), X, predict_type="margin"
+    )
+    a = predictions_1.compute()
+    b = predictions_2.compute()
+    # cupy/cudf
+    if hasattr(a, "get"):
+        a = a.get()
+    if hasattr(b, "values"):
+        b = b.values
+    if hasattr(b, "get"):
+        b = b.get()
+    np.testing.assert_allclose(a, b, atol=1e-5)
+
+
 def run_boost_from_prediction(
     X: xgb.dask._DaskCollection, y: xgb.dask._DaskCollection, tree_method: str, client: "Client"
 ) -> None:
@@ -227,10 +271,14 @@ def run_boost_from_prediction(
 
 @pytest.mark.parametrize("tree_method", ["hist", "approx"])
 def test_boost_from_prediction(tree_method: str, client: "Client") -> None:
-    from sklearn.datasets import load_breast_cancer
+    from sklearn.datasets import load_breast_cancer, load_digits
     X_, y_ = load_breast_cancer(return_X_y=True)
     X, y = dd.from_array(X_, chunksize=100), dd.from_array(y_, chunksize=100)
     run_boost_from_prediction(X, y, tree_method, client)
+
+    X_, y_ = load_digits(return_X_y=True)
+    X, y = dd.from_array(X_, chunksize=100), dd.from_array(y_, chunksize=100)
+    run_boost_from_prediction_multi_clasas(X, y, tree_method, client)
 
 
 def test_inplace_predict(client: "Client") -> None:
@@ -587,7 +635,7 @@ def run_empty_dmatrix_auc(client: "Client", tree_method: str, n_workers: int) ->
     cls = xgb.dask.DaskXGBClassifier(
         tree_method=tree_method, n_estimators=2, use_label_encoder=False
     )
-    cls.fit(X, y, eval_metric="auc", eval_set=[(valid_X, valid_y)])
+    cls.fit(X, y, eval_metric=["auc", "aucpr"], eval_set=[(valid_X, valid_y)])
 
     # multiclass
     X_, y_ = make_classification(
@@ -618,7 +666,7 @@ def run_empty_dmatrix_auc(client: "Client", tree_method: str, n_workers: int) ->
     cls = xgb.dask.DaskXGBClassifier(
         tree_method=tree_method, n_estimators=2, use_label_encoder=False
     )
-    cls.fit(X, y, eval_metric="auc", eval_set=[(valid_X, valid_y)])
+    cls.fit(X, y, eval_metric=["auc", "aucpr"], eval_set=[(valid_X, valid_y)])
 
 
 def test_empty_dmatrix_auc() -> None:
@@ -1275,7 +1323,9 @@ class TestWithDask:
 
                 def worker_fn(worker_addr: str, data_ref: Dict) -> None:
                     with xgb.dask.RabitContext(rabit_args):
-                        local_dtrain = xgb.dask._dmatrix_from_list_of_parts(**data_ref)
+                        local_dtrain = xgb.dask._dmatrix_from_list_of_parts(
+                            **data_ref, nthread=7
+                        )
                         total = np.array([local_dtrain.num_row()])
                         total = xgb.rabit.allreduce(total, xgb.rabit.Op.SUM)
                         assert total[0] == kRows
@@ -1661,11 +1711,16 @@ class TestDaskCallbacks:
 
         valid_X, valid_y = load_breast_cancer(return_X_y=True)
         valid_X, valid_y = da.from_array(valid_X), da.from_array(valid_y)
-        cls = xgb.dask.DaskXGBClassifier(objective='binary:logistic', tree_method='hist',
-                                         n_estimators=1000)
+        cls = xgb.dask.DaskXGBClassifier(
+            objective='binary:logistic',
+            tree_method='hist',
+            n_estimators=1000,
+            eval_metric=tm.eval_error_metric_skl
+        )
         cls.client = client
-        cls.fit(X, y, early_stopping_rounds=early_stopping_rounds,
-                eval_set=[(valid_X, valid_y)], eval_metric=tm.eval_error_metric)
+        cls.fit(
+            X, y, early_stopping_rounds=early_stopping_rounds, eval_set=[(valid_X, valid_y)]
+        )
         booster = cls.get_booster()
         dump = booster.get_dump(dump_format='json')
         assert len(dump) - booster.best_iteration == early_stopping_rounds + 1

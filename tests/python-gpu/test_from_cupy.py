@@ -5,6 +5,7 @@ import pytest
 
 sys.path.append("tests/python")
 import testing as tm
+from test_dmatrix import set_base_margin_info
 
 
 def dmatrix_from_cupy(input_type, DMatrixT, missing=np.NAN):
@@ -107,6 +108,8 @@ def _test_cupy_metainfo(DMatrixT):
     assert np.array_equal(dmat.get_uint_info('group_ptr'),
                           dmat_cupy.get_uint_info('group_ptr'))
 
+    set_base_margin_info(cp.asarray, DMatrixT, "gpu_hist")
+
 
 @pytest.mark.skipif(**tm.no_cupy())
 @pytest.mark.skipif(**tm.no_sklearn())
@@ -122,7 +125,7 @@ def test_cupy_training_with_sklearn():
     base_margin = np.random.random(50)
     cupy_base_margin = cp.array(base_margin)
 
-    clf = xgb.XGBClassifier(gpu_id=0, tree_method="gpu_hist", use_label_encoder=False)
+    clf = xgb.XGBClassifier(gpu_id=0, tree_method="gpu_hist")
     clf.fit(
         X,
         y,
