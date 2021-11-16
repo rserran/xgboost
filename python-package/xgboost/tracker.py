@@ -162,7 +162,7 @@ class RabitTracker:
         n_workers: int,
         port: int = 9091,
         port_end: int = 9999,
-        use_logger: bool = True,
+        use_logger: bool = False,
     ) -> None:
         """A Python implementation of RABIT tracker.
 
@@ -208,7 +208,7 @@ class RabitTracker:
 
     def worker_envs(self) -> Dict[str, Union[str, int]]:
         """
-        get enviroment variables for workers
+        get environment variables for workers
         can be passed in as args or envs
         """
         return {'DMLC_TRACKER_URI': self.hostIP,
@@ -286,7 +286,7 @@ class RabitTracker:
         return tree_map_, parent_map_, ring_map_
 
     def accept_workers(self, n_workers: int) -> None:
-        # set of nodes that finishs the job
+        # set of nodes that finishes the job
         shutdown: Dict[int, WorkerEntry] = {}
         # set of nodes that is waiting for connections
         wait_conn: Dict[int, WorkerEntry] = {}
@@ -407,16 +407,17 @@ def start_rabit_tracker(args: argparse.Namespace) -> None:
     ----------
     args: arguments to start the rabit tracker.
     """
-    envs = {'DMLC_NUM_WORKER': args.num_workers,
-            'DMLC_NUM_SERVER': args.num_servers}
-    rabit = RabitTracker(hostIP=get_host_ip(args.host_ip), n_workers=args.num_workers)
+    envs = {"DMLC_NUM_WORKER": args.num_workers, "DMLC_NUM_SERVER": args.num_servers}
+    rabit = RabitTracker(
+        hostIP=get_host_ip(args.host_ip), n_workers=args.num_workers, use_logger=True
+    )
     envs.update(rabit.worker_envs())
     rabit.start(args.num_workers)
-    sys.stdout.write('DMLC_TRACKER_ENV_START\n')
+    sys.stdout.write("DMLC_TRACKER_ENV_START\n")
     # simply write configuration to stdout
     for k, v in envs.items():
         sys.stdout.write(f"{k}={v}\n")
-    sys.stdout.write('DMLC_TRACKER_ENV_END\n')
+    sys.stdout.write("DMLC_TRACKER_ENV_END\n")
     sys.stdout.flush()
     rabit.join()
 
@@ -425,7 +426,7 @@ def main() -> None:
     """Main function if tracker is executed in standalone mode."""
     parser = argparse.ArgumentParser(description='Rabit Tracker start.')
     parser.add_argument('--num-workers', required=True, type=int,
-                        help='Number of worker proccess to be launched.')
+                        help='Number of worker process to be launched.')
     parser.add_argument(
         '--num-servers', default=0, type=int,
         help='Number of server process to be launched. Only used in PS jobs.'
