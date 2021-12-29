@@ -503,12 +503,12 @@ def test_empty_dmatrix_training_continuation(client: "Client") -> None:
     kRows, kCols = 1, 97
     X = dd.from_array(np.random.randn(kRows, kCols))
     y = dd.from_array(np.random.rand(kRows))
-    X.columns = ['X' + str(i) for i in range(0, 97)]
+    X.columns = ['X' + str(i) for i in range(0, kCols)]
     dtrain = xgb.dask.DaskDMatrix(client, X, y)
 
     kRows += 1000
     X = dd.from_array(np.random.randn(kRows, kCols), chunksize=10)
-    X.columns = ['X' + str(i) for i in range(0, 97)]
+    X.columns = ['X' + str(i) for i in range(0, kCols)]
     y = dd.from_array(np.random.rand(kRows), chunksize=10)
     valid = xgb.dask.DaskDMatrix(client, X, y)
 
@@ -1114,9 +1114,9 @@ class TestWithDask:
             return
 
         chunk = 128
-        X = da.from_array(dataset.X,
-                          chunks=(chunk, dataset.X.shape[1]))
-        y = da.from_array(dataset.y, chunks=(chunk,))
+        y_chunk = chunk if len(dataset.y.shape) == 1 else (chunk, dataset.y.shape[1])
+        X = da.from_array(dataset.X, chunks=(chunk, dataset.X.shape[1]))
+        y = da.from_array(dataset.y, chunks=y_chunk)
         if dataset.w is not None:
             w = da.from_array(dataset.w, chunks=(chunk,))
         else:

@@ -56,12 +56,17 @@ class RegLossObj : public ObjFunction {
     return Loss::Info();
   }
 
+  uint32_t Targets(MetaInfo const& info) const override {
+    // Multi-target regression.
+    return std::max(static_cast<size_t>(1), info.labels.Shape(1));
+  }
+
   void GetGradient(const HostDeviceVector<bst_float>& preds,
                    const MetaInfo &info, int,
                    HostDeviceVector<GradientPair>* out_gpair) override {
-    CHECK_EQ(preds.Size(), info.labels_.Size())
+    CHECK_EQ(preds.Size(), info.labels.Size())
         << " " << "labels are not correctly provided"
-        << "preds.size=" << preds.Size() << ", label.size=" << info.labels_.Size() << ", "
+        << "preds.size=" << preds.Size() << ", label.size=" << info.labels.Size() << ", "
         << "Loss: " << Loss::Name();
     size_t const ndata = preds.Size();
     out_gpair->Resize(ndata);
@@ -70,7 +75,7 @@ class RegLossObj : public ObjFunction {
 
     bool is_null_weight = info.weights_.Size() == 0;
     if (!is_null_weight) {
-      CHECK_EQ(info.weights_.Size(), ndata)
+      CHECK_EQ(info.weights_.Size(), info.labels.Shape(0))
           << "Number of weights should be equal to number of data points.";
     }
     auto scale_pos_weight = param_.scale_pos_weight;
@@ -81,11 +86,12 @@ class RegLossObj : public ObjFunction {
     bool on_device = device >= 0;
     // On CPU we run the transformation each thread processing a contigious block of data
     // for better performance.
-    const size_t n_data_blocks =
-        std::max(static_cast<size_t>(1), (on_device ? ndata : nthreads));
+    const size_t n_data_blocks = std::max(static_cast<size_t>(1), (on_device ? ndata : nthreads));
     const size_t block_size = ndata / n_data_blocks + !!(ndata % n_data_blocks);
+    auto const n_targets = std::max(info.labels.Shape(1), static_cast<size_t>(1));
+
     common::Transform<>::Init(
-        [block_size, ndata] XGBOOST_DEVICE(
+        [block_size, ndata, n_targets] XGBOOST_DEVICE(
             size_t data_block_idx, common::Span<float> _additional_input,
             common::Span<GradientPair> _out_gpair,
             common::Span<const bst_float> _preds,
@@ -102,7 +108,7 @@ class RegLossObj : public ObjFunction {
 
           for (size_t idx = begin; idx < end; ++idx) {
             bst_float p = Loss::PredTransform(preds_ptr[idx]);
-            bst_float w = _is_null_weight ? 1.0f : weights_ptr[idx];
+            bst_float w = _is_null_weight ? 1.0f : weights_ptr[idx / n_targets];
             bst_float label = labels_ptr[idx];
             if (label == 1.0f) {
               w *= _scale_pos_weight;
@@ -116,7 +122,7 @@ class RegLossObj : public ObjFunction {
           }
         },
         common::Range{0, static_cast<int64_t>(n_data_blocks)}, device)
-        .Eval(&additional_input_, out_gpair, &preds, &info.labels_,
+        .Eval(&additional_input_, out_gpair, &preds, info.labels.Data(),
               &info.weights_);
 
     auto const flag = additional_input_.HostVector().begin()[0];
@@ -218,8 +224,8 @@ class PoissonRegression : public ObjFunction {
   void GetGradient(const HostDeviceVector<bst_float>& preds,
                    const MetaInfo &info, int,
                    HostDeviceVector<GradientPair> *out_gpair) override {
-    CHECK_NE(info.labels_.Size(), 0U) << "label set cannot be empty";
-    CHECK_EQ(preds.Size(), info.labels_.Size()) << "labels are not correctly provided";
+    CHECK_NE(info.labels.Size(), 0U) << "label set cannot be empty";
+    CHECK_EQ(preds.Size(), info.labels.Size()) << "labels are not correctly provided";
     size_t const ndata = preds.Size();
     out_gpair->Resize(ndata);
     auto device = tparam_->gpu_id;
@@ -249,7 +255,7 @@ class PoissonRegression : public ObjFunction {
                                           expf(p + max_delta_step) * w};
         },
         common::Range{0, static_cast<int64_t>(ndata)}, device).Eval(
-            &label_correct_, out_gpair, &preds, &info.labels_, &info.weights_);
+            &label_correct_, out_gpair, &preds, info.labels.Data(), &info.weights_);
     // copy "label correct" flags back to host
     std::vector<int>& label_correct_h = label_correct_.HostVector();
     for (auto const flag : label_correct_h) {
@@ -313,8 +319,8 @@ class CoxRegression : public ObjFunction {
   void GetGradient(const HostDeviceVector<bst_float>& preds,
                    const MetaInfo &info, int,
                    HostDeviceVector<GradientPair> *out_gpair) override {
-    CHECK_NE(info.labels_.Size(), 0U) << "label set cannot be empty";
-    CHECK_EQ(preds.Size(), info.labels_.Size()) << "labels are not correctly provided";
+    CHECK_NE(info.labels.Size(), 0U) << "label set cannot be empty";
+    CHECK_EQ(preds.Size(), info.labels.Size()) << "labels are not correctly provided";
     const auto& preds_h = preds.HostVector();
     out_gpair->Resize(preds_h.size());
     auto& gpair = out_gpair->HostVector();
@@ -334,7 +340,7 @@ class CoxRegression : public ObjFunction {
     }
 
     // start calculating grad and hess
-    const auto& labels = info.labels_.HostVector();
+    const auto& labels = info.labels.HostView();
     double r_k = 0;
     double s_k = 0;
     double last_exp_p = 0.0;
@@ -345,7 +351,7 @@ class CoxRegression : public ObjFunction {
       const double p = preds_h[ind];
       const double exp_p = std::exp(p);
       const double w = info.GetWeight(ind);
-      const double y = labels[ind];
+      const double y = labels(ind);
       const double abs_y = std::abs(y);
 
       // only update the denominator after we move forward in time (labels are sorted)
@@ -414,8 +420,8 @@ class GammaRegression : public ObjFunction {
   void GetGradient(const HostDeviceVector<bst_float> &preds,
                    const MetaInfo &info, int,
                    HostDeviceVector<GradientPair> *out_gpair) override {
-    CHECK_NE(info.labels_.Size(), 0U) << "label set cannot be empty";
-    CHECK_EQ(preds.Size(), info.labels_.Size()) << "labels are not correctly provided";
+    CHECK_NE(info.labels.Size(), 0U) << "label set cannot be empty";
+    CHECK_EQ(preds.Size(), info.labels.Size()) << "labels are not correctly provided";
     const size_t ndata = preds.Size();
     auto device = tparam_->gpu_id;
     out_gpair->Resize(ndata);
@@ -443,7 +449,7 @@ class GammaRegression : public ObjFunction {
           _out_gpair[_idx] = GradientPair((1 - y / expf(p)) * w, y / expf(p) * w);
         },
         common::Range{0, static_cast<int64_t>(ndata)}, device).Eval(
-            &label_correct_, out_gpair, &preds, &info.labels_, &info.weights_);
+            &label_correct_, out_gpair, &preds, info.labels.Data(), &info.weights_);
 
     // copy "label correct" flags back to host
     std::vector<int>& label_correct_h = label_correct_.HostVector();
@@ -514,8 +520,8 @@ class TweedieRegression : public ObjFunction {
   void GetGradient(const HostDeviceVector<bst_float>& preds,
                    const MetaInfo &info, int,
                    HostDeviceVector<GradientPair> *out_gpair) override {
-    CHECK_NE(info.labels_.Size(), 0U) << "label set cannot be empty";
-    CHECK_EQ(preds.Size(), info.labels_.Size()) << "labels are not correctly provided";
+    CHECK_NE(info.labels.Size(), 0U) << "label set cannot be empty";
+    CHECK_EQ(preds.Size(), info.labels.Size()) << "labels are not correctly provided";
     const size_t ndata = preds.Size();
     out_gpair->Resize(ndata);
 
@@ -550,7 +556,7 @@ class TweedieRegression : public ObjFunction {
           _out_gpair[_idx] = GradientPair(grad * w, hess * w);
         },
         common::Range{0, static_cast<int64_t>(ndata), 1}, device)
-        .Eval(&label_correct_, out_gpair, &preds, &info.labels_, &info.weights_);
+        .Eval(&label_correct_, out_gpair, &preds, info.labels.Data(), &info.weights_);
 
     // copy "label correct" flags back to host
     std::vector<int>& label_correct_h = label_correct_.HostVector();

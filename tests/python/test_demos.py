@@ -115,6 +115,7 @@ def test_aft_demo():
     os.remove('aft_model.json')
 
 
+@pytest.mark.skipif(**tm.no_matplotlib())
 def test_callbacks_demo():
     script = os.path.join(PYTHON_DEMO_DIR, 'callbacks.py')
     cmd = ['python', script, '--plot=0']
@@ -124,6 +125,14 @@ def test_callbacks_demo():
 def test_continuation_demo():
     script = os.path.join(PYTHON_DEMO_DIR, 'continuation.py')
     cmd = ['python', script]
+    subprocess.check_call(cmd)
+
+
+@pytest.mark.skipif(**tm.no_sklearn())
+@pytest.mark.skipif(**tm.no_matplotlib())
+def test_multioutput_reg() -> None:
+    script = os.path.join(PYTHON_DEMO_DIR, "multioutput_regression.py")
+    cmd = ['python', script, "--plot=0"]
     subprocess.check_call(cmd)
 
 

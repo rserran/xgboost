@@ -12,9 +12,9 @@
 #include "xgboost/json.h"
 #include "../../src/common/io.h"
 #include "../../src/common/random.h"
+#include "../../src/common/linalg_op.h"
 
 namespace xgboost {
-
 TEST(Learner, Basic) {
   using Arg = std::pair<std::string, std::string>;
   auto args = {Arg("tree_method", "exact")};
@@ -141,9 +141,8 @@ TEST(Learner, JsonModelIO) {
   size_t constexpr kRows = 8;
   int32_t constexpr kIters = 4;
 
-  std::shared_ptr<DMatrix> p_dmat{
-    RandomDataGenerator{kRows, 10, 0}.GenerateDMatrix()};
-  p_dmat->Info().labels_.Resize(kRows);
+  std::shared_ptr<DMatrix> p_dmat{RandomDataGenerator{kRows, 10, 0}.GenerateDMatrix()};
+  p_dmat->Info().labels.Reshape(kRows);
   CHECK_NE(p_dmat->Info().num_col_, 0);
 
   {
@@ -204,9 +203,8 @@ TEST(Learner, MultiThreadedPredict) {
   size_t constexpr kRows = 1000;
   size_t constexpr kCols = 100;
 
-  std::shared_ptr<DMatrix> p_dmat{
-      RandomDataGenerator{kRows, kCols, 0}.GenerateDMatrix()};
-  p_dmat->Info().labels_.Resize(kRows);
+  std::shared_ptr<DMatrix> p_dmat{RandomDataGenerator{kRows, kCols, 0}.GenerateDMatrix()};
+  p_dmat->Info().labels.Reshape(kRows);
   CHECK_NE(p_dmat->Info().num_col_, 0);
 
   std::shared_ptr<DMatrix> p_data{
@@ -240,7 +238,7 @@ TEST(Learner, BinaryModelIO) {
   size_t constexpr kRows = 8;
   int32_t constexpr kIters = 4;
   auto p_dmat = RandomDataGenerator{kRows, 10, 0}.GenerateDMatrix();
-  p_dmat->Info().labels_.Resize(kRows);
+  p_dmat->Info().labels.Reshape(kRows);
 
   std::unique_ptr<Learner> learner{Learner::Create({p_dmat})};
   learner->SetParam("eval_metric", "rmsle");
@@ -279,7 +277,8 @@ TEST(Learner, GPUConfiguration) {
   for (size_t i = 0; i < labels.size(); ++i) {
     labels[i] = i;
   }
-  p_dmat->Info().labels_.HostVector() = labels;
+  p_dmat->Info().labels.Data()->HostVector() = labels;
+  p_dmat->Info().labels.Reshape(kRows);
   {
     std::unique_ptr<Learner> learner {Learner::Create(mat)};
     learner->SetParams({Arg{"booster", "gblinear"},
@@ -424,6 +423,30 @@ TEST(Learner, FeatureInfo) {
     learner->GetFeatureTypes(&out_types);
     ASSERT_TRUE(std::equal(out_names.begin(), out_names.end(), names.begin()));
     ASSERT_TRUE(std::equal(out_types.begin(), out_types.end(), types.begin()));
+  }
+}
+
+TEST(Learner, MultiTarget) {
+  size_t constexpr kRows{128}, kCols{10}, kTargets{3};
+  auto m = RandomDataGenerator{kRows, kCols, 0}.GenerateDMatrix();
+  m->Info().labels.Reshape(kRows, kTargets);
+  linalg::ElementWiseKernelHost(m->Info().labels.HostView(), omp_get_max_threads(),
+                                [](auto i, auto) { return i; });
+
+  {
+    std::unique_ptr<Learner> learner{Learner::Create({m})};
+    learner->Configure();
+
+    Json model{Object()};
+    learner->SaveModel(&model);
+    ASSERT_EQ(get<String>(model["learner"]["learner_model_param"]["num_target"]),
+              std::to_string(kTargets));
+  }
+  {
+    std::unique_ptr<Learner> learner{Learner::Create({m})};
+    learner->SetParam("objective", "multi:softprob");
+    // unsupported objective.
+    EXPECT_THROW({ learner->Configure(); }, dmlc::Error);
   }
 }
 }  // namespace xgboost

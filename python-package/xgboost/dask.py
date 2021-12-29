@@ -1015,6 +1015,8 @@ def _maybe_dataframe(
         index = getattr(data, "index", None)
         if lazy_isinstance(data, "cudf.core.dataframe", "DataFrame"):
             import cudf
+            if prediction.size == 0:
+                return cudf.DataFrame({}, columns=columns, dtype=numpy.float32)
 
             prediction = cudf.DataFrame(
                 prediction, columns=columns, dtype=numpy.float32, index=index
@@ -1857,7 +1859,7 @@ class DaskXGBClassifier(DaskScikitLearnBase, XGBClassifierBase):
         vstack = update_wrapper(
             partial(da.vstack, allow_unknown_chunksizes=True), da.vstack
         )
-        return _cls_predict_proba(getattr(self, "n_classes_", None), predts, vstack)
+        return _cls_predict_proba(getattr(self, "n_classes_", 0), predts, vstack)
 
     # pylint: disable=missing-function-docstring
     def predict_proba(
