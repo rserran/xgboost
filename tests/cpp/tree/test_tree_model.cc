@@ -8,6 +8,52 @@
 #include "../../../src/common/categorical.h"
 
 namespace xgboost {
+TEST(Tree, ModelShape) {
+  bst_feature_t n_features = std::numeric_limits<uint32_t>::max();
+  RegTree tree;
+  tree.param.UpdateAllowUnknown(Args{{"num_feature", std::to_string(n_features)}});
+  ASSERT_EQ(tree.param.num_feature, n_features);
+
+  dmlc::TemporaryDirectory tempdir;
+  const std::string tmp_file = tempdir.path + "/tree.model";
+  {
+    // binary dump
+    std::unique_ptr<dmlc::Stream> fo(dmlc::Stream::Create(tmp_file.c_str(), "w"));
+    tree.Save(fo.get());
+  }
+  {
+    // binary load
+    RegTree new_tree;
+    std::unique_ptr<dmlc::Stream> fi(dmlc::Stream::Create(tmp_file.c_str(), "r"));
+    new_tree.Load(fi.get());
+    ASSERT_EQ(new_tree.param.num_feature, n_features);
+  }
+  {
+    // json
+    Json j_tree{Object{}};
+    tree.SaveModel(&j_tree);
+    std::vector<char> dumped;
+    Json::Dump(j_tree, &dumped);
+    RegTree new_tree;
+
+    auto j_loaded = Json::Load(StringView{dumped.data(), dumped.size()});
+    new_tree.LoadModel(j_loaded);
+    ASSERT_EQ(new_tree.param.num_feature, n_features);
+  }
+  {
+    // ubjson
+    Json j_tree{Object{}};
+    tree.SaveModel(&j_tree);
+    std::vector<char> dumped;
+    Json::Dump(j_tree, &dumped, std::ios::binary);
+    RegTree new_tree;
+
+    auto j_loaded = Json::Load(StringView{dumped.data(), dumped.size()}, std::ios::binary);
+    new_tree.LoadModel(j_loaded);
+    ASSERT_EQ(new_tree.param.num_feature, n_features);
+  }
+}
+
 #if DMLC_IO_NO_ENDIAN_SWAP  // skip on big-endian machines
 // Manually construct tree in binary format
 // Do not use structs in case they change
@@ -198,8 +244,7 @@ void CheckReload(RegTree const &tree) {
   Json saved{Object()};
   loaded_tree.SaveModel(&saved);
 
-  auto same = out == saved;
-  ASSERT_TRUE(same);
+  ASSERT_EQ(out, saved);
 }
 
 TEST(Tree, CategoricalIO) {
@@ -433,12 +478,12 @@ TEST(Tree, JsonIO) {
   ASSERT_EQ(get<String>(tparam["num_nodes"]), "3");
   ASSERT_EQ(get<String>(tparam["size_leaf_vector"]), "0");
 
-  ASSERT_EQ(get<Array const>(j_tree["left_children"]).size(), 3ul);
-  ASSERT_EQ(get<Array const>(j_tree["right_children"]).size(), 3ul);
-  ASSERT_EQ(get<Array const>(j_tree["parents"]).size(), 3ul);
-  ASSERT_EQ(get<Array const>(j_tree["split_indices"]).size(), 3ul);
-  ASSERT_EQ(get<Array const>(j_tree["split_conditions"]).size(), 3ul);
-  ASSERT_EQ(get<Array const>(j_tree["default_left"]).size(), 3ul);
+  ASSERT_EQ(get<I32Array const>(j_tree["left_children"]).size(), 3ul);
+  ASSERT_EQ(get<I32Array const>(j_tree["right_children"]).size(), 3ul);
+  ASSERT_EQ(get<I32Array const>(j_tree["parents"]).size(), 3ul);
+  ASSERT_EQ(get<I32Array const>(j_tree["split_indices"]).size(), 3ul);
+  ASSERT_EQ(get<F32Array const>(j_tree["split_conditions"]).size(), 3ul);
+  ASSERT_EQ(get<U8Array const>(j_tree["default_left"]).size(), 3ul);
 
   RegTree loaded_tree;
   loaded_tree.LoadModel(j_tree);

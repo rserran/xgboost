@@ -222,7 +222,7 @@ JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGDMatrixCreateFro
 /*
  * Class:     ml_dmlc_xgboost4j_java_XGBoostJNI
  * Method:    XGDMatrixCreateFromCSREx
- * Signature: ([J[J[F)J
+ * Signature: ([J[I[FI[J)I
  */
 JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGDMatrixCreateFromCSREx
   (JNIEnv *jenv, jclass jcls, jlongArray jindptr, jintArray jindices, jfloatArray jdata, jint jcol, jlongArray jout) {
@@ -248,7 +248,7 @@ JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGDMatrixCreateFro
 /*
  * Class:     ml_dmlc_xgboost4j_java_XGBoostJNI
  * Method:    XGDMatrixCreateFromCSCEx
- * Signature: ([J[J[F)J
+ * Signature: ([J[I[FI[J)I
  */
 JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGDMatrixCreateFromCSCEx
   (JNIEnv *jenv, jclass jcls, jlongArray jindptr, jintArray jindices, jfloatArray jdata, jint jrow, jlongArray jout) {
@@ -662,20 +662,25 @@ JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGBoosterLoadModel
 
 /*
  * Class:     ml_dmlc_xgboost4j_java_XGBoostJNI
- * Method:    XGBoosterGetModelRaw
- * Signature: (J[[B)I
+ * Method:    XGBoosterSaveModelToBuffer
+ * Signature: (JLjava/lang/String;[[B)I
  */
-JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGBoosterGetModelRaw
-  (JNIEnv * jenv, jclass jcls, jlong jhandle, jobjectArray jout) {
+JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGBoosterSaveModelToBuffer
+  (JNIEnv * jenv, jclass jcls, jlong jhandle, jstring jformat, jobjectArray jout) {
   BoosterHandle handle = (BoosterHandle) jhandle;
+  const char *format = jenv->GetStringUTFChars(jformat, 0);
   bst_ulong len = 0;
-  const char* result;
-  int ret = XGBoosterGetModelRaw(handle, &len, &result);
-  JVM_CHECK_CALL(ret);
+  const char *result{nullptr};
+  xgboost::Json config {xgboost::Object{}};
+  config["format"] = std::string{format};
+  std::string config_str;
+  xgboost::Json::Dump(config, &config_str);
 
+  int ret = XGBoosterSaveModelToBuffer(handle, config_str.c_str(), &len, &result);
+  JVM_CHECK_CALL(ret);
   if (result) {
     jbyteArray jarray = jenv->NewByteArray(len);
-    jenv->SetByteArrayRegion(jarray, 0, len, (jbyte*)result);
+    jenv->SetByteArrayRegion(jarray, 0, len, (jbyte *)result);
     jenv->SetObjectArrayElement(jout, 0, jarray);
   }
   return ret;
@@ -684,7 +689,7 @@ JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGBoosterGetModelR
 /*
  * Class:     ml_dmlc_xgboost4j_java_XGBoostJNI
  * Method:    XGBoosterDumpModelEx
- * Signature: (JLjava/lang/String;I)[Ljava/lang/String;
+ * Signature: (JLjava/lang/String;ILjava/lang/String;[[Ljava/lang/String;)I
  */
 JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGBoosterDumpModelEx
   (JNIEnv *jenv, jclass jcls, jlong jhandle, jstring jfmap, jint jwith_stats, jstring jformat, jobjectArray jout) {
@@ -711,7 +716,7 @@ JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGBoosterDumpModel
 /*
  * Class:     ml_dmlc_xgboost4j_java_XGBoostJNI
  * Method:    XGBoosterDumpModelExWithFeatures
- * Signature: (JLjava/lang/String;I[[Ljava/lang/String;)I
+ * Signature: (J[Ljava/lang/String;ILjava/lang/String;[[Ljava/lang/String;)I
  */
 JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGBoosterDumpModelExWithFeatures
   (JNIEnv *jenv, jclass jcls, jlong jhandle, jobjectArray jfeature_names, jint jwith_stats,
@@ -762,7 +767,7 @@ JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGBoosterDumpModel
 /*
  * Class:     ml_dmlc_xgboost4j_java_XGBoostJNI
  * Method:    XGBoosterGetAttrNames
- * Signature: (I[[Ljava/lang/String;)I
+ * Signature: (J[[Ljava/lang/String;)I
  */
 JNIEXPORT jint JNICALL Java_ml_dmlc_xgboost4j_java_XGBoostJNI_XGBoosterGetAttrNames
   (JNIEnv *jenv, jclass jcls, jlong jhandle, jobjectArray jout) {

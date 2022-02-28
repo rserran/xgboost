@@ -1,5 +1,5 @@
 /*!
- * Copyright 2021 by XGBoost Contributors
+ * Copyright 2021-2022 by XGBoost Contributors
  */
 #ifndef XGBOOST_TREE_HIST_EVALUATE_SPLITS_H_
 #define XGBOOST_TREE_HIST_EVALUATE_SPLITS_H_
@@ -53,7 +53,6 @@ template <typename GradientSumT, typename ExpandEntry> class HistEvaluator {
       return true;
     }
   }
-  enum SplitType { kNum = 0, kOneHot = 1, kPart = 2 };
 
   // Enumerate/Scan the split values of specific feature
   // Returns the sum of gradients corresponding to the data points that contains
@@ -115,9 +114,6 @@ template <typename GradientSumT, typename ExpandEntry> class HistEvaluator {
           left_sum.SetSubstract(parent.stats, right_sum);
           break;
         }
-        default: {
-          std::terminate();
-        }
       }
     };
 
@@ -137,7 +133,7 @@ template <typename GradientSumT, typename ExpandEntry> class HistEvaluator {
               static_cast<float>(evaluator.CalcSplitGain(param_, nidx, fidx, GradStats{left_sum},
                                                          GradStats{right_sum}) -
                                  parent.root_gain);
-          split_pt = cut_val[i];
+          split_pt = cut_val[i];  // not used for partition based
           improved = best.Update(loss_chg, fidx, split_pt, d_step == -1, split_type != kNum,
                                  left_sum, right_sum);
         } else {
@@ -180,10 +176,10 @@ template <typename GradientSumT, typename ExpandEntry> class HistEvaluator {
 
       if (d_step == 1) {
         std::for_each(sorted_idx.begin(), sorted_idx.begin() + (best_thresh - ibegin + 1),
-                      [&cat_bits](size_t c) { cat_bits.Set(c); });
+                      [&](size_t c) { cat_bits.Set(cut_val[c + ibegin]); });
       } else {
         std::for_each(sorted_idx.rbegin(), sorted_idx.rbegin() + (ibegin - best_thresh),
-                      [&cat_bits](size_t c) { cat_bits.Set(c); });
+                      [&](size_t c) { cat_bits.Set(cut_val[c + cut_ptr[fidx]]); });
       }
     }
     p_best->Update(best);
@@ -231,6 +227,7 @@ template <typename GradientSumT, typename ExpandEntry> class HistEvaluator {
       }
     }
     auto evaluator = tree_evaluator_.GetEvaluator();
+    auto const& cut_ptrs = cut.Ptrs();
 
     common::ParallelFor2d(space, n_threads_, [&](size_t nidx_in_set, common::Range1d r) {
       auto tidx = omp_get_thread_num();
@@ -246,26 +243,22 @@ template <typename GradientSumT, typename ExpandEntry> class HistEvaluator {
           continue;
         }
         if (is_cat) {
-          auto n_bins = cut.Ptrs().at(fidx + 1) - cut.Ptrs()[fidx];
+          auto n_bins = cut_ptrs.at(fidx + 1) - cut_ptrs[fidx];
           if (common::UseOneHot(n_bins, param_.max_cat_to_onehot, task_)) {
             EnumerateSplit<+1, kOneHot>(cut, {}, histogram, fidx, nidx, evaluator, best);
             EnumerateSplit<-1, kOneHot>(cut, {}, histogram, fidx, nidx, evaluator, best);
           } else {
-            auto const &cut_ptr = cut.Ptrs();
             std::vector<size_t> sorted_idx(n_bins);
             std::iota(sorted_idx.begin(), sorted_idx.end(), 0);
-            auto feat_hist = histogram.subspan(cut_ptr[fidx], n_bins);
+            auto feat_hist = histogram.subspan(cut_ptrs[fidx], n_bins);
+            // Sort the histogram to get contiguous partitions.
             std::stable_sort(sorted_idx.begin(), sorted_idx.end(), [&](size_t l, size_t r) {
               auto ret = evaluator.CalcWeightCat(param_, feat_hist[l]) <
                          evaluator.CalcWeightCat(param_, feat_hist[r]);
-              static_assert(std::is_same<decltype(ret), bool>::value, "");
               return ret;
             });
-            auto grad_stats =
-                EnumerateSplit<+1, kPart>(cut, sorted_idx, histogram, fidx, nidx, evaluator, best);
-            if (SplitContainsMissingValues(grad_stats, snode_[nidx])) {
-              EnumerateSplit<-1, kPart>(cut, sorted_idx, histogram, fidx, nidx, evaluator, best);
-            }
+            EnumerateSplit<+1, kPart>(cut, sorted_idx, histogram, fidx, nidx, evaluator, best);
+            EnumerateSplit<-1, kPart>(cut, sorted_idx, histogram, fidx, nidx, evaluator, best);
           }
         } else {
           auto grad_stats =
@@ -295,16 +288,17 @@ template <typename GradientSumT, typename ExpandEntry> class HistEvaluator {
     auto base_weight =
         evaluator.CalcWeight(candidate.nid, param_, GradStats{parent_sum});
 
-    auto left_weight = evaluator.CalcWeight(
-        candidate.nid, param_, GradStats{candidate.split.left_sum});
-    auto right_weight = evaluator.CalcWeight(
-        candidate.nid, param_, GradStats{candidate.split.right_sum});
+    auto left_weight =
+        evaluator.CalcWeight(candidate.nid, param_, GradStats{candidate.split.left_sum});
+    auto right_weight =
+        evaluator.CalcWeight(candidate.nid, param_, GradStats{candidate.split.right_sum});
 
     if (candidate.split.is_cat) {
       std::vector<uint32_t> split_cats;
       if (candidate.split.cat_bits.empty()) {
-        CHECK_LT(candidate.split.split_value, std::numeric_limits<bst_cat_t>::max())
-            << "Categorical feature value too large.";
+        if (common::InvalidCat(candidate.split.split_value)) {
+          common::InvalidCategory();
+        }
         auto cat = common::AsCat(candidate.split.split_value);
         split_cats.resize(LBitField32::ComputeStorageSize(std::max(cat + 1, 1)), 0);
         LBitField32 cat_bits;
@@ -312,12 +306,13 @@ template <typename GradientSumT, typename ExpandEntry> class HistEvaluator {
         cat_bits.Set(cat);
       } else {
         split_cats = candidate.split.cat_bits;
+        common::CatBitField cat_bits{split_cats};
       }
-
       tree.ExpandCategorical(
           candidate.nid, candidate.split.SplitIndex(), split_cats, candidate.split.DefaultLeft(),
-          base_weight, left_weight, right_weight, candidate.split.loss_chg, parent_sum.GetHess(),
-          candidate.split.left_sum.GetHess(), candidate.split.right_sum.GetHess());
+          base_weight, left_weight * param_.learning_rate, right_weight * param_.learning_rate,
+          candidate.split.loss_chg, parent_sum.GetHess(), candidate.split.left_sum.GetHess(),
+          candidate.split.right_sum.GetHess());
     } else {
       tree.ExpandNode(candidate.nid, candidate.split.SplitIndex(), candidate.split.split_value,
                       candidate.split.DefaultLeft(), base_weight,
@@ -350,6 +345,7 @@ template <typename GradientSumT, typename ExpandEntry> class HistEvaluator {
 
   auto Evaluator() const { return tree_evaluator_.GetEvaluator(); }
   auto const& Stats() const { return snode_; }
+  auto Task() const { return task_; }
 
   float InitRoot(GradStats const& root_sum) {
     snode_.resize(1);

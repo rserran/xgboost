@@ -119,6 +119,13 @@ class BuildExt(build_ext.build_ext):  # pylint: disable=too-many-ancestors
                 continue
             cmake_cmd.append('-D' + arg + '=' + value)
 
+        # Flag for cross-compiling for Apple Silicon
+        # We use environment variable because it's the only way to pass down custom flags
+        # through the cibuildwheel package, which otherwise calls `python setup.py bdist_wheel`
+        # command.
+        if 'CIBW_TARGET_OSX_ARM64' in os.environ:
+            cmake_cmd.append("-DCMAKE_OSX_ARCHITECTURES=arm64")
+
         self.logger.info('Run CMake command: %s', str(cmake_cmd))
         subprocess.check_call(cmake_cmd, cwd=build_dir)
 
@@ -164,8 +171,13 @@ class BuildExt(build_ext.build_ext):  # pylint: disable=too-many-ancestors
 
         if system() == 'Windows':
             # Pick up from LGB, just test every possible tool chain.
-            for vs in ('-GVisual Studio 16 2019', '-GVisual Studio 15 2017',
-                       '-GVisual Studio 14 2015', '-GMinGW Makefiles'):
+            for vs in (
+                "-GVisual Studio 17 2022",
+                '-GVisual Studio 16 2019',
+                '-GVisual Studio 15 2017',
+                '-GVisual Studio 14 2015',
+                '-GMinGW Makefiles',
+            ):
                 try:
                     self.build(src_dir, build_dir, vs)
                     self.logger.info(
@@ -348,12 +360,11 @@ if __name__ == '__main__':
                        'Operating System :: OS Independent',
                        'Programming Language :: Python',
                        'Programming Language :: Python :: 3',
-                       'Programming Language :: Python :: 3.6',
                        'Programming Language :: Python :: 3.7',
                        'Programming Language :: Python :: 3.8',
                        'Programming Language :: Python :: 3.9',
                        'Programming Language :: Python :: 3.10'],
-          python_requires='>=3.6',
+          python_requires=">=3.7",
           url='https://github.com/dmlc/xgboost')
 
     clean_up()

@@ -10,6 +10,7 @@ dependencies:
 - pylint
 - numpy
 - scipy
+- llvm-openmp
 - scikit-learn
 - pandas
 - matplotlib
@@ -31,6 +32,7 @@ dependencies:
 - jsonschema
 - boto3
 - awscli
+- py-ubjson
 - pip:
   - sphinx_rtd_theme
   - datatable

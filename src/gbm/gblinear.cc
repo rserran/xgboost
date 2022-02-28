@@ -1,5 +1,5 @@
 /*!
- * Copyright 2014-2021 by Contributors
+ * Copyright 2014-2022 by XGBoost Contributors
  * \file gblinear.cc
  * \brief Implementation of Linear booster, with L1/L2 regularization: Elastic Net
  *        the update rule is parallel coordinate descent (shotgun)
@@ -62,9 +62,8 @@ struct GBLinearTrainParam : public XGBoostParameter<GBLinearTrainParam> {
   }
 };
 
-void LinearCheckLayer(unsigned layer_begin, unsigned layer_end) {
+void LinearCheckLayer(unsigned layer_begin) {
   CHECK_EQ(layer_begin, 0) << "Linear booster does not support prediction range.";
-  CHECK_EQ(layer_end, 0)   << "Linear booster does not support prediction range.";
 }
 
 /*!
@@ -72,8 +71,9 @@ void LinearCheckLayer(unsigned layer_begin, unsigned layer_end) {
  */
 class GBLinear : public GradientBooster {
  public:
-  explicit GBLinear(LearnerModelParam const* learner_model_param)
-      : learner_model_param_{learner_model_param},
+  explicit GBLinear(LearnerModelParam const* learner_model_param, GenericParameter const* ctx)
+      : GradientBooster{ctx},
+        learner_model_param_{learner_model_param},
         model_{learner_model_param},
         previous_model_{learner_model_param},
         sum_instance_weight_(0),
@@ -86,7 +86,7 @@ class GBLinear : public GradientBooster {
     }
     param_.UpdateAllowUnknown(cfg);
     param_.CheckGPUSupport();
-    updater_.reset(LinearUpdater::Create(param_.updater, generic_param_));
+    updater_.reset(LinearUpdater::Create(param_.updater, ctx_));
     updater_->Configure(cfg);
     monitor_.Init("GBLinear");
   }
@@ -120,7 +120,7 @@ class GBLinear : public GradientBooster {
     CHECK_EQ(get<String>(in["name"]), "gblinear");
     FromJson(in["gblinear_train_param"], &param_);
     param_.CheckGPUSupport();
-    updater_.reset(LinearUpdater::Create(param_.updater, generic_param_));
+    updater_.reset(LinearUpdater::Create(param_.updater, ctx_));
     this->updater_->LoadConfig(in["updater"]);
   }
   void SaveConfig(Json* p_out) const override {
@@ -152,7 +152,7 @@ class GBLinear : public GradientBooster {
   void PredictBatch(DMatrix *p_fmat, PredictionCacheEntry *predts,
                     bool training, unsigned layer_begin, unsigned layer_end) override {
     monitor_.Start("PredictBatch");
-    LinearCheckLayer(layer_begin, layer_end);
+    LinearCheckLayer(layer_begin);
     auto* out_preds = &predts->predictions;
     this->PredictBatchInternal(p_fmat, &out_preds->HostVector());
     monitor_.Stop("PredictBatch");
@@ -161,7 +161,7 @@ class GBLinear : public GradientBooster {
   void PredictInstance(const SparsePage::Inst &inst,
                        std::vector<bst_float> *out_preds,
                        unsigned layer_begin, unsigned layer_end) override {
-    LinearCheckLayer(layer_begin, layer_end);
+    LinearCheckLayer(layer_begin);
     const int ngroup = model_.learner_model_param->num_output_group;
     for (int gid = 0; gid < ngroup; ++gid) {
       this->Pred(inst, dmlc::BeginPtr(*out_preds), gid,
@@ -177,7 +177,7 @@ class GBLinear : public GradientBooster {
                            HostDeviceVector<bst_float>* out_contribs,
                            unsigned layer_begin, unsigned layer_end, bool, int, unsigned) override {
     model_.LazyInitModel();
-    LinearCheckLayer(layer_begin, layer_end);
+    LinearCheckLayer(layer_begin);
     auto base_margin = p_fmat->Info().base_margin_.View(GenericParameter::kCpuId);
     const int ngroup = model_.learner_model_param->num_output_group;
     const size_t ncolumns = model_.learner_model_param->num_feature + 1;
@@ -191,7 +191,7 @@ class GBLinear : public GradientBooster {
       // parallel over local batch
       const auto nsize = static_cast<bst_omp_uint>(batch.Size());
       auto page = batch.GetView();
-      common::ParallelFor(nsize, [&](bst_omp_uint i) {
+      common::ParallelFor(nsize, ctx_->Threads(), [&](bst_omp_uint i) {
         auto inst = page[i];
         auto row_idx = static_cast<size_t>(batch.base_rowid + i);
         // loop over output groups
@@ -214,7 +214,7 @@ class GBLinear : public GradientBooster {
   void PredictInteractionContributions(DMatrix* p_fmat,
                                        HostDeviceVector<bst_float>* out_contribs,
                                        unsigned layer_begin, unsigned layer_end, bool) override {
-    LinearCheckLayer(layer_begin, layer_end);
+    LinearCheckLayer(layer_begin);
     std::vector<bst_float>& contribs = out_contribs->HostVector();
 
     // linear models have no interaction effects
@@ -283,7 +283,7 @@ class GBLinear : public GradientBooster {
       if (base_margin.Size() != 0) {
         CHECK_EQ(base_margin.Size(), nsize * ngroup);
       }
-      common::ParallelFor(nsize, [&](omp_ulong i) {
+      common::ParallelFor(nsize, ctx_->Threads(), [&](omp_ulong i) {
         const size_t ridx = page.base_rowid + i;
         // loop over output groups
         for (int gid = 0; gid < ngroup; ++gid) {
@@ -352,8 +352,8 @@ DMLC_REGISTER_PARAMETER(GBLinearTrainParam);
 
 XGBOOST_REGISTER_GBM(GBLinear, "gblinear")
     .describe("Linear booster, implement generalized linear model.")
-    .set_body([](LearnerModelParam const* booster_config) {
-      return new GBLinear(booster_config);
+    .set_body([](LearnerModelParam const* booster_config, GenericParameter const* ctx) {
+      return new GBLinear(booster_config, ctx);
     });
 }  // namespace gbm
 }  // namespace xgboost

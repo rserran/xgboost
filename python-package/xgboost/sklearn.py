@@ -112,6 +112,13 @@ __estimator_doc = '''
 __model_doc = f'''
     max_depth :  Optional[int]
         Maximum tree depth for base learners.
+    max_leaves :
+        Maximum number of leaves; 0 indicates no limit.
+    max_bin :
+        If using histogram-based algorithm, maximum number of bins per feature
+    grow_policy :
+        Tree growing policy. 0: favor splitting at nodes closest to the node, i.e. grow
+        depth-wise. 1: favor splitting at nodes with highest loss change.
     learning_rate : Optional[float]
         Boosting learning rate (xgb's "eta")
     verbosity : Optional[int]
@@ -122,24 +129,29 @@ __model_doc = f'''
     booster: Optional[str]
         Specify which booster to use: gbtree, gblinear or dart.
     tree_method: Optional[str]
-        Specify which tree method to use.  Default to auto.  If this parameter
-        is set to default, XGBoost will choose the most conservative option
-        available.  It's recommended to study this option from the parameters
-        document: https://xgboost.readthedocs.io/en/latest/treemethod.html.
+        Specify which tree method to use.  Default to auto.  If this parameter is set to
+        default, XGBoost will choose the most conservative option available.  It's
+        recommended to study this option from the parameters document :doc:`tree method
+        </treemethod>`
     n_jobs : Optional[int]
         Number of parallel threads used to run xgboost.  When used with other Scikit-Learn
         algorithms like grid search, you may choose which algorithm to parallelize and
         balance the threads.  Creating thread contention will significantly slow down both
         algorithms.
     gamma : Optional[float]
-        Minimum loss reduction required to make a further partition on a leaf
-        node of the tree.
+        (min_split_loss) Minimum loss reduction required to make a further partition on a
+        leaf node of the tree.
     min_child_weight : Optional[float]
         Minimum sum of instance weight(hessian) needed in a child.
     max_delta_step : Optional[float]
         Maximum delta step we allow each tree's weight estimation to be.
     subsample : Optional[float]
         Subsample ratio of the training instance.
+    sampling_method :
+        Sampling method. Used only by `gpu_hist` tree method.
+          - `uniform`: select random training instances uniformly.
+          - `gradient_based` select random training instances with higher probability when
+            the gradient and hessian are larger. (cf. CatBoost)
     colsample_bytree : Optional[float]
         Subsample ratio of columns when constructing each tree.
     colsample_bylevel : Optional[float]
@@ -167,14 +179,14 @@ __model_doc = f'''
     num_parallel_tree: Optional[int]
         Used for boosting random forest.
     monotone_constraints : Optional[Union[Dict[str, int], str]]
-        Constraint of variable monotonicity.  See tutorial for more
-        information.
+        Constraint of variable monotonicity.  See :doc:`tutorial </tutorials/monotonic>`
+        for more information.
     interaction_constraints : Optional[Union[str, List[Tuple[str]]]]
         Constraints for interaction representing permitted interactions.  The
-        constraints must be specified in the form of a nest list, e.g. [[0, 1],
-        [2, 3, 4]], where each inner list is a group of indices of features
-        that are allowed to interact with each other.  See tutorial for more
-        information
+        constraints must be specified in the form of a nested list, e.g. ``[[0, 1], [2,
+        3, 4]]``, where each inner list is a group of indices of features that are
+        allowed to interact with each other.  See :doc:`tutorial
+        </tutorials/feature_interaction_constraint>` for more information
     importance_type: Optional[str]
         The feature importance type for the feature_importances\\_ property:
 
@@ -194,8 +206,23 @@ __model_doc = f'''
 
         .. versionadded:: 1.5.0
 
-        Experimental support for categorical data.  Do not set to true unless you are
-        interested in development. Only valid when `gpu_hist` and dataframe are used.
+        .. note:: This parameter is experimental
+
+        Experimental support for categorical data.  When enabled, cudf/pandas.DataFrame
+        should be used to specify categorical data type.  Also, JSON/UBJSON
+        serialization format is required.
+
+    max_cat_to_onehot : Optional[int]
+
+        .. versionadded:: 1.6.0
+
+        .. note:: This parameter is experimental
+
+        A threshold for deciding whether XGBoost should use one-hot encoding based split
+        for categorical data.  When number of categories is lesser than the threshold
+        then one-hot encoding is chosen, otherwise the categories will be partitioned
+        into children nodes.  Only relevant for regression and binary classification.
+        See :doc:`Categorical Data </tutorials/categorical>` for details.
 
     eval_metric : Optional[Union[str, List[str], Callable]]
 
@@ -216,9 +243,8 @@ __model_doc = f'''
         For advanced usage on Early stopping like directly choosing to maximize instead of
         minimize, see :py:obj:`xgboost.callback.EarlyStopping`.
 
-        See `Custom Objective and Evaluation Metric
-        <https://xgboost.readthedocs.io/en/latest/tutorials/custom_metric_obj.html>`_ for
-        more.
+        See :doc:`Custom Objective and Evaluation Metric </tutorials/custom_metric_obj>`
+        for more.
 
         .. note::
 
@@ -243,7 +269,7 @@ __model_doc = f'''
 
         Activates early stopping. Validation metric needs to improve at least once in
         every **early_stopping_rounds** round(s) to continue training.  Requires at least
-        one item in **eval_set** in :py:meth:`xgboost.sklearn.XGBModel.fit`.
+        one item in **eval_set** in :py:meth:`fit`.
 
         The method returns the model from the last iteration (not the best one).  If
         there's more than one item in **eval_set**, the last entry will be used for early
@@ -251,7 +277,8 @@ __model_doc = f'''
         will be used for early stopping.
 
         If early stopping occurs, the model will have three additional fields:
-        ``clf.best_score``, ``clf.best_iteration`` and ``clf.best_ntree_limit``.
+        :py:attr:`best_score`, :py:attr:`best_iteration` and
+        :py:attr:`best_ntree_limit`.
 
         .. note::
 
@@ -259,18 +286,25 @@ __model_doc = f'''
 
     callbacks : Optional[List[TrainingCallback]]
         List of callback functions that are applied at end of each iteration.
-        It is possible to use predefined callbacks by using :ref:`callback_api`.
-        Example:
+        It is possible to use predefined callbacks by using
+        :ref:`Callback API <callback_api>`.
+
+        .. note::
+
+           States in callback are not preserved during training, which means callback
+           objects can not be reused for multiple training sessions without
+           reinitialization or deepcopy.
 
         .. code-block:: python
 
-            callbacks = [xgb.callback.EarlyStopping(rounds=early_stopping_rounds,
-                                                    save_best=True)]
+            for params in parameters_grid:
+                # be sure to (re)initialize the callbacks before each run
+                callbacks = [xgb.callback.LearningRateScheduler(custom_rates)]
+                xgboost.train(params, Xy, callbacks=callbacks)
 
     kwargs : dict, optional
-        Keyword arguments for XGBoost Booster object.  Full documentation of
-        parameters can be found here:
-        https://github.com/dmlc/xgboost/blob/master/doc/parameter.rst.
+        Keyword arguments for XGBoost Booster object.  Full documentation of parameters
+        can be found :doc:`here </parameter>`.
         Attempting to set a parameter via the constructor args and \\*\\*kwargs
         dict simultaneously will result in a TypeError.
 
@@ -453,6 +487,9 @@ class XGBModel(XGBModelBase):
     def __init__(
         self,
         max_depth: Optional[int] = None,
+        max_leaves: Optional[int] = None,
+        max_bin: Optional[int] = None,
+        grow_policy: Optional[str] = None,
         learning_rate: Optional[float] = None,
         n_estimators: int = 100,
         verbosity: Optional[int] = None,
@@ -464,6 +501,7 @@ class XGBModel(XGBModelBase):
         min_child_weight: Optional[float] = None,
         max_delta_step: Optional[float] = None,
         subsample: Optional[float] = None,
+        sampling_method: Optional[str] = None,
         colsample_bytree: Optional[float] = None,
         colsample_bylevel: Optional[float] = None,
         colsample_bynode: Optional[float] = None,
@@ -481,6 +519,7 @@ class XGBModel(XGBModelBase):
         validate_parameters: Optional[bool] = None,
         predictor: Optional[str] = None,
         enable_categorical: bool = False,
+        max_cat_to_onehot: Optional[int] = None,
         eval_metric: Optional[Union[str, List[str], Callable]] = None,
         early_stopping_rounds: Optional[int] = None,
         callbacks: Optional[List[TrainingCallback]] = None,
@@ -494,6 +533,9 @@ class XGBModel(XGBModelBase):
         self.objective = objective
 
         self.max_depth = max_depth
+        self.max_leaves = max_leaves
+        self.max_bin = max_bin
+        self.grow_policy = grow_policy
         self.learning_rate = learning_rate
         self.verbosity = verbosity
         self.booster = booster
@@ -502,6 +544,7 @@ class XGBModel(XGBModelBase):
         self.min_child_weight = min_child_weight
         self.max_delta_step = max_delta_step
         self.subsample = subsample
+        self.sampling_method = sampling_method
         self.colsample_bytree = colsample_bytree
         self.colsample_bylevel = colsample_bylevel
         self.colsample_bynode = colsample_bynode
@@ -520,6 +563,7 @@ class XGBModel(XGBModelBase):
         self.validate_parameters = validate_parameters
         self.predictor = predictor
         self.enable_categorical = enable_categorical
+        self.max_cat_to_onehot = max_cat_to_onehot
         self.eval_metric = eval_metric
         self.early_stopping_rounds = early_stopping_rounds
         self.callbacks = callbacks
@@ -801,8 +845,9 @@ class XGBModel(XGBModelBase):
             _duplicated("callbacks")
         callbacks = self.callbacks if self.callbacks is not None else callbacks
 
-        # lastly check categorical data support.
-        if self.enable_categorical and params.get("tree_method", None) != "gpu_hist":
+        tree_method = params.get("tree_method", None)
+        cat_support = {"gpu_hist", "approx", "hist"}
+        if self.enable_categorical and tree_method not in cat_support:
             raise ValueError(
                 "Experimental support for categorical data is not implemented for"
                 " current tree method yet."
@@ -877,12 +922,11 @@ class XGBModel(XGBModelBase):
         feature_weights :
             Weight for each feature, defines the probability of each feature being
             selected when colsample is being used.  All values must be greater than 0,
-            otherwise a `ValueError` is thrown.  Only available for `hist`, `gpu_hist` and
-            `exact` tree methods.
+            otherwise a `ValueError` is thrown.
 
         callbacks :
-            .. deprecated: 1.6.0
-                Use `callbacks` in :py:meth:`__init__` or :py:methd:`set_params` instead.
+            .. deprecated:: 1.6.0
+                Use `callbacks` in :py:meth:`__init__` or :py:meth:`set_params` instead.
         """
         evals_result: TrainingCallback.EvalsLog = {}
         train_dmatrix, evals = _wrap_evaluation_matrices(
@@ -1102,8 +1146,21 @@ class XGBModel(XGBModelBase):
 
     @property
     def n_features_in_(self) -> int:
+        """Number of features seen during :py:meth:`fit`."""
         booster = self.get_booster()
         return booster.num_features()
+
+    @property
+    def feature_names_in_(self) -> np.ndarray:
+        """Names of features seen during :py:meth:`fit`.  Defined only when `X` has feature
+        names that are all strings."""
+        feature_names = self.get_booster().feature_names
+        if feature_names is None:
+            raise AttributeError(
+                "`feature_names_in_` is defined only when `X` has feature names that "
+                "are all strings."
+            )
+        return np.array(feature_names)
 
     def _early_stopping_attr(self, attr: str) -> Union[float, int]:
         booster = self.get_booster()
@@ -1116,10 +1173,15 @@ class XGBModel(XGBModelBase):
 
     @property
     def best_score(self) -> float:
+        """The best score obtained by early stopping."""
         return float(self._early_stopping_attr('best_score'))
 
     @property
     def best_iteration(self) -> int:
+        """The best iteration obtained by early stopping.  This attribute is 0-based,
+        for instance if the best iteration is the first round, then best_iteration is 0.
+
+        """
         return int(self._early_stopping_attr('best_iteration'))
 
     @property
@@ -1215,6 +1277,14 @@ PredtT = TypeVar("PredtT", bound=np.ndarray)
 def _cls_predict_proba(n_classes: int, prediction: PredtT, vstack: Callable) -> PredtT:
     assert len(prediction.shape) <= 2
     if len(prediction.shape) == 2 and prediction.shape[1] == n_classes:
+        # multi-class
+        return prediction
+    if (
+        len(prediction.shape) == 2
+        and n_classes == 2
+        and prediction.shape[1] >= n_classes
+    ):
+        # multi-label
         return prediction
     # binary logistic function
     classone_probs = prediction
@@ -1374,9 +1444,15 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
             # If output_margin is active, simply return the scores
             return class_probs
 
-        if len(class_probs.shape) > 1:
-            # turns softprob into softmax
+        if len(class_probs.shape) > 1 and self.n_classes_ != 2:
+            # multi-class, turns softprob into softmax
             column_indexes: np.ndarray = np.argmax(class_probs, axis=1)  # type: ignore
+        elif len(class_probs.shape) > 1 and class_probs.shape[1] != 1:
+            # multi-label
+            column_indexes = np.zeros(class_probs.shape)
+            column_indexes[class_probs > 0.5] = 1
+        elif self.objective == "multi:softmax":
+            return class_probs.astype(np.int32)
         else:
             # turns soft logit into class label
             column_indexes = np.repeat(0, class_probs.shape[0])
@@ -1721,12 +1797,11 @@ class XGBRanker(XGBModel, XGBRankerMixIn):
         feature_weights :
             Weight for each feature, defines the probability of each feature being
             selected when colsample is being used.  All values must be greater than 0,
-            otherwise a `ValueError` is thrown.  Only available for `hist`, `gpu_hist` and
-            `exact` tree methods.
+            otherwise a `ValueError` is thrown.
 
         callbacks :
-            .. deprecated: 1.6.0
-                Use `callbacks` in :py:meth:`__init__` or :py:methd:`set_params` instead.
+            .. deprecated:: 1.6.0
+                Use `callbacks` in :py:meth:`__init__` or :py:meth:`set_params` instead.
         """
         # check if group information is provided
         if group is None and qid is None:

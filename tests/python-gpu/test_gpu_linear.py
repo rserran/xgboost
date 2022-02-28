@@ -1,7 +1,6 @@
 import sys
-from hypothesis import strategies, given, settings, assume
+from hypothesis import strategies, given, settings, assume, note
 import pytest
-import numpy
 import xgboost as xgb
 sys.path.append("tests/python")
 import testing as tm
@@ -17,10 +16,14 @@ parameter_strategy = strategies.fixed_dictionaries({
     'top_k': strategies.integers(1, 10),
 })
 
+
 def train_result(param, dmat, num_rounds):
     result = {}
-    xgb.train(param, dmat, num_rounds, [(dmat, 'train')], verbose_eval=False,
-              evals_result=result)
+    booster = xgb.train(
+        param, dmat, num_rounds, [(dmat, 'train')], verbose_eval=False,
+        evals_result=result
+    )
+    assert booster.num_boosted_rounds() == num_rounds
     return result
 
 
@@ -33,14 +36,15 @@ class TestGPULinear:
         param['updater'] = 'gpu_coord_descent'
         param = dataset.set_params(param)
         result = train_result(param, dataset.get_dmat(), num_rounds)['train'][dataset.metric]
+        note(result)
         assert tm.non_increasing(result)
 
     # Loss is not guaranteed to always decrease because of regularisation parameters
     # We test a weaker condition that the loss has not increased between the first and last
     # iteration
     @given(parameter_strategy, strategies.integers(10, 50),
-           tm.dataset_strategy, strategies.floats(1e-5, 2.0),
-           strategies.floats(1e-5, 2.0))
+           tm.dataset_strategy, strategies.floats(1e-5, 1.0),
+           strategies.floats(1e-5, 1.0))
     @settings(deadline=None)
     def test_gpu_coordinate_regularised(self, param, num_rounds, dataset, alpha, lambd):
         assume(len(dataset.y) > 0)
@@ -49,6 +53,7 @@ class TestGPULinear:
         param['lambda'] = lambd
         param = dataset.set_params(param)
         result = train_result(param, dataset.get_dmat(), num_rounds)['train'][dataset.metric]
+        note(result)
         assert tm.non_increasing([result[0], result[-1]])
 
     @pytest.mark.skipif(**tm.no_cupy())
@@ -58,7 +63,7 @@ class TestGPULinear:
         import cupy
         params = {'booster': 'gblinear', 'updater': 'gpu_coord_descent',
                   'n_estimators': 100}
-        X, y = tm.get_boston()
+        X, y = tm.get_california_housing()
         cpu_model = xgb.XGBRegressor(**params)
         cpu_model.fit(X, y)
         cpu_predt = cpu_model.predict(X)

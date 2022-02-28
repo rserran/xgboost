@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) 2015-2021 by Contributors
+ * Copyright (c) 2015-2022 by XGBoost Contributors
  * \file data.h
  * \brief The input data structure of xgboost.
  * \author Tianqi Chen
@@ -11,12 +11,14 @@
 #include <dmlc/data.h>
 #include <dmlc/serializer.h>
 #include <xgboost/base.h>
+#include <xgboost/generic_parameters.h>
 #include <xgboost/host_device_vector.h>
 #include <xgboost/linalg.h>
 #include <xgboost/span.h>
 #include <xgboost/string_view.h>
 
 #include <algorithm>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <string>
@@ -36,10 +38,7 @@ enum class DataType : uint8_t {
   kStr = 5
 };
 
-enum class FeatureType : uint8_t {
-  kNumerical,
-  kCategorical
-};
+enum class FeatureType : uint8_t { kNumerical = 0, kCategorical = 1 };
 
 /*!
  * \brief Meta information about dataset, always sit in memory.
@@ -219,23 +218,32 @@ struct BatchParam {
   common::Span<float> hess;
   /*! \brief Whether should DMatrix regenerate the batch.  Only used for GHistIndex. */
   bool regen {false};
+  /*! \brief Parameter used to generate column matrix for hist. */
+  double sparse_thresh{std::numeric_limits<double>::quiet_NaN()};
 
   BatchParam() = default;
+  // GPU Hist
   BatchParam(int32_t device, int32_t max_bin)
       : gpu_id{device}, max_bin{max_bin} {}
+  // Hist
+  BatchParam(int32_t max_bin, double sparse_thresh)
+      : max_bin{max_bin}, sparse_thresh{sparse_thresh} {}
+  // Approx
   /**
    * \brief Get batch with sketch weighted by hessian.  The batch will be regenerated if
    *        the span is changed, so caller should keep the span for each iteration.
    */
-  BatchParam(int32_t device, int32_t max_bin, common::Span<float> hessian,
-             bool regenerate = false)
-      : gpu_id{device}, max_bin{max_bin}, hess{hessian}, regen{regenerate} {}
+  BatchParam(int32_t max_bin, common::Span<float> hessian, bool regenerate)
+      : max_bin{max_bin}, hess{hessian}, regen{regenerate} {}
 
-  bool operator!=(const BatchParam& other) const {
+  bool operator!=(BatchParam const& other) const {
     if (hess.empty() && other.hess.empty()) {
       return gpu_id != other.gpu_id || max_bin != other.max_bin;
     }
     return gpu_id != other.gpu_id || max_bin != other.max_bin || hess.data() != other.hess.data();
+  }
+  bool operator==(BatchParam const& other) const {
+    return !(*this != other);
   }
 };
 
@@ -303,24 +311,9 @@ class SparsePage {
     base_rowid = row_id;
   }
 
-  SparsePage GetTranspose(int num_columns) const;
+  SparsePage GetTranspose(int num_columns, int32_t n_threads) const;
 
-  void SortRows() {
-    auto ncol = static_cast<bst_omp_uint>(this->Size());
-    dmlc::OMPException exc;
-#pragma omp parallel for schedule(dynamic, 1)
-    for (bst_omp_uint i = 0; i < ncol; ++i) {
-      exc.Run([&]() {
-        if (this->offset.HostVector()[i] < this->offset.HostVector()[i + 1]) {
-          std::sort(
-              this->data.HostVector().begin() + this->offset.HostVector()[i],
-              this->data.HostVector().begin() + this->offset.HostVector()[i + 1],
-              Entry::CmpValue);
-        }
-      });
-    }
-    exc.Rethrow();
-  }
+  void SortRows(int32_t n_threads);
 
   /**
    * \brief Pushes external data batch onto this page
@@ -485,12 +478,19 @@ class DMatrix {
 
   /*! \brief Get thread local memory for returning data from DMatrix. */
   XGBAPIThreadLocalEntry& GetThreadLocal() const;
+  /**
+   * \brief Get the context object of this DMatrix.  The context is created during construction of
+   *        DMatrix with user specified `nthread` parameter.
+   */
+  virtual GenericParameter const* Ctx() const = 0;
 
   /**
    * \brief Gets batches. Use range based for loop over BatchSet to access individual batches.
    */
-  template<typename T>
-  BatchSet<T> GetBatches(const BatchParam& param = {});
+  template <typename T>
+  BatchSet<T> GetBatches();
+  template <typename T>
+  BatchSet<T> GetBatches(const BatchParam& param);
   template <typename T>
   bool PageExists() const;
 
@@ -604,7 +604,7 @@ class DMatrix {
 };
 
 template<>
-inline BatchSet<SparsePage> DMatrix::GetBatches(const BatchParam&) {
+inline BatchSet<SparsePage> DMatrix::GetBatches() {
   return GetRowBatches();
 }
 
@@ -619,12 +619,12 @@ inline bool DMatrix::PageExists<SparsePage>() const {
 }
 
 template<>
-inline BatchSet<CSCPage> DMatrix::GetBatches(const BatchParam&) {
+inline BatchSet<CSCPage> DMatrix::GetBatches() {
   return GetColumnBatches();
 }
 
 template<>
-inline BatchSet<SortedCSCPage> DMatrix::GetBatches(const BatchParam&) {
+inline BatchSet<SortedCSCPage> DMatrix::GetBatches() {
   return GetSortedColumnBatches();
 }
 

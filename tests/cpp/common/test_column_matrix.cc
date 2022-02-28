@@ -1,3 +1,6 @@
+/*!
+ * Copyright 2018-2022 by XGBoost Contributors
+ */
 #include <dmlc/filesystem.h>
 #include <gtest/gtest.h>
 
@@ -9,14 +12,16 @@ namespace xgboost {
 namespace common {
 
 TEST(DenseColumn, Test) {
-  uint64_t max_num_bins[] = {static_cast<uint64_t>(std::numeric_limits<uint8_t>::max()) + 1,
-                          static_cast<uint64_t>(std::numeric_limits<uint16_t>::max()) + 1,
-                          static_cast<uint64_t>(std::numeric_limits<uint16_t>::max()) + 2};
-  for (size_t max_num_bin : max_num_bins) {
+  int32_t max_num_bins[] = {static_cast<int32_t>(std::numeric_limits<uint8_t>::max()) + 1,
+                            static_cast<int32_t>(std::numeric_limits<uint16_t>::max()) + 1,
+                            static_cast<int32_t>(std::numeric_limits<uint16_t>::max()) + 2};
+  for (int32_t max_num_bin : max_num_bins) {
     auto dmat = RandomDataGenerator(100, 10, 0.0).GenerateDMatrix();
-    GHistIndexMatrix gmat(dmat.get(), max_num_bin, false);
+    auto sparse_thresh = 0.2;
+    GHistIndexMatrix gmat{dmat.get(), max_num_bin, sparse_thresh, false,
+                          common::OmpGetNumThreads(0)};
     ColumnMatrix column_matrix;
-    column_matrix.Init(gmat, 0.2);
+    column_matrix.Init(gmat, 0.2, common::OmpGetNumThreads(0));
 
     for (auto i = 0ull; i < dmat->Info().num_row_; i++) {
       for (auto j = 0ull; j < dmat->Info().num_col_; j++) {
@@ -56,14 +61,14 @@ inline void CheckSparseColumn(const Column<BinIdxType>& col_input, const GHistIn
 }
 
 TEST(SparseColumn, Test) {
-  uint64_t max_num_bins[] = {static_cast<uint64_t>(std::numeric_limits<uint8_t>::max()) + 1,
-                          static_cast<uint64_t>(std::numeric_limits<uint16_t>::max()) + 1,
-                          static_cast<uint64_t>(std::numeric_limits<uint16_t>::max()) + 2};
-  for (size_t max_num_bin : max_num_bins) {
+  int32_t max_num_bins[] = {static_cast<int32_t>(std::numeric_limits<uint8_t>::max()) + 1,
+                            static_cast<int32_t>(std::numeric_limits<uint16_t>::max()) + 1,
+                            static_cast<int32_t>(std::numeric_limits<uint16_t>::max()) + 2};
+  for (int32_t max_num_bin : max_num_bins) {
     auto dmat = RandomDataGenerator(100, 1, 0.85).GenerateDMatrix();
-    GHistIndexMatrix gmat(dmat.get(), max_num_bin, false);
+    GHistIndexMatrix gmat{dmat.get(), max_num_bin, 0.5f, false, common::OmpGetNumThreads(0)};
     ColumnMatrix column_matrix;
-    column_matrix.Init(gmat, 0.5);
+    column_matrix.Init(gmat, 0.5, common::OmpGetNumThreads(0));
     switch (column_matrix.GetTypeSize()) {
       case kUint8BinsTypeSize: {
           auto col = column_matrix.GetColumn<uint8_t, true>(0);
@@ -96,14 +101,14 @@ inline void CheckColumWithMissingValue(const Column<BinIdxType>& col_input,
 }
 
 TEST(DenseColumnWithMissing, Test) {
-  uint64_t max_num_bins[] = { static_cast<uint64_t>(std::numeric_limits<uint8_t>::max()) + 1,
-                              static_cast<uint64_t>(std::numeric_limits<uint16_t>::max()) + 1,
-                              static_cast<uint64_t>(std::numeric_limits<uint16_t>::max()) + 2 };
-  for (size_t max_num_bin : max_num_bins) {
+  int32_t max_num_bins[] = {static_cast<int32_t>(std::numeric_limits<uint8_t>::max()) + 1,
+                            static_cast<int32_t>(std::numeric_limits<uint16_t>::max()) + 1,
+                            static_cast<int32_t>(std::numeric_limits<uint16_t>::max()) + 2};
+  for (int32_t max_num_bin : max_num_bins) {
     auto dmat = RandomDataGenerator(100, 1, 0.5).GenerateDMatrix();
-    GHistIndexMatrix gmat(dmat.get(), max_num_bin, false);
+    GHistIndexMatrix gmat{dmat.get(), max_num_bin, 0.2, false, common::OmpGetNumThreads(0)};
     ColumnMatrix column_matrix;
-    column_matrix.Init(gmat, 0.2);
+    column_matrix.Init(gmat, 0.2, common::OmpGetNumThreads(0));
     switch (column_matrix.GetTypeSize()) {
       case kUint8BinsTypeSize: {
           auto col = column_matrix.GetColumn<uint8_t, true>(0);
@@ -128,9 +133,8 @@ void TestGHistIndexMatrixCreation(size_t nthreads) {
   size_t constexpr kPageSize = 1024, kEntriesPerCol = 3;
   size_t constexpr kEntries = kPageSize * kEntriesPerCol * 2;
   /* This should create multiple sparse pages */
-  std::unique_ptr<DMatrix> dmat{ CreateSparsePageDMatrix(kEntries) };
-  omp_set_num_threads(nthreads);
-  GHistIndexMatrix gmat(dmat.get(), 256, false);
+  std::unique_ptr<DMatrix> dmat{CreateSparsePageDMatrix(kEntries)};
+  GHistIndexMatrix gmat(dmat.get(), 256, 0.5f, false, common::OmpGetNumThreads(nthreads));
 }
 
 TEST(HistIndexCreationWithExternalMemory, Test) {

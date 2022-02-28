@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2014,2021 by Contributors
+ Copyright (c) 2014-2022 by Contributors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -148,7 +148,7 @@ class XGBoostClassifier (
    *  This API is only used in GPU train pipeline of xgboost4j-spark-gpu, which requires
    *  all feature columns must be numeric types.
    */
-  def setFeaturesCols(value: Seq[String]): this.type =
+  def setFeaturesCol(value: Array[String]): this.type =
     set(featuresCols, value)
 
   // called at the start of fit/train when 'eval_metric' is not defined
@@ -264,7 +264,7 @@ class XGBoostClassificationModel private[ml](
    *  This API is only used in GPU train pipeline of xgboost4j-spark-gpu, which requires
    *  all feature columns must be numeric types.
    */
-  def setFeaturesCols(value: Seq[String]): this.type =
+  def setFeaturesCol(value: Array[String]): this.type =
     set(featuresCols, value)
 
   /**
@@ -385,18 +385,7 @@ class XGBoostClassificationModel private[ml](
       Vectors.dense(rawPredictions)
     }
 
-    val probabilityUDF = udf { probability: mutable.WrappedArray[Float] =>
-      val prob = probability.map(_.toDouble).toArray
-      val probabilities = if (numClasses == 2) Array(1.0 - prob(0), prob(0)) else prob
-      Vectors.dense(probabilities)
-    }
 
-    val predictUDF = udf { probability: mutable.WrappedArray[Float] =>
-      // From XGBoost probability to MLlib prediction
-      val prob = probability.map(_.toDouble).toArray
-      val probabilities = if (numClasses == 2) Array(1.0 - prob(0), prob(0)) else prob
-      probability2prediction(Vectors.dense(probabilities))
-    }
 
     if ($(rawPredictionCol).nonEmpty) {
       outputData = outputData
@@ -404,16 +393,41 @@ class XGBoostClassificationModel private[ml](
       numColsOutput += 1
     }
 
-    if ($(probabilityCol).nonEmpty) {
-      outputData = outputData
-        .withColumn(getProbabilityCol, probabilityUDF(col(_probabilityCol)))
-      numColsOutput += 1
-    }
+    if (getObjective.equals("multi:softmax")) {
+      // For objective=multi:softmax scenario, there is no probability predicted from xgboost.
+      // Instead, the probability column will be filled with real prediction
+      val predictUDF = udf { probability: mutable.WrappedArray[Float] =>
+        probability(0)
+      }
+      if ($(predictionCol).nonEmpty) {
+        outputData = outputData
+          .withColumn($(predictionCol), predictUDF(col(_probabilityCol)))
+        numColsOutput += 1
+      }
 
-    if ($(predictionCol).nonEmpty) {
-      outputData = outputData
-        .withColumn($(predictionCol), predictUDF(col(_probabilityCol)))
-      numColsOutput += 1
+    } else {
+      val probabilityUDF = udf { probability: mutable.WrappedArray[Float] =>
+        val prob = probability.map(_.toDouble).toArray
+        val probabilities = if (numClasses == 2) Array(1.0 - prob(0), prob(0)) else prob
+        Vectors.dense(probabilities)
+      }
+      if ($(probabilityCol).nonEmpty) {
+        outputData = outputData
+          .withColumn(getProbabilityCol, probabilityUDF(col(_probabilityCol)))
+        numColsOutput += 1
+      }
+
+      val predictUDF = udf { probability: mutable.WrappedArray[Float] =>
+        // From XGBoost probability to MLlib prediction
+        val prob = probability.map(_.toDouble).toArray
+        val probabilities = if (numClasses == 2) Array(1.0 - prob(0), prob(0)) else prob
+        probability2prediction(Vectors.dense(probabilities))
+      }
+      if ($(predictionCol).nonEmpty) {
+        outputData = outputData
+          .withColumn($(predictionCol), predictUDF(col(_probabilityCol)))
+        numColsOutput += 1
+      }
     }
 
     if (numColsOutput == 0) {

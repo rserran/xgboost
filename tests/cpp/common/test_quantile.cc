@@ -1,3 +1,6 @@
+/*!
+ * Copyright 2020-2022 by XGBoost Contributors
+ */
 #include <gtest/gtest.h>
 #include "test_quantile.h"
 #include "../../../src/common/quantile.h"
@@ -58,10 +61,17 @@ void TestDistributedQuantile(size_t rows, size_t cols) {
   // Generate cuts for distributed environment.
   auto sparsity = 0.5f;
   auto rank = rabit::GetRank();
+  std::vector<FeatureType> ft(cols);
+  for (size_t i = 0; i < ft.size(); ++i) {
+    ft[i] = (i % 2 == 0) ? FeatureType::kNumerical : FeatureType::kCategorical;
+  }
+
   auto m = RandomDataGenerator{rows, cols, sparsity}
                .Seed(rank)
                .Lower(.0f)
                .Upper(1.0f)
+               .Type(ft)
+               .MaxCategory(13)
                .GenerateDMatrix();
 
   std::vector<float> hessian(rows, 1.0);
@@ -95,6 +105,8 @@ void TestDistributedQuantile(size_t rows, size_t cols) {
   for (auto rank = 0; rank < world; ++rank) {
     auto m = RandomDataGenerator{rows, cols, sparsity}
                  .Seed(rank)
+                 .Type(ft)
+                 .MaxCategory(13)
                  .Lower(.0f)
                  .Upper(1.0f)
                  .GenerateDMatrix();
@@ -181,11 +193,18 @@ TEST(Quantile, SameOnAllWorkers) {
       kRows, [=](int32_t seed, size_t n_bins, MetaInfo const &info) {
         auto rank = rabit::GetRank();
         HostDeviceVector<float> storage;
+        std::vector<FeatureType> ft(kCols);
+        for (size_t i = 0; i < ft.size(); ++i) {
+          ft[i] = (i % 2 == 0) ? FeatureType::kNumerical : FeatureType::kCategorical;
+        }
+
         auto m = RandomDataGenerator{kRows, kCols, 0}
                      .Device(0)
+                     .Type(ft)
+                     .MaxCategory(17)
                      .Seed(rank + seed)
                      .GenerateDMatrix();
-        auto cuts = SketchOnDMatrix(m.get(), n_bins);
+        auto cuts = SketchOnDMatrix(m.get(), n_bins, common::OmpGetNumThreads(0));
         std::vector<float> cut_values(cuts.Values().size() * world, 0);
         std::vector<
             typename std::remove_reference_t<decltype(cuts.Ptrs())>::value_type>

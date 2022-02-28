@@ -1,3 +1,4 @@
+"""Copyright 2019-2022 XGBoost contributors"""
 import sys
 import os
 from typing import Type, TypeVar, Any, Dict, List, Tuple
@@ -6,8 +7,6 @@ import numpy as np
 import asyncio
 import xgboost
 import subprocess
-import tempfile
-import json
 from collections import OrderedDict
 from inspect import signature
 from hypothesis import given, strategies, settings, note
@@ -36,7 +35,8 @@ from test_with_dask import generate_array             # noqa
 from test_with_dask import kCols as random_cols       # noqa
 from test_with_dask import suppress                   # noqa
 from test_with_dask import run_tree_stats             # noqa
-
+from test_with_dask import run_categorical            # noqa
+from test_with_dask import make_categorical           # noqa
 
 
 try:
@@ -49,49 +49,6 @@ try:
     import cudf
 except ImportError:
     pass
-
-
-def make_categorical(
-    client: Client,
-    n_samples: int,
-    n_features: int,
-    n_categories: int,
-    onehot: bool = False,
-) -> Tuple[dd.DataFrame, dd.Series]:
-    workers = _get_client_workers(client)
-    n_workers = len(workers)
-    dfs = []
-
-    def pack(**kwargs: Any) -> dd.DataFrame:
-        X, y = tm.make_categorical(**kwargs)
-        X["label"] = y
-        return X
-
-    meta = pack(
-        n_samples=1, n_features=n_features, n_categories=n_categories, onehot=False
-    )
-
-    for i, worker in enumerate(workers):
-        l_n_samples = min(
-            n_samples // n_workers, n_samples - i * (n_samples // n_workers)
-        )
-        future = client.submit(
-            pack,
-            n_samples=l_n_samples,
-            n_features=n_features,
-            n_categories=n_categories,
-            onehot=False,
-            workers=[worker],
-        )
-        dfs.append(future)
-
-    df = dd.from_delayed(dfs, meta=meta)
-    y = df["label"]
-    X = df[df.columns.difference(["label"])]
-
-    if onehot:
-        return dd.get_dummies(X), y
-    return X, y
 
 
 def run_with_dask_dataframe(DMatrixT: Type, client: Client) -> None:
@@ -184,69 +141,12 @@ def test_categorical(local_cuda_cluster: LocalCUDACluster) -> None:
     with Client(local_cuda_cluster) as client:
         import dask_cudf
 
-        rounds = 10
         X, y = make_categorical(client, 10000, 30, 13)
         X = dask_cudf.from_dask_dataframe(X)
 
         X_onehot, _ = make_categorical(client, 10000, 30, 13, True)
         X_onehot = dask_cudf.from_dask_dataframe(X_onehot)
-
-        parameters = {"tree_method": "gpu_hist"}
-
-        m = dxgb.DaskDMatrix(client, X_onehot, y, enable_categorical=True)
-        by_etl_results = dxgb.train(
-            client,
-            parameters,
-            m,
-            num_boost_round=rounds,
-            evals=[(m, "Train")],
-        )["history"]
-
-        m = dxgb.DaskDMatrix(client, X, y, enable_categorical=True)
-        output = dxgb.train(
-            client,
-            parameters,
-            m,
-            num_boost_round=rounds,
-            evals=[(m, "Train")],
-        )
-        by_builtin_results = output["history"]
-
-        np.testing.assert_allclose(
-            np.array(by_etl_results["Train"]["rmse"]),
-            np.array(by_builtin_results["Train"]["rmse"]),
-            rtol=1e-3,
-        )
-        assert tm.non_increasing(by_builtin_results["Train"]["rmse"])
-
-        def check_model_output(model: dxgb.Booster) -> None:
-            with tempfile.TemporaryDirectory() as tempdir:
-                path = os.path.join(tempdir, "model.json")
-                model.save_model(path)
-                with open(path, "r") as fd:
-                    categorical = json.load(fd)
-
-                categories_sizes = np.array(
-                    categorical["learner"]["gradient_booster"]["model"]["trees"][-1][
-                        "categories_sizes"
-                    ]
-                )
-                assert categories_sizes.shape[0] != 0
-                np.testing.assert_allclose(categories_sizes, 1)
-
-        check_model_output(output["booster"])
-        reg = dxgb.DaskXGBRegressor(
-            enable_categorical=True, n_estimators=10, tree_method="gpu_hist"
-        )
-        reg.fit(X, y)
-
-        check_model_output(reg.get_booster())
-
-        reg = dxgb.DaskXGBRegressor(
-            enable_categorical=True, n_estimators=10
-        )
-        with pytest.raises(ValueError):
-            reg.fit(X, y)
+        run_categorical(client, "gpu_hist", X, X_onehot, y)
 
 
 def to_cp(x: Any, DMatrixT: Type) -> Any:
@@ -419,9 +319,9 @@ class TestDistributedGPU:
             mult = 100
             df = cudf.DataFrame(
                 {
-                    "a": [1,2,3,4,5.1] * mult,
-                    "b": [10,15,29.3,30,31] * mult,
-                    "y": [10,20,30,40.,50] * mult,
+                    "a": [1, 2, 3, 4, 5.1] * mult,
+                    "b": [10, 15, 29.3, 30, 31] * mult,
+                    "y": [10, 20, 30, 40., 50] * mult,
                 }
             )
             parameters = {"tree_method": "gpu_hist", "debug_synchronize": True}
@@ -448,9 +348,33 @@ class TestDistributedGPU:
             y = ddf[["y"]]
             dtrain = dxgb.DaskDeviceQuantileDMatrix(client, X, y)
             bst = xgb.dask.train(client, parameters, dtrain, evals=[(dtrain, "train")])
-            predt = dxgb.predict(client, bst, X).compute().values
 
+            predt = dxgb.predict(client, bst, X).compute().values
             cupy.testing.assert_allclose(predt, predt_empty)
+
+            predt = dxgb.predict(client, bst, dtrain).compute()
+            cupy.testing.assert_allclose(predt, predt_empty)
+
+            predt = dxgb.inplace_predict(client, bst, X).compute().values
+            cupy.testing.assert_allclose(predt, predt_empty)
+
+            df = df.to_pandas()
+            empty = df.iloc[:0]
+            ddf = dd.concat(
+                [dd.from_pandas(empty, npartitions=1)]
+                + [dd.from_pandas(df, npartitions=3)]
+                + [dd.from_pandas(df, npartitions=3)]
+            )
+            X = ddf[ddf.columns.difference(["y"])]
+            y = ddf[["y"]]
+
+            predt_empty = cupy.asnumpy(predt_empty)
+
+            predt = dxgb.predict(client, bst_empty, X).compute().values
+            np.testing.assert_allclose(predt, predt_empty)
+
+            in_predt = dxgb.inplace_predict(client, bst_empty, X).compute().values
+            np.testing.assert_allclose(predt, in_predt)
 
     def test_empty_dmatrix_auc(self, local_cuda_cluster: LocalCUDACluster) -> None:
         with Client(local_cuda_cluster) as client:
@@ -469,7 +393,7 @@ class TestDistributedGPU:
             m = dxgb.DaskDMatrix(client, X, y, feature_weights=fw)
 
             workers = _get_client_workers(client)
-            rabit_args = client.sync(dxgb._get_rabit_args, len(workers), client)
+            rabit_args = client.sync(dxgb._get_rabit_args, len(workers), None, client)
 
             def worker_fn(worker_addr: str, data_ref: Dict) -> None:
                 with dxgb.RabitContext(rabit_args):
@@ -571,7 +495,7 @@ class TestDistributedGPU:
 
         with Client(local_cuda_cluster) as client:
             workers = _get_client_workers(client)
-            rabit_args = client.sync(dxgb._get_rabit_args, workers, client)
+            rabit_args = client.sync(dxgb._get_rabit_args, workers, None, client)
             futures = client.map(runit,
                                  workers,
                                  pure=False,

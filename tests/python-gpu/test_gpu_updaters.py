@@ -7,6 +7,8 @@ from hypothesis import given, strategies, assume, settings, note
 
 sys.path.append("tests/python")
 import testing as tm
+import test_updaters as test_up
+
 
 parameter_strategy = strategies.fixed_dictionaries({
     'max_depth': strategies.integers(0, 11),
@@ -24,14 +26,25 @@ parameter_strategy = strategies.fixed_dictionaries({
     x['max_depth'] > 0 or x['grow_policy'] == 'lossguide'))
 
 
-def train_result(param, dmat, num_rounds):
-    result = {}
-    xgb.train(param, dmat, num_rounds, [(dmat, 'train')], verbose_eval=False,
-              evals_result=result)
+def train_result(param, dmat: xgb.DMatrix, num_rounds: int) -> dict:
+    result: xgb.callback.TrainingCallback.EvalsLog = {}
+    booster = xgb.train(
+        param,
+        dmat,
+        num_rounds,
+        [(dmat, "train")],
+        verbose_eval=False,
+        evals_result=result,
+    )
+    assert booster.num_features() == dmat.num_col()
+    assert booster.num_boosted_rounds() == num_rounds
+
     return result
 
 
 class TestGPUUpdaters:
+    cputest = test_up.TestTreeMethod()
+
     @given(parameter_strategy, strategies.integers(1, 20), tm.dataset_strategy)
     @settings(deadline=None)
     def test_gpu_hist(self, param, num_rounds, dataset):
@@ -41,51 +54,12 @@ class TestGPUUpdaters:
         note(result)
         assert tm.non_increasing(result["train"][dataset.metric])
 
-    def run_categorical_basic(self, rows, cols, rounds, cats):
-        onehot, label = tm.make_categorical(rows, cols, cats, True)
-        cat, _ = tm.make_categorical(rows, cols, cats, False)
-
-        by_etl_results = {}
-        by_builtin_results = {}
-
-        parameters = {"tree_method": "gpu_hist", "predictor": "gpu_predictor"}
-
-        m = xgb.DMatrix(onehot, label, enable_categorical=False)
-        xgb.train(
-            parameters,
-            m,
-            num_boost_round=rounds,
-            evals=[(m, "Train")],
-            evals_result=by_etl_results,
-        )
-
-        m = xgb.DMatrix(cat, label, enable_categorical=True)
-        xgb.train(
-            parameters,
-            m,
-            num_boost_round=rounds,
-            evals=[(m, "Train")],
-            evals_result=by_builtin_results,
-        )
-
-        # There are guidelines on how to specify tolerance based on considering output as
-        # random variables. But in here the tree construction is extremely sensitive to
-        # floating point errors. An 1e-5 error in a histogram bin can lead to an entirely
-        # different tree.  So even though the test is quite lenient, hypothesis can still
-        # pick up falsifying examples from time to time.
-        np.testing.assert_allclose(
-            np.array(by_etl_results["Train"]["rmse"]),
-            np.array(by_builtin_results["Train"]["rmse"]),
-            rtol=1e-3,
-        )
-        assert tm.non_increasing(by_builtin_results["Train"]["rmse"])
-
     @given(strategies.integers(10, 400), strategies.integers(3, 8),
            strategies.integers(1, 2), strategies.integers(4, 7))
     @settings(deadline=None)
     @pytest.mark.skipif(**tm.no_pandas())
     def test_categorical(self, rows, cols, rounds, cats):
-        self.run_categorical_basic(rows, cols, rounds, cats)
+        self.cputest.run_categorical_basic(rows, cols, rounds, cats, "gpu_hist")
 
     def test_categorical_32_cat(self):
         '''32 hits the bound of integer bitset, so special test'''
@@ -93,22 +67,11 @@ class TestGPUUpdaters:
         cols = 10
         cats = 32
         rounds = 4
-        self.run_categorical_basic(rows, cols, rounds, cats)
+        self.cputest.run_categorical_basic(rows, cols, rounds, cats, "gpu_hist")
 
-    def test_invalid_categorical(self):
-        import cupy as cp
-        rng = np.random.default_rng()
-        X = rng.normal(loc=0, scale=1, size=1000).reshape(100, 10)
-        y = rng.normal(loc=0, scale=1, size=100)
-
-        # Check is performe during sketching.
-        Xy = xgb.DMatrix(X, y, feature_types=["c"] * 10)
-        with pytest.raises(ValueError):
-            xgb.train({"tree_method": "gpu_hist"}, Xy)
-
-        X, y = cp.array(X), cp.array(y)
-        with pytest.raises(ValueError):
-            Xy = xgb.DeviceQuantileDMatrix(X, y, feature_types=["c"] * 10)
+    @pytest.mark.skipif(**tm.no_cupy())
+    def test_invalid_category(self):
+        self.cputest.run_invalid_category("gpu_hist")
 
     @pytest.mark.skipif(**tm.no_cupy())
     @given(parameter_strategy, strategies.integers(1, 20),

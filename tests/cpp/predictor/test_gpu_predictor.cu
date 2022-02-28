@@ -38,7 +38,9 @@ TEST(GPUPredictor, Basic) {
     param.num_output_group = 1;
     param.base_score = 0.5;
 
-    gbm::GBTreeModel model = CreateTestModel(&param);
+    GenericParameter ctx;
+    ctx.UpdateAllowUnknown(Args{});
+    gbm::GBTreeModel model = CreateTestModel(&param, &ctx);
 
     // Test predict batch
     PredictionCacheEntry gpu_out_predictions;
@@ -66,6 +68,7 @@ TEST(GPUPredictor, EllpackBasic) {
          .Bins(bins)
          .Device(0)
          .GenerateDeviceDMatrix(true);
+    ASSERT_FALSE(p_m->PageExists<SparsePage>());
     TestPredictionFromGradientIndex<EllpackPage>("gpu_predictor", rows, kCols, p_m);
     TestPredictionFromGradientIndex<EllpackPage>("gpu_predictor", bins, kCols, p_m);
   }
@@ -100,7 +103,9 @@ TEST(GPUPredictor, ExternalMemoryTest) {
   param.num_output_group = n_classes;
   param.base_score = 0.5;
 
-  gbm::GBTreeModel model = CreateTestModel(&param, n_classes);
+  GenericParameter ctx;
+  ctx.UpdateAllowUnknown(Args{});
+  gbm::GBTreeModel model = CreateTestModel(&param, &ctx, n_classes);
   std::vector<std::unique_ptr<DMatrix>> dmats;
 
   dmats.push_back(CreateSparsePageDMatrix(400));
@@ -167,11 +172,17 @@ TEST(GpuPredictor, LesserFeatures) {
 // Very basic test of empty model
 TEST(GPUPredictor, ShapStump) {
   cudaSetDevice(0);
+
   LearnerModelParam param;
   param.num_feature = 1;
   param.num_output_group = 1;
   param.base_score = 0.5;
-  gbm::GBTreeModel model(&param);
+
+  GenericParameter ctx;
+  ctx.UpdateAllowUnknown(Args{});
+
+  gbm::GBTreeModel model(&param, &ctx);
+
   std::vector<std::unique_ptr<RegTree>> trees;
   trees.push_back(std::unique_ptr<RegTree>(new RegTree));
   model.CommitModel(std::move(trees), 0);
@@ -197,7 +208,12 @@ TEST(GPUPredictor, Shap) {
   param.num_feature = 1;
   param.num_output_group = 1;
   param.base_score = 0.5;
-  gbm::GBTreeModel model(&param);
+
+  GenericParameter ctx;
+  ctx.UpdateAllowUnknown(Args{});
+
+  gbm::GBTreeModel model(&param, &ctx);
+
   std::vector<std::unique_ptr<RegTree>> trees;
   trees.push_back(std::unique_ptr<RegTree>(new RegTree));
   trees[0]->ExpandNode(0, 0, 0.5, true, 1.0, -1.0, 1.0, 0.0, 5.0, 2.0, 3.0);
@@ -249,7 +265,9 @@ TEST(GPUPredictor, PredictLeafBasic) {
   param.base_score = 0.0;
   param.num_output_group = 1;
 
-  gbm::GBTreeModel model = CreateTestModel(&param);
+  GenericParameter ctx;
+  ctx.UpdateAllowUnknown(Args{});
+  gbm::GBTreeModel model = CreateTestModel(&param, &ctx);
 
   HostDeviceVector<float> leaf_out_predictions;
   gpu_predictor->PredictLeaf(dmat.get(), &leaf_out_predictions, model);

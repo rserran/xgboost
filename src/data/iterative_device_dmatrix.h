@@ -69,16 +69,21 @@ class IterativeDeviceDMatrix : public DMatrix {
 
   bool SingleColBlock() const override { return false; }
 
-  MetaInfo& Info() override {
-    return info_;
-  }
-  MetaInfo const& Info() const override {
-    return info_;
+  MetaInfo &Info() override { return info_; }
+  MetaInfo const &Info() const override { return info_; }
+
+  GenericParameter const *Ctx() const override {
+    LOG(FATAL) << "`IterativeDMatrix` doesn't have context.";
+    return nullptr;
   }
 };
 
 #if !defined(XGBOOST_USE_CUDA)
 inline void IterativeDeviceDMatrix::Initialize(DataIterHandle iter, float missing, int nthread) {
+  // silent the warning about unused variables.
+  (void)(proxy_);
+  (void)(reset_);
+  (void)(next_);
   common::AssertGPUSupport();
 }
 inline BatchSet<EllpackPage> IterativeDeviceDMatrix::GetEllpackBatches(const BatchParam& param) {

@@ -35,14 +35,12 @@ class ApproxRowPartitioner {
                              std::vector<uint32_t> const &cut_ptrs,
                              std::vector<float> const &cut_values) {
     int32_t gidx = -1;
-    auto const &row_ptr = index.row_ptr;
-    auto get_rid = [&](size_t ridx) { return row_ptr[ridx - index.base_rowid]; };
-
     if (index.IsDense()) {
-      gidx = index.index[get_rid(ridx) + fidx];
+      // RowIdx returns the starting pos of this row
+      gidx = index.index[index.RowIdx(ridx) + fidx];
     } else {
-      auto begin = get_rid(ridx);
-      auto end = get_rid(ridx + 1);
+      auto begin = index.RowIdx(ridx);
+      auto end = index.RowIdx(ridx + 1);
       auto f_begin = cut_ptrs[fidx];
       auto f_end = cut_ptrs[fidx + 1];
       gidx = common::BinarySearchBin(begin, end, index.index, f_begin, f_end);
@@ -95,7 +93,7 @@ class ApproxRowPartitioner {
             auto node_cats = categories.subspan(segment.beg, segment.size);
             bool go_left = true;
             if (is_cat) {
-              go_left = common::Decision(node_cats, common::AsCat(cut_value));
+              go_left = common::Decision(node_cats, cut_value, candidate.split.DefaultLeft());
             } else {
               go_left = cut_value <= candidate.split.split_value;
             }

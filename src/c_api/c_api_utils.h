@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) 2021 by XGBoost Contributors
+ * Copyright (c) 2021-2022 by XGBoost Contributors
  */
 #ifndef XGBOOST_C_API_C_API_UTILS_H_
 #define XGBOOST_C_API_C_API_UTILS_H_
@@ -165,9 +165,9 @@ inline float GetMissing(Json const &config) {
 
 // Safe guard some global variables from being changed by XGBoost.
 class XGBoostAPIGuard {
+#if defined(XGBOOST_USE_CUDA)
   int32_t device_id_ {0};
 
-#if defined(XGBOOST_USE_CUDA)
   void SetGPUAttribute();
   void RestoreGPUAttribute();
 #else
@@ -241,5 +241,25 @@ inline void GenerateFeatureMap(Learner const *learner,
 }
 
 void XGBBuildInfoDevice(Json* p_info);
+
+template <typename JT>
+auto const &RequiredArg(Json const &in, std::string const &key, StringView func) {
+  auto const &obj = get<Object const>(in);
+  auto it = obj.find(key);
+  if (it == obj.cend() || IsA<Null>(it->second)) {
+    LOG(FATAL) << "Argument `" << key << "` is required for `" << func << "`";
+  }
+  return get<std::remove_const_t<JT> const>(it->second);
+}
+
+template <typename JT, typename T>
+auto const &OptionalArg(Json const &in, std::string const &key, T const &dft) {
+  auto const &obj = get<Object const>(in);
+  auto it = obj.find(key);
+  if (it != obj.cend()) {
+    return get<std::remove_const_t<JT> const>(it->second);
+  }
+  return dft;
+}
 }  // namespace xgboost
 #endif  // XGBOOST_C_API_C_API_UTILS_H_
