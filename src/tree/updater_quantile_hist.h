@@ -7,7 +7,6 @@
 #ifndef XGBOOST_TREE_UPDATER_QUANTILE_HIST_H_
 #define XGBOOST_TREE_UPDATER_QUANTILE_HIST_H_
 
-#include <dmlc/timer.h>
 #include <rabit/rabit.h>
 #include <xgboost/tree_updater.h>
 
@@ -18,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "xgboost/base.h"
 #include "xgboost/data.h"
 #include "xgboost/json.h"
 
@@ -29,7 +29,6 @@
 #include "constraints.h"
 #include "./param.h"
 #include "./driver.h"
-#include "./split_evaluator.h"
 #include "../common/random.h"
 #include "../common/timer.h"
 #include "../common/hist_util.h"
@@ -194,10 +193,37 @@ class HistRowPartitioner {
     AddSplitsToRowSet(nodes, p_tree);
   }
 
+  void UpdatePosition(GenericParameter const* ctx, GHistIndexMatrix const& page,
+                      std::vector<CPUExpandEntry> const& applied, RegTree const* p_tree) {
+    auto const& column_matrix = page.Transpose();
+    if (page.cut.HasCategorical()) {
+      if (column_matrix.AnyMissing()) {
+        this->template UpdatePosition<true, true>(ctx, page, column_matrix, applied, p_tree);
+      } else {
+        this->template UpdatePosition<false, true>(ctx, page, column_matrix, applied, p_tree);
+      }
+    } else {
+      if (column_matrix.AnyMissing()) {
+        this->template UpdatePosition<true, false>(ctx, page, column_matrix, applied, p_tree);
+      } else {
+        this->template UpdatePosition<false, false>(ctx, page, column_matrix, applied, p_tree);
+      }
+    }
+  }
+
   auto const& Partitions() const { return row_set_collection_; }
   size_t Size() const {
     return std::distance(row_set_collection_.begin(), row_set_collection_.end());
   }
+
+  void LeafPartition(Context const* ctx, RegTree const& tree,
+                     common::Span<GradientPair const> gpair,
+                     std::vector<bst_node_t>* p_out_position) const {
+    partition_builder_.LeafPartition(
+        ctx, tree, this->Partitions(), p_out_position,
+        [&](size_t idx) -> bool { return gpair[idx].GetHess() - .0f == .0f; });
+  }
+
   auto& operator[](bst_node_t nidx) { return row_set_collection_[nidx]; }
   auto const& operator[](bst_node_t nidx) const { return row_set_collection_[nidx]; }
 };
@@ -209,13 +235,12 @@ inline BatchParam HistBatch(TrainParam const& param) {
 /*! \brief construct a tree using quantized feature values */
 class QuantileHistMaker: public TreeUpdater {
  public:
-  explicit QuantileHistMaker(ObjInfo task) : task_{task} {
-    updater_monitor_.Init("QuantileHistMaker");
-  }
+  explicit QuantileHistMaker(GenericParameter const* ctx, ObjInfo task)
+      : task_{task}, TreeUpdater(ctx) {}
   void Configure(const Args& args) override;
 
-  void Update(HostDeviceVector<GradientPair>* gpair,
-              DMatrix* dmat,
+  void Update(HostDeviceVector<GradientPair>* gpair, DMatrix* dmat,
+              common::Span<HostDeviceVector<bst_node_t>> out_position,
               const std::vector<RegTree*>& trees) override;
 
   bool UpdatePredictionCache(const DMatrix *data,
@@ -224,23 +249,7 @@ class QuantileHistMaker: public TreeUpdater {
   void LoadConfig(Json const& in) override {
     auto const& config = get<Object const>(in);
     FromJson(config.at("train_param"), &this->param_);
-    try {
-      FromJson(config.at("cpu_hist_train_param"), &this->hist_maker_param_);
-    } catch (std::out_of_range&) {
-      // XGBoost model is from 1.1.x, so 'cpu_hist_train_param' is missing.
-      // We add this compatibility check because it's just recently that we (developers) began
-      // persuade R users away from using saveRDS() for model serialization. Hopefully, one day,
-      // everyone will be using xgb.save().
-      LOG(WARNING)
-        << "Attempted to load internal configuration for a model file that was generated "
-        << "by a previous version of XGBoost. A likely cause for this warning is that the model "
-        << "was saved with saveRDS() in R or pickle.dump() in Python. We strongly ADVISE AGAINST "
-        << "using saveRDS() or pickle.dump() so that the model remains accessible in current and "
-        << "upcoming XGBoost releases. Please use xgb.save() instead to preserve models for the "
-        << "long term. For more details and explanation, see "
-        << "https://xgboost.readthedocs.io/en/latest/tutorials/saving_model.html";
-      this->hist_maker_param_.UpdateAllowUnknown(Args{});
-    }
+    FromJson(config.at("cpu_hist_train_param"), &this->hist_maker_param_);
   }
   void SaveConfig(Json* p_out) const override {
     auto& out = *p_out;
@@ -252,14 +261,12 @@ class QuantileHistMaker: public TreeUpdater {
     return "grow_quantile_histmaker";
   }
 
+  bool HasNodePosition() const override { return true; }
+
  protected:
   CPUHistMakerTrainParam hist_maker_param_;
   // training parameter
   TrainParam param_;
-  // column accessor
-  common::ColumnMatrix column_matrix_;
-  DMatrix const* p_last_dmat_ {nullptr};
-  bool is_gmat_initialized_ {false};
 
   // actual builder that runs the algorithm
   template<typename GradientSumT>
@@ -267,62 +274,45 @@ class QuantileHistMaker: public TreeUpdater {
    public:
     using GradientPairT = xgboost::detail::GradientPairInternal<GradientSumT>;
     // constructor
-    explicit Builder(const size_t n_trees, const TrainParam& param,
-                     std::unique_ptr<TreeUpdater> pruner, DMatrix const* fmat, ObjInfo task,
-                     GenericParameter const* ctx)
+    explicit Builder(const size_t n_trees, const TrainParam& param, DMatrix const* fmat,
+                     ObjInfo task, GenericParameter const* ctx)
         : n_trees_(n_trees),
           param_(param),
-          pruner_(std::move(pruner)),
           p_last_fmat_(fmat),
           histogram_builder_{new HistogramBuilder<GradientSumT, CPUExpandEntry>},
           task_{task},
-          ctx_{ctx} {
-      builder_monitor_.Init("Quantile::Builder");
+          ctx_{ctx},
+          monitor_{std::make_unique<common::Monitor>()} {
+      monitor_->Init("Quantile::Builder");
     }
     // update one tree, growing
-    void Update(const GHistIndexMatrix& gmat, const common::ColumnMatrix& column_matrix,
-                HostDeviceVector<GradientPair>* gpair, DMatrix* p_fmat, RegTree* p_tree);
+    void UpdateTree(HostDeviceVector<GradientPair>* gpair, DMatrix* p_fmat, RegTree* p_tree,
+                    HostDeviceVector<bst_node_t>* p_out_position);
 
-    bool UpdatePredictionCache(const DMatrix* data,
-                               linalg::VectorView<float> out_preds);
+    bool UpdatePredictionCache(DMatrix const* data, linalg::VectorView<float> out_preds) const;
 
-   protected:
+   private:
     // initialize temp data structure
-    void InitData(const GHistIndexMatrix& gmat,
-                  const DMatrix& fmat,
-                  const RegTree& tree,
-                  std::vector<GradientPair>* gpair);
+    void InitData(DMatrix* fmat, const RegTree& tree, std::vector<GradientPair>* gpair);
 
     size_t GetNumberOfTrees();
 
     void InitSampling(const DMatrix& fmat, std::vector<GradientPair>* gpair);
 
-    template <bool any_missing>
-    void InitRoot(DMatrix* p_fmat,
-                  RegTree *p_tree,
-                  const std::vector<GradientPair> &gpair_h,
-                  int *num_leaves, std::vector<CPUExpandEntry> *expand);
+    CPUExpandEntry InitRoot(DMatrix* p_fmat, RegTree* p_tree,
+                            const std::vector<GradientPair>& gpair_h);
 
-    // Split nodes to 2 sets depending on amount of rows in each node
-    // Histograms for small nodes will be built explicitly
-    // Histograms for big nodes will be built by 'Subtraction Trick'
-    void SplitSiblings(const std::vector<CPUExpandEntry>& nodes,
-                       std::vector<CPUExpandEntry>* nodes_to_evaluate,
-                       RegTree *p_tree);
+    void BuildHistogram(DMatrix* p_fmat, RegTree* p_tree,
+                        std::vector<CPUExpandEntry> const& valid_candidates,
+                        std::vector<GradientPair> const& gpair);
 
-    void AddSplitsToTree(const std::vector<CPUExpandEntry>& expand,
-                         RegTree *p_tree,
-                         int *num_leaves,
-                         std::vector<CPUExpandEntry>* nodes_for_apply_split);
+    void LeafPartition(RegTree const& tree, common::Span<GradientPair const> gpair,
+                       std::vector<bst_node_t>* p_out_position);
 
-    template <bool any_missing>
-    void ExpandTree(const GHistIndexMatrix& gmat,
-                    const common::ColumnMatrix& column_matrix,
-                    DMatrix* p_fmat,
-                    RegTree* p_tree,
-                    const std::vector<GradientPair>& gpair_h);
+    void ExpandTree(DMatrix* p_fmat, RegTree* p_tree, const std::vector<GradientPair>& gpair_h,
+                    HostDeviceVector<bst_node_t>* p_out_position);
 
-    //  --data fields--
+   private:
     const size_t n_trees_;
     const TrainParam& param_;
     std::shared_ptr<common::ColumnSampler> column_sampler_{
@@ -330,53 +320,24 @@ class QuantileHistMaker: public TreeUpdater {
 
     std::vector<GradientPair> gpair_local_;
 
-    /*! \brief feature with least # of bins. to be used for dense specialization
-               of InitNewNode() */
-    uint32_t fid_least_bins_;
-
-    std::unique_ptr<TreeUpdater> pruner_;
     std::unique_ptr<HistEvaluator<GradientSumT, CPUExpandEntry>> evaluator_;
-    // Right now there's only 1 partitioner in this vector, when external memory is fully
-    // supported we will have number of partitioners equal to number of pages.
     std::vector<HistRowPartitioner> partitioner_;
 
     // back pointers to tree and data matrix
     const RegTree* p_last_tree_{nullptr};
     DMatrix const* const p_last_fmat_;
-    DMatrix* p_last_fmat_mutable_;
 
-    // key is the node id which should be calculated by Subtraction Trick, value is the node which
-    // provides the evidence for subtraction
-    std::vector<CPUExpandEntry> nodes_for_subtraction_trick_;
-    // list of nodes whose histograms would be built explicitly.
-    std::vector<CPUExpandEntry> nodes_for_explicit_hist_build_;
-
-    enum class DataLayout { kDenseDataZeroBased, kDenseDataOneBased, kSparseData };
-    DataLayout data_layout_;
     std::unique_ptr<HistogramBuilder<GradientSumT, CPUExpandEntry>> histogram_builder_;
     ObjInfo task_;
     // Context for number of threads
     GenericParameter const* ctx_;
 
-    common::Monitor builder_monitor_;
+    std::unique_ptr<common::Monitor> monitor_;
   };
-  common::Monitor updater_monitor_;
-
-  template<typename GradientSumT>
-  void SetBuilder(const size_t n_trees, std::unique_ptr<Builder<GradientSumT>>*, DMatrix *dmat);
-
-  template<typename GradientSumT>
-  void CallBuilderUpdate(const std::unique_ptr<Builder<GradientSumT>>& builder,
-                         HostDeviceVector<GradientPair> *gpair,
-                         DMatrix *dmat,
-                         GHistIndexMatrix const& gmat,
-                         const std::vector<RegTree *> &trees);
 
  protected:
   std::unique_ptr<Builder<float>> float_builder_;
   std::unique_ptr<Builder<double>> double_builder_;
-
-  std::unique_ptr<TreeUpdater> pruner_;
   ObjInfo task_;
 };
 }  // namespace tree

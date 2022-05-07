@@ -11,6 +11,9 @@
 #include <utility>
 #include <vector>
 
+#include "xgboost/base.h"
+#include "xgboost/data.h"
+#include "xgboost/generic_parameters.h"
 #include "xgboost/host_device_vector.h"
 #include "xgboost/parameter.h"
 #include "xgboost/span.h"
@@ -35,6 +38,8 @@
 #include "gpu_hist/histogram.cuh"
 #include "gpu_hist/evaluate_splits.cuh"
 #include "gpu_hist/expand_entry.cuh"
+#include "xgboost/task.h"
+#include "xgboost/tree_model.h"
 
 namespace xgboost {
 namespace tree {
@@ -45,12 +50,9 @@ DMLC_REGISTRY_FILE_TAG(updater_gpu_hist);
 // training parameters specific to this algorithm
 struct GPUHistMakerTrainParam
     : public XGBoostParameter<GPUHistMakerTrainParam> {
-  bool single_precision_histogram;
   bool debug_synchronize;
   // declare parameters
   DMLC_DECLARE_PARAMETER(GPUHistMakerTrainParam) {
-    DMLC_DECLARE_FIELD(single_precision_histogram).set_default(false).describe(
-        "Use single precision to build histograms.");
     DMLC_DECLARE_FIELD(debug_synchronize).set_default(false).describe(
         "Check if all distributed tree are identical after tree construction.");
   }
@@ -161,9 +163,9 @@ template <typename GradientSumT>
 struct GPUHistMakerDevice {
  private:
   GPUHistEvaluator<GradientSumT> evaluator_;
+  Context const* ctx_;
 
  public:
-  int device_id;
   EllpackPageImpl const* page;
   common::Span<FeatureType const> feature_types;
   BatchParam batch_param;
@@ -192,15 +194,13 @@ struct GPUHistMakerDevice {
   std::unique_ptr<GradientBasedSampler> sampler;
 
   std::unique_ptr<FeatureGroups> feature_groups;
-  // Storing split categories for last node.
-  dh::caching_device_vector<uint32_t> node_categories;
 
-  GPUHistMakerDevice(int _device_id, EllpackPageImpl const* _page,
+  GPUHistMakerDevice(Context const* ctx, EllpackPageImpl const* _page,
                      common::Span<FeatureType const> _feature_types, bst_uint _n_rows,
                      TrainParam _param, uint32_t column_sampler_seed, uint32_t n_features,
                      BatchParam _batch_param)
-      : evaluator_{_param, n_features, _device_id},
-        device_id(_device_id),
+      : evaluator_{_param, n_features, ctx->gpu_id},
+        ctx_(ctx),
         page(_page),
         feature_types{_feature_types},
         param(std::move(_param)),
@@ -216,29 +216,29 @@ struct GPUHistMakerDevice {
     node_sum_gradients.resize(param.MaxNodes());
 
     // Init histogram
-    hist.Init(device_id, page->Cuts().TotalBins());
-    monitor.Init(std::string("GPUHistMakerDevice") + std::to_string(device_id));
-    feature_groups.reset(new FeatureGroups(
-        page->Cuts(), page->is_dense, dh::MaxSharedMemoryOptin(device_id), sizeof(GradientSumT)));
+    hist.Init(ctx_->gpu_id, page->Cuts().TotalBins());
+    monitor.Init(std::string("GPUHistMakerDevice") + std::to_string(ctx_->gpu_id));
+    feature_groups.reset(new FeatureGroups(page->Cuts(), page->is_dense,
+                                           dh::MaxSharedMemoryOptin(ctx_->gpu_id),
+                                           sizeof(GradientSumT)));
   }
 
   ~GPUHistMakerDevice() {  // NOLINT
-    dh::safe_cuda(cudaSetDevice(device_id));
+    dh::safe_cuda(cudaSetDevice(ctx_->gpu_id));
   }
 
   // Reset values for each update iteration
   // Note that the column sampler must be passed by value because it is not
   // thread safe
-  void Reset(HostDeviceVector<GradientPair>* dh_gpair, DMatrix* dmat, int64_t num_columns,
-             ObjInfo task) {
+  void Reset(HostDeviceVector<GradientPair>* dh_gpair, DMatrix* dmat, int64_t num_columns) {
     auto const& info = dmat->Info();
     this->column_sampler.Init(num_columns, info.feature_weights.HostVector(),
                               param.colsample_bynode, param.colsample_bylevel,
                               param.colsample_bytree);
-    dh::safe_cuda(cudaSetDevice(device_id));
+    dh::safe_cuda(cudaSetDevice(ctx_->gpu_id));
 
-    this->evaluator_.Reset(page->Cuts(), feature_types, task, dmat->Info().num_col_, param,
-                           device_id);
+    this->evaluator_.Reset(page->Cuts(), feature_types, dmat->Info().num_col_, param,
+                           ctx_->gpu_id);
 
     this->interaction_constraints.Reset();
     std::fill(node_sum_gradients.begin(), node_sum_gradients.end(), GradientPairPrecise{});
@@ -256,18 +256,18 @@ struct GPUHistMakerDevice {
     histogram_rounding = CreateRoundingFactor<GradientSumT>(this->gpair);
 
     row_partitioner.reset();  // Release the device memory first before reallocating
-    row_partitioner.reset(new RowPartitioner(device_id,  sample.sample_rows));
+    row_partitioner.reset(new RowPartitioner(ctx_->gpu_id,  sample.sample_rows));
     hist.Reset();
   }
 
-  GPUExpandEntry EvaluateRootSplit(GradientPairPrecise root_sum, float weight, ObjInfo task) {
+  GPUExpandEntry EvaluateRootSplit(GradientPairPrecise root_sum, float weight) {
     int nidx = RegTree::kRoot;
     GPUTrainingParam gpu_param(param);
     auto sampled_features = column_sampler.GetFeatureSet(0);
-    sampled_features->SetDevice(device_id);
+    sampled_features->SetDevice(ctx_->gpu_id);
     common::Span<bst_feature_t> feature_set =
         interaction_constraints.Query(sampled_features->DeviceSpan(), nidx);
-    auto matrix = page->GetDeviceAccessor(device_id);
+    auto matrix = page->GetDeviceAccessor(ctx_->gpu_id);
     EvaluateSplitInputs<GradientSumT> inputs{nidx,
                                              root_sum,
                                              gpu_param,
@@ -277,24 +277,24 @@ struct GPUHistMakerDevice {
                                              matrix.gidx_fvalue_map,
                                              matrix.min_fvalue,
                                              hist.GetNodeHistogram(nidx)};
-    auto split = this->evaluator_.EvaluateSingleSplit(inputs, weight, task);
+    auto split = this->evaluator_.EvaluateSingleSplit(inputs, weight);
     return split;
   }
 
-  void EvaluateLeftRightSplits(GPUExpandEntry candidate, ObjInfo task, int left_nidx,
-                               int right_nidx, const RegTree& tree,
+  void EvaluateLeftRightSplits(GPUExpandEntry candidate, int left_nidx, int right_nidx,
+                               const RegTree& tree,
                                common::Span<GPUExpandEntry> pinned_candidates_out) {
     dh::TemporaryArray<DeviceSplitCandidate> splits_out(2);
     GPUTrainingParam gpu_param(param);
     auto left_sampled_features = column_sampler.GetFeatureSet(tree.GetDepth(left_nidx));
-    left_sampled_features->SetDevice(device_id);
+    left_sampled_features->SetDevice(ctx_->gpu_id);
     common::Span<bst_feature_t> left_feature_set =
         interaction_constraints.Query(left_sampled_features->DeviceSpan(), left_nidx);
     auto right_sampled_features = column_sampler.GetFeatureSet(tree.GetDepth(right_nidx));
-    right_sampled_features->SetDevice(device_id);
+    right_sampled_features->SetDevice(ctx_->gpu_id);
     common::Span<bst_feature_t> right_feature_set =
         interaction_constraints.Query(right_sampled_features->DeviceSpan(), left_nidx);
-    auto matrix = page->GetDeviceAccessor(device_id);
+    auto matrix = page->GetDeviceAccessor(ctx_->gpu_id);
 
     EvaluateSplitInputs<GradientSumT> left{left_nidx,
                                            candidate.split.left_sum,
@@ -316,7 +316,7 @@ struct GPUHistMakerDevice {
                                             hist.GetNodeHistogram(right_nidx)};
 
     dh::TemporaryArray<GPUExpandEntry> entries(2);
-    this->evaluator_.EvaluateSplits(candidate, task, left, right, dh::ToSpan(entries));
+    this->evaluator_.EvaluateSplits(candidate, left, right, dh::ToSpan(entries));
     dh::safe_cuda(cudaMemcpyAsync(pinned_candidates_out.data(), entries.data().get(),
                                   sizeof(GPUExpandEntry) * entries.size(), cudaMemcpyDeviceToHost));
   }
@@ -325,8 +325,8 @@ struct GPUHistMakerDevice {
     hist.AllocateHistogram(nidx);
     auto d_node_hist = hist.GetNodeHistogram(nidx);
     auto d_ridx = row_partitioner->GetRows(nidx);
-    BuildGradientHistogram(page->GetDeviceAccessor(device_id),
-                           feature_groups->DeviceAccessor(device_id), gpair,
+    BuildGradientHistogram(page->GetDeviceAccessor(ctx_->gpu_id),
+                           feature_groups->DeviceAccessor(ctx_->gpu_id), gpair,
                            d_ridx, d_node_hist, histogram_rounding);
   }
 
@@ -348,14 +348,14 @@ struct GPUHistMakerDevice {
     return hist.HistogramExists(nidx_histogram) && hist.HistogramExists(nidx_parent);
   }
 
-  void UpdatePosition(int nidx, RegTree* p_tree) {
-    RegTree::Node split_node = (*p_tree)[nidx];
-    auto split_type = p_tree->NodeSplitType(nidx);
-    auto d_matrix = page->GetDeviceAccessor(device_id);
-    auto node_cats = dh::ToSpan(node_categories);
+  void UpdatePosition(const GPUExpandEntry &e, RegTree* p_tree) {
+    RegTree::Node split_node = (*p_tree)[e.nid];
+    auto split_type = p_tree->NodeSplitType(e.nid);
+    auto d_matrix = page->GetDeviceAccessor(ctx_->gpu_id);
+    auto node_cats = e.split.split_cats.Bits();
 
     row_partitioner->UpdatePosition(
-        nidx, split_node.LeftChild(), split_node.RightChild(),
+        e.nid, split_node.LeftChild(), split_node.RightChild(),
         [=] __device__(bst_uint ridx) {
           // given a row index, returns the node id it belongs to
           bst_float cut_value =
@@ -384,7 +384,8 @@ struct GPUHistMakerDevice {
   // After tree update is finished, update the position of all training
   // instances to their final leaf. This information is used later to update the
   // prediction cache
-  void FinalisePosition(RegTree const* p_tree, DMatrix* p_fmat) {
+  void FinalisePosition(RegTree const* p_tree, DMatrix* p_fmat, ObjInfo task,
+                        HostDeviceVector<bst_node_t>* p_out_position) {
     dh::TemporaryArray<RegTree::Node> d_nodes(p_tree->GetNodes().size());
     dh::safe_cuda(cudaMemcpyAsync(d_nodes.data().get(), p_tree->GetNodes().data(),
                                   d_nodes.size() * sizeof(RegTree::Node),
@@ -405,17 +406,21 @@ struct GPUHistMakerDevice {
 
     if (row_partitioner->GetRows().size() != p_fmat->Info().num_row_) {
       row_partitioner.reset();  // Release the device memory first before reallocating
-      row_partitioner.reset(new RowPartitioner(device_id, p_fmat->Info().num_row_));
+      row_partitioner.reset(new RowPartitioner(ctx_->gpu_id, p_fmat->Info().num_row_));
+    }
+    if (task.UpdateTreeLeaf() && !p_fmat->SingleColBlock() && param.subsample != 1.0) {
+      // see comment in the `FinalisePositionInPage`.
+      LOG(FATAL) << "Current objective function can not be used with subsampled external memory.";
     }
     if (page->n_rows == p_fmat->Info().num_row_) {
-      FinalisePositionInPage(page, dh::ToSpan(d_nodes),
-                             dh::ToSpan(d_split_types), dh::ToSpan(d_categories),
-                             dh::ToSpan(d_categories_segments));
+      FinalisePositionInPage(page, dh::ToSpan(d_nodes), dh::ToSpan(d_split_types),
+                             dh::ToSpan(d_categories), dh::ToSpan(d_categories_segments), task,
+                             p_out_position);
     } else {
-      for (auto& batch : p_fmat->GetBatches<EllpackPage>(batch_param)) {
-        FinalisePositionInPage(batch.Impl(), dh::ToSpan(d_nodes),
-                               dh::ToSpan(d_split_types), dh::ToSpan(d_categories),
-                               dh::ToSpan(d_categories_segments));
+      for (auto const& batch : p_fmat->GetBatches<EllpackPage>(batch_param)) {
+        FinalisePositionInPage(batch.Impl(), dh::ToSpan(d_nodes), dh::ToSpan(d_split_types),
+                               dh::ToSpan(d_categories), dh::ToSpan(d_categories_segments), task,
+                               p_out_position);
       }
     }
   }
@@ -424,9 +429,13 @@ struct GPUHistMakerDevice {
                               const common::Span<RegTree::Node> d_nodes,
                               common::Span<FeatureType const> d_feature_types,
                               common::Span<uint32_t const> categories,
-                              common::Span<RegTree::Segment> categories_segments) {
-    auto d_matrix = page->GetDeviceAccessor(device_id);
+                              common::Span<RegTree::Segment> categories_segments,
+                              ObjInfo task,
+                              HostDeviceVector<bst_node_t>* p_out_position) {
+    auto d_matrix = page->GetDeviceAccessor(ctx_->gpu_id);
+    auto d_gpair = this->gpair;
     row_partitioner->FinalisePosition(
+        ctx_, task, p_out_position,
         [=] __device__(size_t row_id, int position) {
           // What happens if user prune the tree?
           if (!d_matrix.IsInRange(row_id)) {
@@ -457,13 +466,20 @@ struct GPUHistMakerDevice {
             }
             node = d_nodes[position];
           }
+
           return position;
+        },
+        [d_gpair] __device__(size_t ridx) {
+          // FIXME(jiamingy): Doesn't work when sampling is used with external memory as
+          // the sampler compacts the gradient vector.
+          return d_gpair[ridx].GetHess() - .0f == 0.f;
         });
   }
 
-  void UpdatePredictionCache(linalg::VectorView<float> out_preds_d) {
-    dh::safe_cuda(cudaSetDevice(device_id));
-    CHECK_EQ(out_preds_d.DeviceIdx(), device_id);
+  void UpdatePredictionCache(linalg::VectorView<float> out_preds_d, RegTree const* p_tree) {
+    CHECK(p_tree);
+    dh::safe_cuda(cudaSetDevice(ctx_->gpu_id));
+    CHECK_EQ(out_preds_d.DeviceIdx(), ctx_->gpu_id);
     auto d_ridx = row_partitioner->GetRows();
 
     GPUTrainingParam param_d(param);
@@ -476,12 +492,15 @@ struct GPUHistMakerDevice {
     auto d_node_sum_gradients = device_node_sum_gradients.data().get();
     auto tree_evaluator = evaluator_.GetEvaluator();
 
-    dh::LaunchN(d_ridx.size(), [=, out_preds_d = out_preds_d] __device__(int local_idx) mutable {
-      int pos = d_position[local_idx];
-      bst_float weight =
-          tree_evaluator.CalcWeight(pos, param_d, GradStats{d_node_sum_gradients[pos]});
-      static_assert(!std::is_const<decltype(out_preds_d)>::value, "");
-      out_preds_d(d_ridx[local_idx]) += weight * param_d.learning_rate;
+    auto const& h_nodes = p_tree->GetNodes();
+    dh::caching_device_vector<RegTree::Node> nodes(h_nodes.size());
+    dh::safe_cuda(cudaMemcpyAsync(nodes.data().get(), h_nodes.data(),
+                                  h_nodes.size() * sizeof(RegTree::Node), cudaMemcpyHostToDevice));
+    auto d_nodes = dh::ToSpan(nodes);
+    dh::LaunchN(d_ridx.size(), [=] XGBOOST_DEVICE(size_t idx) mutable {
+      bst_node_t nidx = d_position[idx];
+      auto weight = d_nodes[nidx].LeafValue();
+      out_preds_d(d_ridx[idx]) += weight;
     });
     row_partitioner.reset();
   }
@@ -532,6 +551,13 @@ struct GPUHistMakerDevice {
 
   void ApplySplit(const GPUExpandEntry& candidate, RegTree* p_tree) {
     RegTree& tree = *p_tree;
+
+    // Sanity check - have we created a leaf with no training instances?
+    if (!rabit::IsDistributed() && row_partitioner) {
+      CHECK(row_partitioner->GetRows(candidate.nid).size() > 0)
+          << "No training instances in this leaf!";
+    }
+
     auto parent_sum = candidate.split.left_sum + candidate.split.right_sum;
     auto base_weight = candidate.base_weight;
     auto left_weight = candidate.left_weight * param.learning_rate;
@@ -542,27 +568,12 @@ struct GPUHistMakerDevice {
       CHECK_LT(candidate.split.fvalue, std::numeric_limits<bst_cat_t>::max())
           << "Categorical feature value too large.";
       std::vector<uint32_t> split_cats;
-      if (candidate.split.split_cats.Bits().empty()) {
-        if (common::InvalidCat(candidate.split.fvalue)) {
-          common::InvalidCategory();
-        }
-        auto cat = common::AsCat(candidate.split.fvalue);
-        split_cats.resize(LBitField32::ComputeStorageSize(cat + 1), 0);
-        common::CatBitField cats_bits(split_cats);
-        cats_bits.Set(cat);
-        dh::CopyToD(split_cats, &node_categories);
-      } else {
-        auto h_cats = this->evaluator_.GetHostNodeCats(candidate.nid);
-        auto max_cat = candidate.split.MaxCat();
-        split_cats.resize(common::CatBitField::ComputeStorageSize(max_cat + 1), 0);
-        CHECK_LE(split_cats.size(), h_cats.size());
-        std::copy(h_cats.data(), h_cats.data() + split_cats.size(), split_cats.data());
-
-        node_categories.resize(candidate.split.split_cats.Bits().size());
-        dh::safe_cuda(cudaMemcpyAsync(
-            node_categories.data().get(), candidate.split.split_cats.Data(),
-            candidate.split.split_cats.Bits().size_bytes(), cudaMemcpyDeviceToDevice));
-      }
+      CHECK_GT(candidate.split.split_cats.Bits().size(), 0);
+      auto h_cats = this->evaluator_.GetHostNodeCats(candidate.nid);
+      auto max_cat = candidate.split.MaxCat();
+      split_cats.resize(common::CatBitField::ComputeStorageSize(max_cat + 1), 0);
+      CHECK_LE(split_cats.size(), h_cats.size());
+      std::copy(h_cats.data(), h_cats.data() + split_cats.size(), split_cats.data());
 
       tree.ExpandCategorical(
           candidate.nid, candidate.split.findex, split_cats, candidate.split.dir == kLeftDir,
@@ -584,7 +595,7 @@ struct GPUHistMakerDevice {
                                   tree[candidate.nid].RightChild());
   }
 
-  GPUExpandEntry InitRoot(RegTree* p_tree, ObjInfo task, dh::AllReducer* reducer) {
+  GPUExpandEntry InitRoot(RegTree* p_tree, dh::AllReducer* reducer) {
     constexpr bst_node_t kRootNIdx = 0;
     dh::XGBCachingDeviceAllocator<char> alloc;
     auto gpair_it = dh::MakeTransformIterator<GradientPairPrecise>(
@@ -605,21 +616,22 @@ struct GPUHistMakerDevice {
     (*p_tree)[kRootNIdx].SetLeaf(param.learning_rate * weight);
 
     // Generate first split
-    auto root_entry = this->EvaluateRootSplit(root_sum, weight, task);
+    auto root_entry = this->EvaluateRootSplit(root_sum, weight);
     return root_entry;
   }
 
   void UpdateTree(HostDeviceVector<GradientPair>* gpair_all, DMatrix* p_fmat, ObjInfo task,
-                  RegTree* p_tree, dh::AllReducer* reducer) {
+                  RegTree* p_tree, dh::AllReducer* reducer,
+                  HostDeviceVector<bst_node_t>* p_out_position) {
     auto& tree = *p_tree;
     Driver<GPUExpandEntry> driver(static_cast<TrainParam::TreeGrowPolicy>(param.grow_policy));
 
     monitor.Start("Reset");
-    this->Reset(gpair_all, p_fmat, p_fmat->Info().num_col_, task);
+    this->Reset(gpair_all, p_fmat, p_fmat->Info().num_col_);
     monitor.Stop("Reset");
 
     monitor.Start("InitRoot");
-    driver.Push({ this->InitRoot(p_tree, task, reducer) });
+    driver.Push({ this->InitRoot(p_tree, reducer) });
     monitor.Stop("InitRoot");
 
     auto num_leaves = 1;
@@ -641,14 +653,14 @@ struct GPUHistMakerDevice {
 
         int left_child_nidx = tree[candidate.nid].LeftChild();
         int right_child_nidx = tree[candidate.nid].RightChild();
-        // Only create child entries if needed
+        // Only create child entries if needed_
         if (GPUExpandEntry::ChildIsValid(param, tree.GetDepth(left_child_nidx),
                                          num_leaves)) {
           monitor.Start("UpdatePosition");
           // Update position is only run when child is valid, instead of right after apply
           // split (as in approx tree method).  Hense we have the finalise position call
           // in GPU Hist.
-          this->UpdatePosition(candidate.nid, p_tree);
+          this->UpdatePosition(candidate, p_tree);
           monitor.Stop("UpdatePosition");
 
           monitor.Start("BuildHist");
@@ -656,7 +668,7 @@ struct GPUHistMakerDevice {
           monitor.Stop("BuildHist");
 
           monitor.Start("EvaluateSplits");
-          this->EvaluateLeftRightSplits(candidate, task, left_child_nidx, right_child_nidx, *p_tree,
+          this->EvaluateLeftRightSplits(candidate, left_child_nidx, right_child_nidx, *p_tree,
                                         new_candidates.subspan(i * 2, 2));
           monitor.Stop("EvaluateSplits");
         } else {
@@ -665,49 +677,69 @@ struct GPUHistMakerDevice {
           new_candidates[i * 2 + 1] = GPUExpandEntry();
         }
       }
-      dh::safe_cuda(cudaDeviceSynchronize());
+      dh::DefaultStream().Sync();
       driver.Push(new_candidates.begin(), new_candidates.end());
       expand_set = driver.Pop();
     }
 
     monitor.Start("FinalisePosition");
-    this->FinalisePosition(p_tree, p_fmat);
+    this->FinalisePosition(p_tree, p_fmat, task, p_out_position);
     monitor.Stop("FinalisePosition");
   }
 };
 
-template <typename GradientSumT>
-class GPUHistMakerSpecialised {
+class GPUHistMaker : public TreeUpdater {
+  using GradientSumT = GradientPairPrecise;
+
  public:
-  explicit GPUHistMakerSpecialised(ObjInfo task) : task_{task} {};
-  void Configure(const Args& args, GenericParameter const* generic_param) {
+  explicit GPUHistMaker(GenericParameter const* ctx, ObjInfo task)
+      : TreeUpdater(ctx), task_{task} {};
+  void Configure(const Args& args) override {
+    // Used in test to count how many configurations are performed
+    LOG(DEBUG) << "[GPU Hist]: Configure";
     param_.UpdateAllowUnknown(args);
-    generic_param_ = generic_param;
     hist_maker_param_.UpdateAllowUnknown(args);
     dh::CheckComputeCapability();
+    initialised_ = false;
 
     monitor_.Init("updater_gpu_hist");
   }
 
-  ~GPUHistMakerSpecialised() {  // NOLINT
+  void LoadConfig(Json const& in) override {
+    auto const& config = get<Object const>(in);
+    FromJson(config.at("gpu_hist_train_param"), &this->hist_maker_param_);
+    initialised_ = false;
+    FromJson(config.at("train_param"), &param_);
+  }
+  void SaveConfig(Json* p_out) const override {
+    auto& out = *p_out;
+    out["gpu_hist_train_param"] = ToJson(hist_maker_param_);
+    out["train_param"] = ToJson(param_);
+  }
+
+  ~GPUHistMaker() {  // NOLINT
     dh::GlobalMemoryLogger().Log();
   }
 
   void Update(HostDeviceVector<GradientPair>* gpair, DMatrix* dmat,
-              const std::vector<RegTree*>& trees) {
+              common::Span<HostDeviceVector<bst_node_t>> out_position,
+              const std::vector<RegTree*>& trees) override {
     monitor_.Start("Update");
 
     // rescale learning rate according to size of trees
     float lr = param_.learning_rate;
     param_.learning_rate = lr / trees.size();
+
     // build tree
     try {
+      size_t t_idx{0};
       for (xgboost::RegTree* tree : trees) {
-        this->UpdateTree(gpair, dmat, tree);
+        this->UpdateTree(gpair, dmat, tree, &out_position[t_idx]);
 
         if (hist_maker_param_.debug_synchronize) {
           this->CheckTreesSynchronized(tree);
         }
+        ++t_idx;
       }
       dh::safe_cuda(cudaGetLastError());
     } catch (const std::exception& e) {
@@ -719,41 +751,36 @@ class GPUHistMakerSpecialised {
   }
 
   void InitDataOnce(DMatrix* dmat) {
-    device_ = generic_param_->gpu_id;
-    CHECK_GE(device_, 0) << "Must have at least one device";
+    CHECK_GE(ctx_->gpu_id, 0) << "Must have at least one device";
     info_ = &dmat->Info();
-    reducer_.Init({device_});  // NOLINT
+    reducer_.Init({ctx_->gpu_id});  // NOLINT
 
     // Synchronise the column sampling seed
     uint32_t column_sampling_seed = common::GlobalRandom()();
     rabit::Broadcast(&column_sampling_seed, sizeof(column_sampling_seed), 0);
 
     BatchParam batch_param{
-      device_,
+      ctx_->gpu_id,
       param_.max_bin,
     };
     auto page = (*dmat->GetBatches<EllpackPage>(batch_param).begin()).Impl();
-    dh::safe_cuda(cudaSetDevice(device_));
-    info_->feature_types.SetDevice(device_);
-    maker.reset(new GPUHistMakerDevice<GradientSumT>(device_,
-                                                     page,
-                                                     info_->feature_types.ConstDeviceSpan(),
-                                                     info_->num_row_,
-                                                     param_,
-                                                     column_sampling_seed,
-                                                     info_->num_col_,
-                                                     batch_param));
+    dh::safe_cuda(cudaSetDevice(ctx_->gpu_id));
+    info_->feature_types.SetDevice(ctx_->gpu_id);
+    maker.reset(new GPUHistMakerDevice<GradientSumT>(
+        ctx_, page, info_->feature_types.ConstDeviceSpan(), info_->num_row_, param_,
+        column_sampling_seed, info_->num_col_, batch_param));
 
     p_last_fmat_ = dmat;
     initialised_ = true;
   }
 
-  void InitData(DMatrix* dmat) {
+  void InitData(DMatrix* dmat, RegTree const* p_tree) {
     if (!initialised_) {
       monitor_.Start("InitDataOnce");
       this->InitDataOnce(dmat);
       monitor_.Stop("InitDataOnce");
     }
+    p_last_tree_ = p_tree;
   }
 
   // Only call this method for testing
@@ -766,132 +793,59 @@ class GPUHistMakerSpecialised {
     }
     fs.Seek(0);
     rabit::Broadcast(&s_model, 0);
-    RegTree reference_tree {};  // rank 0 tree
+    RegTree reference_tree{};  // rank 0 tree
     reference_tree.Load(&fs);
     CHECK(*local_tree == reference_tree);
   }
 
-  void UpdateTree(HostDeviceVector<GradientPair>* gpair, DMatrix* p_fmat, RegTree* p_tree) {
+  void UpdateTree(HostDeviceVector<GradientPair>* gpair, DMatrix* p_fmat, RegTree* p_tree,
+                  HostDeviceVector<bst_node_t>* p_out_position) {
     monitor_.Start("InitData");
-    this->InitData(p_fmat);
+    this->InitData(p_fmat, p_tree);
     monitor_.Stop("InitData");
 
-    gpair->SetDevice(device_);
-    maker->UpdateTree(gpair, p_fmat, task_, p_tree, &reducer_);
+    gpair->SetDevice(ctx_->gpu_id);
+    maker->UpdateTree(gpair, p_fmat, task_, p_tree, &reducer_, p_out_position);
   }
 
-  bool UpdatePredictionCache(const DMatrix *data,
-                             linalg::VectorView<bst_float> p_out_preds) {
+  bool UpdatePredictionCache(const DMatrix* data,
+                             linalg::VectorView<bst_float> p_out_preds) override {
     if (maker == nullptr || p_last_fmat_ == nullptr || p_last_fmat_ != data) {
       return false;
     }
     monitor_.Start("UpdatePredictionCache");
-    maker->UpdatePredictionCache(p_out_preds);
+    maker->UpdatePredictionCache(p_out_preds, p_last_tree_);
     monitor_.Stop("UpdatePredictionCache");
     return true;
   }
 
-  TrainParam param_;   // NOLINT
-  MetaInfo* info_{};   // NOLINT
+  TrainParam param_;  // NOLINT
+  MetaInfo* info_{};  // NOLINT
 
   std::unique_ptr<GPUHistMakerDevice<GradientSumT>> maker;  // NOLINT
 
+  char const* Name() const override { return "grow_gpu_hist"; }
+
  private:
-  bool initialised_ { false };
+  bool initialised_{false};
 
   GPUHistMakerTrainParam hist_maker_param_;
-  GenericParameter const* generic_param_;
 
   dh::AllReducer reducer_;
 
-  DMatrix* p_last_fmat_ { nullptr };
-  int device_{-1};
+  DMatrix* p_last_fmat_{nullptr};
+  RegTree const* p_last_tree_{nullptr};
   ObjInfo task_;
 
   common::Monitor monitor_;
 };
 
-class GPUHistMaker : public TreeUpdater {
- public:
-  explicit GPUHistMaker(ObjInfo task) : task_{task} {}
-  void Configure(const Args& args) override {
-    // Used in test to count how many configurations are performed
-    LOG(DEBUG) << "[GPU Hist]: Configure";
-    hist_maker_param_.UpdateAllowUnknown(args);
-    // The passed in args can be empty, if we simply purge the old maker without
-    // preserving parameters then we can't do Update on it.
-    TrainParam param;
-    if (float_maker_) {
-      param = float_maker_->param_;
-    } else if (double_maker_) {
-      param = double_maker_->param_;
-    }
-    if (hist_maker_param_.single_precision_histogram) {
-      float_maker_.reset(new GPUHistMakerSpecialised<GradientPair>(task_));
-      float_maker_->param_ = param;
-      float_maker_->Configure(args, ctx_);
-    } else {
-      double_maker_.reset(new GPUHistMakerSpecialised<GradientPairPrecise>(task_));
-      double_maker_->param_ = param;
-      double_maker_->Configure(args, ctx_);
-    }
-  }
-
-  void LoadConfig(Json const& in) override {
-    auto const& config = get<Object const>(in);
-    FromJson(config.at("gpu_hist_train_param"), &this->hist_maker_param_);
-    if (hist_maker_param_.single_precision_histogram) {
-      float_maker_.reset(new GPUHistMakerSpecialised<GradientPair>(task_));
-      FromJson(config.at("train_param"), &float_maker_->param_);
-    } else {
-      double_maker_.reset(new GPUHistMakerSpecialised<GradientPairPrecise>(task_));
-      FromJson(config.at("train_param"), &double_maker_->param_);
-    }
-  }
-  void SaveConfig(Json* p_out) const override {
-    auto& out = *p_out;
-    out["gpu_hist_train_param"] = ToJson(hist_maker_param_);
-    if (hist_maker_param_.single_precision_histogram) {
-      out["train_param"] = ToJson(float_maker_->param_);
-    } else {
-      out["train_param"] = ToJson(double_maker_->param_);
-    }
-  }
-
-  void Update(HostDeviceVector<GradientPair>* gpair, DMatrix* dmat,
-              const std::vector<RegTree*>& trees) override {
-    if (hist_maker_param_.single_precision_histogram) {
-      float_maker_->Update(gpair, dmat, trees);
-    } else {
-      double_maker_->Update(gpair, dmat, trees);
-    }
-  }
-
-  bool
-  UpdatePredictionCache(const DMatrix *data,
-                        linalg::VectorView<bst_float> p_out_preds) override {
-    if (hist_maker_param_.single_precision_histogram) {
-      return float_maker_->UpdatePredictionCache(data, p_out_preds);
-    } else {
-      return double_maker_->UpdatePredictionCache(data, p_out_preds);
-    }
-  }
-
-  char const* Name() const override {
-    return "grow_gpu_hist";
-  }
-
- private:
-  GPUHistMakerTrainParam hist_maker_param_;
-  ObjInfo task_;
-  std::unique_ptr<GPUHistMakerSpecialised<GradientPair>> float_maker_;
-  std::unique_ptr<GPUHistMakerSpecialised<GradientPairPrecise>> double_maker_;
-};
-
 #if !defined(GTEST_TEST)
 XGBOOST_REGISTER_TREE_UPDATER(GPUHistMaker, "grow_gpu_hist")
     .describe("Grow tree with GPU.")
-    .set_body([](ObjInfo task) { return new GPUHistMaker(task); });
+    .set_body([](GenericParameter const* tparam, ObjInfo task) {
+      return new GPUHistMaker(tparam, task);
+    });
 #endif  // !defined(GTEST_TEST)
 
 }  // namespace tree

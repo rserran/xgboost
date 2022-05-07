@@ -10,7 +10,7 @@ are also some free standing updaters including ``grow_local_histmaker``, ``refre
 as the latter is just a pre-configuration of the former.  The difference is mostly due to
 historical reasons that each updater requires some specific configurations and might has
 missing features.  As we are moving forward, the gap between them is becoming more and
-more irrevelant.  We will collectively document them under tree methods.
+more irrelevant.  We will collectively document them under tree methods.
 
 **************
 Exact Solution
@@ -134,7 +134,7 @@ Following table summarizes some differences in supported features between 4 tree
 +------------------+-----------+---------------------+---------------------+------------------------+
 | categorical data | F         | T                   | T                   | T                      |
 +------------------+-----------+---------------------+---------------------+------------------------+
-| External memory  | F         | T                   | P                   | P                      |
+| External memory  | F         | T                   | T                   | P                      |
 +------------------+-----------+---------------------+---------------------+------------------------+
 | Distributed      | F         | T                   | T                   | T                      |
 +------------------+-----------+---------------------+---------------------+------------------------+

@@ -429,9 +429,11 @@ void SketchContainerImpl<WQSketch>::AllReduce(
   this->GatherSketchInfo(reduced, &worker_segments, &sketches_scan, &global_sketches);
 
   std::vector<typename WQSketch::SummaryContainer> final_sketches(n_columns);
-  QuantileAllreduce<typename WQSketch::Entry> allreduce_result{global_sketches, worker_segments,
-                                                               sketches_scan, n_columns};
+
   ParallelFor(n_columns, n_threads_, [&](auto fidx) {
+    // gcc raises subobject-linkage warning if we put allreduce_result as lambda capture
+    QuantileAllreduce<typename WQSketch::Entry> allreduce_result{global_sketches, worker_segments,
+                                                                 sketches_scan, n_columns};
     int32_t intermediate_num_cuts = num_cuts[fidx];
     auto nbytes = WQSketch::SummaryContainer::CalcMemCost(intermediate_num_cuts);
     if (IsCat(feature_types_, fidx)) {
@@ -466,11 +468,17 @@ void AddCutPoint(typename SketchType::SummaryContainer const &summary, int max_b
   }
 }
 
-void AddCategories(std::set<float> const &categories, HistogramCuts *cuts) {
-  auto &cut_values = cuts->cut_values_.HostVector();
-  for (auto const &v : categories) {
-    cut_values.push_back(AsCat(v));
+auto AddCategories(std::set<float> const &categories, HistogramCuts *cuts) {
+  if (std::any_of(categories.cbegin(), categories.cend(), InvalidCat)) {
+    InvalidCategory();
   }
+  auto &cut_values = cuts->cut_values_.HostVector();
+  auto max_cat = *std::max_element(categories.cbegin(), categories.cend());
+  CheckMaxCat(max_cat, categories.size());
+  for (bst_cat_t i = 0; i <= AsCat(max_cat); ++i) {
+    cut_values.push_back(i);
+  }
+  return max_cat;
 }
 
 template <typename WQSketch>
@@ -503,11 +511,12 @@ void SketchContainerImpl<WQSketch>::MakeCuts(HistogramCuts* cuts) {
     }
   });
 
+  float max_cat{-1.f};
   for (size_t fid = 0; fid < reduced.size(); ++fid) {
     size_t max_num_bins = std::min(num_cuts[fid], max_bins_);
     typename WQSketch::SummaryContainer const& a = final_summaries[fid];
     if (IsCat(feature_types_, fid)) {
-      AddCategories(categories_.at(fid), cuts);
+      max_cat = std::max(max_cat, AddCategories(categories_.at(fid), cuts));
     } else {
       AddCutPoint<WQSketch>(a, max_num_bins, cuts);
       // push a value that is greater than anything
@@ -525,30 +534,7 @@ void SketchContainerImpl<WQSketch>::MakeCuts(HistogramCuts* cuts) {
     cuts->cut_ptrs_.HostVector().push_back(cut_size);
   }
 
-  if (has_categorical_) {
-    for (auto const &feat : categories_) {
-      if (std::any_of(feat.cbegin(), feat.cend(), InvalidCat)) {
-        InvalidCategory();
-      }
-    }
-    auto const &ptrs = cuts->Ptrs();
-    auto const &vals = cuts->Values();
-
-    float max_cat{-std::numeric_limits<float>::infinity()};
-    for (size_t i = 1; i < ptrs.size(); ++i) {
-      if (IsCat(feature_types_, i - 1)) {
-        auto beg = ptrs[i - 1];
-        auto end = ptrs[i];
-        auto feat = Span<float const>{vals}.subspan(beg, end - beg);
-        auto max_elem = *std::max_element(feat.cbegin(), feat.cend());
-        if (max_elem > max_cat) {
-          max_cat = max_elem;
-        }
-      }
-    }
-    cuts->SetCategorical(true, max_cat);
-  }
-
+  cuts->SetCategorical(this->has_categorical_, max_cat);
   monitor_.Stop(__func__);
 }
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14 FATAL_ERROR)
-project(xgboost LANGUAGES CXX C VERSION 1.6.0)
+project(xgboost LANGUAGES CXX C VERSION 2.0.0)
 include(cmake/Utils.cmake)
 list(APPEND CMAKE_MODULE_PATH "${xgboost_SOURCE_DIR}/cmake/modules")
 cmake_policy(SET CMP0022 NEW)
@@ -66,6 +66,7 @@ address, leak, undefined and thread.")
 ## Plugins
 option(PLUGIN_DENSE_PARSER "Build dense parser plugin" OFF)
 option(PLUGIN_RMM "Build with RAPIDS Memory Manager (RMM)" OFF)
+option(PLUGIN_FEDERATED "Build with Federated Learning" OFF)
 ## TODO: 1. Add check if DPC++ compiler is used for building
 option(PLUGIN_UPDATER_ONEAPI "DPC++ updater" OFF)
 option(ADD_PKGCONFIG "Add xgboost.pc into system." ON)
@@ -304,7 +305,7 @@ write_basic_package_version_file(
   COMPATIBILITY AnyNewerVersion)
 install(
   FILES
-  ${CMAKE_BINARY_DIR}/cmake/xgboost-config.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/cmake/xgboost-config.cmake
   ${CMAKE_BINARY_DIR}/cmake/xgboost-config-version.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgboost)
 

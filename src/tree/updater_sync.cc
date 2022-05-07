@@ -20,8 +20,9 @@ DMLC_REGISTRY_FILE_TAG(updater_sync);
  * \brief syncher that synchronize the tree in all distributed nodes
  * can implement various strategies, so far it is always set to node 0's tree
  */
-class TreeSyncher: public TreeUpdater {
+class TreeSyncher : public TreeUpdater {
  public:
+  explicit TreeSyncher(GenericParameter const* tparam) : TreeUpdater(tparam) {}
   void Configure(const Args&) override {}
 
   void LoadConfig(Json const&) override {}
@@ -31,9 +32,9 @@ class TreeSyncher: public TreeUpdater {
     return "prune";
   }
 
-  void Update(HostDeviceVector<GradientPair>* ,
-              DMatrix*,
-              const std::vector<RegTree*> &trees) override {
+  void Update(HostDeviceVector<GradientPair>*, DMatrix*,
+              common::Span<HostDeviceVector<bst_node_t>> out_position,
+              const std::vector<RegTree*>& trees) override {
     if (rabit::GetWorldSize() == 1) return;
     std::string s_model;
     common::MemoryBufferStream fs(&s_model);
@@ -52,9 +53,7 @@ class TreeSyncher: public TreeUpdater {
 };
 
 XGBOOST_REGISTER_TREE_UPDATER(TreeSyncher, "sync")
-.describe("Syncher that synchronize the tree in all distributed nodes.")
-.set_body([](ObjInfo) {
-    return new TreeSyncher();
-  });
+    .describe("Syncher that synchronize the tree in all distributed nodes.")
+    .set_body([](GenericParameter const* tparam, ObjInfo) { return new TreeSyncher(tparam); });
 }  // namespace tree
 }  // namespace xgboost
