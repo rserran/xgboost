@@ -4,8 +4,19 @@ import copy
 import warnings
 import json
 import os
-from typing import Union, Optional, List, Dict, Callable, Tuple, Any, TypeVar, Type, cast
-from typing import Sequence
+from typing import (
+    Union,
+    Optional,
+    List,
+    Dict,
+    Callable,
+    Sequence,
+    Tuple,
+    Any,
+    TypeVar,
+    Type,
+    cast,
+)
 import numpy as np
 
 from .core import Booster, DMatrix, XGBoostError
@@ -14,7 +25,7 @@ from .core import Metric
 from .training import train
 from .callback import TrainingCallback
 from .data import _is_cudf_df, _is_cudf_ser, _is_cupy_array
-from ._typing import ArrayLike, FeatureTypes
+from ._typing import ArrayLike, FeatureNames, FeatureTypes
 
 # Do not use class names on scikit-learn directly.  Re-define the classes on
 # .compat to guarantee the behavior without scikit-learn
@@ -401,7 +412,7 @@ def _wrap_evaluation_matrices(
     eval_qid: Optional[Sequence[Any]],
     create_dmatrix: Callable,
     enable_categorical: bool,
-    feature_types: FeatureTypes,
+    feature_types: Optional[FeatureTypes],
 ) -> Tuple[Any, List[Tuple[Any, str]]]:
     """Convert array_like evaluation matrices into DMatrix.  Perform validation on the way.
 
@@ -717,7 +728,7 @@ class XGBModel(XGBModelBase):
         return self._estimator_type  # pylint: disable=no-member
 
     def save_model(self, fname: Union[str, os.PathLike]) -> None:
-        meta = {}
+        meta: Dict[str, Any] = {}
         for k, v in self.__dict__.items():
             if k == '_le':
                 meta['_le'] = self._le.to_json()
@@ -889,7 +900,7 @@ class XGBModel(XGBModelBase):
         eval_set: Optional[Sequence[Tuple[ArrayLike, ArrayLike]]] = None,
         eval_metric: Optional[Union[str, Sequence[str], Metric]] = None,
         early_stopping_rounds: Optional[int] = None,
-        verbose: Optional[bool] = True,
+        verbose: Optional[Union[bool, int]] = True,
         xgb_model: Optional[Union[Booster, str, "XGBModel"]] = None,
         sample_weight_eval_set: Optional[Sequence[ArrayLike]] = None,
         base_margin_eval_set: Optional[Sequence[ArrayLike]] = None,
@@ -927,8 +938,11 @@ class XGBModel(XGBModelBase):
                 Use `early_stopping_rounds` in :py:meth:`__init__` or
                 :py:meth:`set_params` instead.
         verbose :
-            If `verbose` and an evaluation set is used, writes the evaluation metric
-            measured on the validation set to stderr.
+            If `verbose` is True and an evaluation set is used, the evaluation metric
+            measured on the validation set is printed to stdout at each boosting stage.
+            If `verbose` is an integer, the evaluation metric is printed at each `verbose`
+            boosting stage. The last boosting stage / the boosting stage found by using
+            `early_stopping_rounds` is also printed.
         xgb_model :
             file name of stored XGBoost model or 'Booster' instance XGBoost model to be
             loaded before training (allows training continuation).
@@ -1231,7 +1245,7 @@ class XGBModel(XGBModelBase):
             importance_type=self.importance_type if self.importance_type else dft()
         )
         if b.feature_names is None:
-            feature_names = [f"f{i}" for i in range(self.n_features_in_)]
+            feature_names: FeatureNames = [f"f{i}" for i in range(self.n_features_in_)]
         else:
             feature_names = b.feature_names
         # gblinear returns all features so the `get` in next line is only for gbtree.
@@ -1351,7 +1365,7 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
         eval_set: Optional[Sequence[Tuple[ArrayLike, ArrayLike]]] = None,
         eval_metric: Optional[Union[str, Sequence[str], Metric]] = None,
         early_stopping_rounds: Optional[int] = None,
-        verbose: Optional[bool] = True,
+        verbose: Optional[Union[bool, int]] = True,
         xgb_model: Optional[Union[Booster, str, XGBModel]] = None,
         sample_weight_eval_set: Optional[Sequence[ArrayLike]] = None,
         base_margin_eval_set: Optional[Sequence[ArrayLike]] = None,
@@ -1593,7 +1607,7 @@ class XGBRFClassifier(XGBClassifier):
         eval_set: Optional[Sequence[Tuple[ArrayLike, ArrayLike]]] = None,
         eval_metric: Optional[Union[str, Sequence[str], Metric]] = None,
         early_stopping_rounds: Optional[int] = None,
-        verbose: Optional[bool] = True,
+        verbose: Optional[Union[bool, int]] = True,
         xgb_model: Optional[Union[Booster, str, XGBModel]] = None,
         sample_weight_eval_set: Optional[Sequence[ArrayLike]] = None,
         base_margin_eval_set: Optional[Sequence[ArrayLike]] = None,
@@ -1665,7 +1679,7 @@ class XGBRFRegressor(XGBRegressor):
         eval_set: Optional[Sequence[Tuple[ArrayLike, ArrayLike]]] = None,
         eval_metric: Optional[Union[str, Sequence[str], Metric]] = None,
         early_stopping_rounds: Optional[int] = None,
-        verbose: Optional[bool] = True,
+        verbose: Optional[Union[bool, int]] = True,
         xgb_model: Optional[Union[Booster, str, XGBModel]] = None,
         sample_weight_eval_set: Optional[Sequence[ArrayLike]] = None,
         base_margin_eval_set: Optional[Sequence[ArrayLike]] = None,
@@ -1744,7 +1758,7 @@ class XGBRanker(XGBModel, XGBRankerMixIn):
         eval_qid: Optional[Sequence[ArrayLike]] = None,
         eval_metric: Optional[Union[str, Sequence[str], Metric]] = None,
         early_stopping_rounds: Optional[int] = None,
-        verbose: Optional[bool] = False,
+        verbose: Optional[Union[bool, int]] = False,
         xgb_model: Optional[Union[Booster, str, XGBModel]] = None,
         sample_weight_eval_set: Optional[Sequence[ArrayLike]] = None,
         base_margin_eval_set: Optional[Sequence[ArrayLike]] = None,
@@ -1803,8 +1817,11 @@ class XGBRanker(XGBModel, XGBRankerMixIn):
                 :py:meth:`set_params` instead.
 
         verbose :
-            If `verbose` and an evaluation set is used, writes the evaluation metric
-            measured on the validation set to stderr.
+            If `verbose` is True and an evaluation set is used, the evaluation metric
+            measured on the validation set is printed to stdout at each boosting stage.
+            If `verbose` is an integer, the evaluation metric is printed at each `verbose`
+            boosting stage. The last boosting stage / the boosting stage found by using
+            `early_stopping_rounds` is also printed.
         xgb_model :
             file name of stored XGBoost model or 'Booster' instance XGBoost model to be
             loaded before training (allows training continuation).

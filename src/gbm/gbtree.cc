@@ -218,7 +218,7 @@ void CopyGradient(HostDeviceVector<GradientPair> const* in_gpair, int32_t n_thre
 }
 
 void GBTree::UpdateTreeLeaf(DMatrix const* p_fmat, HostDeviceVector<float> const& predictions,
-                            ObjFunction const* obj, size_t gidx,
+                            ObjFunction const* obj,
                             std::vector<std::unique_ptr<RegTree>>* p_trees) {
   CHECK(!updaters_.empty());
   if (!updaters_.back()->HasNodePosition()) {
@@ -257,7 +257,7 @@ void GBTree::DoBoost(DMatrix* p_fmat, HostDeviceVector<GradientPair>* in_gpair,
   if (ngroup == 1) {
     std::vector<std::unique_ptr<RegTree>> ret;
     BoostNewTrees(in_gpair, p_fmat, 0, &ret);
-    UpdateTreeLeaf(p_fmat, predt->predictions, obj, 0, &ret);
+    UpdateTreeLeaf(p_fmat, predt->predictions, obj, &ret);
     const size_t num_new_trees = ret.size();
     new_trees.push_back(std::move(ret));
     auto v_predt = out.Slice(linalg::All(), 0);
@@ -274,7 +274,7 @@ void GBTree::DoBoost(DMatrix* p_fmat, HostDeviceVector<GradientPair>* in_gpair,
       CopyGradient(in_gpair, ctx_->Threads(), ngroup, gid, &tmp);
       std::vector<std::unique_ptr<RegTree>> ret;
       BoostNewTrees(&tmp, p_fmat, gid, &ret);
-      UpdateTreeLeaf(p_fmat, predt->predictions, obj, gid, &ret);
+      UpdateTreeLeaf(p_fmat, predt->predictions, obj, &ret);
       const size_t num_new_trees = ret.size();
       new_trees.push_back(std::move(ret));
       auto v_predt = out.Slice(linalg::All(), gid);
@@ -289,7 +289,7 @@ void GBTree::DoBoost(DMatrix* p_fmat, HostDeviceVector<GradientPair>* in_gpair,
   }
 
   monitor_.Stop("BoostNewTrees");
-  this->CommitModel(std::move(new_trees), p_fmat, predt);
+  this->CommitModel(std::move(new_trees));
 }
 
 void GBTree::InitUpdater(Args const& cfg) {
@@ -378,9 +378,7 @@ void GBTree::BoostNewTrees(HostDeviceVector<GradientPair>* gpair, DMatrix* p_fma
   }
 }
 
-void GBTree::CommitModel(std::vector<std::vector<std::unique_ptr<RegTree>>>&& new_trees,
-                         DMatrix* m,
-                         PredictionCacheEntry* predts) {
+void GBTree::CommitModel(std::vector<std::vector<std::unique_ptr<RegTree>>>&& new_trees) {
   monitor_.Start("CommitModel");
   for (uint32_t gid = 0; gid < model_.learner_model_param->num_output_group; ++gid) {
     model_.CommitModel(std::move(new_trees[gid]), gid);
@@ -490,15 +488,14 @@ void GBTree::Slice(int32_t layer_begin, int32_t layer_end, int32_t step,
            "want to update a portion of trees.";
   }
 
-  *out_of_bound = detail::SliceTrees(
-      layer_begin, layer_end, step, this->model_, tparam_, layer_trees,
-      [&](auto const &in_it, auto const &out_it) {
-        auto new_tree =
-            std::make_unique<RegTree>(*this->model_.trees.at(in_it));
-        bst_group_t group = this->model_.tree_info[in_it];
-        out_trees.at(out_it) = std::move(new_tree);
-        out_trees_info.at(out_it) = group;
-      });
+  *out_of_bound = detail::SliceTrees(layer_begin, layer_end, step, this->model_, layer_trees,
+                                     [&](auto const& in_it, auto const& out_it) {
+                                       auto new_tree =
+                                           std::make_unique<RegTree>(*this->model_.trees.at(in_it));
+                                       bst_group_t group = this->model_.tree_info[in_it];
+                                       out_trees.at(out_it) = std::move(new_tree);
+                                       out_trees_info.at(out_it) = group;
+                                     });
 }
 
 void GBTree::PredictBatch(DMatrix* p_fmat,
@@ -674,11 +671,10 @@ class Dart : public GBTree {
     auto p_dart = dynamic_cast<Dart*>(out);
     CHECK(p_dart);
     CHECK(p_dart->weight_drop_.empty());
-    detail::SliceTrees(
-        layer_begin, layer_end, step, model_, tparam_, this->LayerTrees(),
-        [&](auto const& in_it, auto const&) {
-          p_dart->weight_drop_.push_back(this->weight_drop_.at(in_it));
-        });
+    detail::SliceTrees(layer_begin, layer_end, step, model_, this->LayerTrees(),
+                       [&](auto const& in_it, auto const&) {
+                         p_dart->weight_drop_.push_back(this->weight_drop_.at(in_it));
+                       });
   }
 
   void SaveModel(Json *p_out) const override {
@@ -795,88 +791,75 @@ class Dart : public GBTree {
     this->PredictBatchImpl(p_fmat, p_out_preds, training, layer_begin, layer_end);
   }
 
-  void InplacePredict(dmlc::any const &x, std::shared_ptr<DMatrix> p_m,
-                      float missing, PredictionCacheEntry *out_preds,
-                      uint32_t layer_begin, unsigned layer_end) const override {
+  void InplacePredict(std::shared_ptr<DMatrix> p_fmat, float missing,
+                      PredictionCacheEntry* p_out_preds, uint32_t layer_begin,
+                      unsigned layer_end) const override {
     uint32_t tree_begin, tree_end;
     std::tie(tree_begin, tree_end) = detail::LayerToTree(model_, layer_begin, layer_end);
-    std::vector<Predictor const *> predictors{
+    auto n_groups = model_.learner_model_param->num_output_group;
+
+    std::vector<Predictor const*> predictors {
       cpu_predictor_.get(),
 #if defined(XGBOOST_USE_CUDA)
       gpu_predictor_.get()
 #endif  // defined(XGBOOST_USE_CUDA)
     };
-    Predictor const * predictor {nullptr};
-
-    MetaInfo info;
+    Predictor const* predictor{nullptr};
     StringView msg{"Unsupported data type for inplace predict."};
-    int32_t device = GenericParameter::kCpuId;
+
     PredictionCacheEntry predts;
-    // Inplace predict is not used for training, so no need to drop tree.
-    for (size_t i = tree_begin; i < tree_end; ++i) {
+    if (ctx_->gpu_id != Context::kCpuId) {
+      predts.predictions.SetDevice(ctx_->gpu_id);
+    }
+    predts.predictions.Resize(p_fmat->Info().num_row_ * n_groups, 0);
+
+    auto predict_impl = [&](size_t i) {
+      predts.predictions.Fill(0);
       if (tparam_.predictor == PredictorType::kAuto) {
         // Try both predictor implementations
         bool success = false;
-        for (auto const &p : predictors) {
-          if (p && p->InplacePredict(x, nullptr, model_, missing, &predts, i,
-                                     i + 1)) {
+        for (auto const& p : predictors) {
+          if (p && p->InplacePredict(p_fmat, model_, missing, &predts, i, i + 1)) {
             success = true;
             predictor = p;
-#if defined(XGBOOST_USE_CUDA)
-            device = predts.predictions.DeviceIdx();
-#endif  // defined(XGBOOST_USE_CUDA)
             break;
           }
         }
         CHECK(success) << msg;
       } else {
-        // No base margin from meta info for each tree
         predictor = this->GetPredictor().get();
-        bool success = predictor->InplacePredict(x, nullptr, model_, missing,
-                                                 &predts, i, i + 1);
-        device = predts.predictions.DeviceIdx();
+        bool success = predictor->InplacePredict(p_fmat, model_, missing, &predts, i, i + 1);
         CHECK(success) << msg << std::endl
                        << "Current Predictor: "
-                       << (tparam_.predictor == PredictorType::kCPUPredictor
-                               ? "cpu_predictor"
-                               : "gpu_predictor");
+                       << (tparam_.predictor == PredictorType::kCPUPredictor ? "cpu_predictor"
+                                                                             : "gpu_predictor");
       }
+    };
 
-      auto w = this->weight_drop_.at(i);
-      size_t n_groups = model_.learner_model_param->num_output_group;
-      auto n_rows = predts.predictions.Size() / n_groups;
-
+    // Inplace predict is not used for training, so no need to drop tree.
+    for (size_t i = tree_begin; i < tree_end; ++i) {
+      predict_impl(i);
       if (i == tree_begin) {
-        // base margin is added here.
-        if (p_m) {
-          p_m->Info().num_row_ = n_rows;
-          predictor->InitOutPredictions(p_m->Info(), &out_preds->predictions,
-                                        model_);
-        } else {
-          info.num_row_ = n_rows;
-          predictor->InitOutPredictions(info, &out_preds->predictions, model_);
-        }
+        predictor->InitOutPredictions(p_fmat->Info(), &p_out_preds->predictions, model_);
       }
-
       // Multiple the tree weight
-      CHECK_EQ(predts.predictions.Size(), out_preds->predictions.Size());
+      auto w = this->weight_drop_.at(i);
       auto group = model_.tree_info.at(i);
+      CHECK_EQ(predts.predictions.Size(), p_out_preds->predictions.Size());
 
-      if (device == GenericParameter::kCpuId) {
-        auto &h_predts = predts.predictions.HostVector();
-        auto &h_out_predts = out_preds->predictions.HostVector();
+      size_t n_rows = p_fmat->Info().num_row_;
+      if (predts.predictions.DeviceIdx() != Context::kCpuId) {
+        p_out_preds->predictions.SetDevice(predts.predictions.DeviceIdx());
+        GPUDartInplacePredictInc(p_out_preds->predictions.DeviceSpan(),
+                                 predts.predictions.DeviceSpan(), w, n_rows,
+                                 model_.learner_model_param->base_score, n_groups, group);
+      } else {
+        auto& h_predts = predts.predictions.HostVector();
+        auto& h_out_predts = p_out_preds->predictions.HostVector();
         common::ParallelFor(n_rows, ctx_->Threads(), [&](auto ridx) {
           const size_t offset = ridx * n_groups + group;
-          // Need to remove the base margin from individual tree.
           h_out_predts[offset] += (h_predts[offset] - model_.learner_model_param->base_score) * w;
         });
-      } else {
-        out_preds->predictions.SetDevice(device);
-        predts.predictions.SetDevice(device);
-        GPUDartInplacePredictInc(out_preds->predictions.DeviceSpan(),
-                                 predts.predictions.DeviceSpan(), w, n_rows,
-                                 model_.learner_model_param->base_score,
-                                 n_groups, group);
       }
     }
   }
@@ -914,9 +897,7 @@ class Dart : public GBTree {
 
  protected:
   // commit new trees all at once
-  void
-  CommitModel(std::vector<std::vector<std::unique_ptr<RegTree>>>&& new_trees,
-              DMatrix*, PredictionCacheEntry*) override {
+  void CommitModel(std::vector<std::vector<std::unique_ptr<RegTree>>>&& new_trees) override {
     int num_new_trees = 0;
     for (uint32_t gid = 0; gid < model_.learner_model_param->num_output_group; ++gid) {
       num_new_trees += new_trees[gid].size();

@@ -16,7 +16,6 @@
 #include "driver.h"
 #include "hist/evaluate_splits.h"
 #include "hist/expand_entry.h"
-#include "hist/param.h"
 #include "param.h"
 #include "xgboost/generic_parameters.h"
 #include "xgboost/json.h"
@@ -84,7 +83,7 @@ class ApproxRowPartitioner {
       const size_t task_id = partition_builder_.GetTaskIdx(node_in_set, r.begin());
       partition_builder_.AllocateForTask(task_id);
       partition_builder_.PartitionRange(
-          node_in_set, nid, r, fidx, &row_set_collection_, [&](size_t row_id) {
+          node_in_set, nid, r, &row_set_collection_, [&](size_t row_id) {
             auto cut_value = SearchCutValue(row_id, fidx, index, cut_ptrs, cut_values);
             if (std::isnan(cut_value)) {
               return candidate.split.DefaultLeft();

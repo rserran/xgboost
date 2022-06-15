@@ -44,6 +44,8 @@ def lib_name() -> str:
         name = 'libxgboost.dylib'
     elif system() == 'Windows':
         name = 'xgboost.dll'
+    elif system() == 'OS400':
+        name = 'libxgboost.so'
     return name
 
 
@@ -96,7 +98,7 @@ class BuildExt(build_ext.build_ext):  # pylint: disable=too-many-ancestors
 
     logger = logging.getLogger('XGBoost build_ext')
 
-    # pylint: disable=too-many-arguments,no-self-use
+    # pylint: disable=too-many-arguments
     def build(
         self,
         src_dir: str,
@@ -335,11 +337,12 @@ if __name__ == '__main__':
               'scipy',
           ],
           ext_modules=[CMakeExtension('libxgboost')],
+          # error: expected "str": "Type[Command]"
           cmdclass={
-              'build_ext': BuildExt,
-              'sdist': Sdist,
-              'install_lib': InstallLib,
-              'install': Install
+              'build_ext': BuildExt,     # type: ignore
+              'sdist': Sdist,            # type: ignore
+              'install_lib': InstallLib,  # type: ignore
+              'install': Install          # type: ignore
           },
           extras_require={
               'pandas': ['pandas'],

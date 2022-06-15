@@ -276,22 +276,22 @@ XGBOOST_DEVICE size_t LastOf(size_t group, Indexable const &indptr) {
 }
 
 /**
- * \brief Run length encode on CPU, input must be sorted.
+ * @brief A CRTP (curiously recurring template pattern) helper function.
+ *
+ * https://www.fluentcpp.com/2017/05/19/crtp-helper/
+ *
+ * Does two things:
+ * 1. Makes "crtp" explicit in the inheritance structure of a CRTP base class.
+ * 2. Avoids having to `static_cast` in a lot of places.
+ *
+ * @tparam T The derived class in a CRTP hierarchy.
  */
-template <typename Iter, typename Idx>
-void RunLengthEncode(Iter begin, Iter end, std::vector<Idx> *p_out) {
-  auto &out = *p_out;
-  out = std::vector<Idx>{0};
-  size_t n = std::distance(begin, end);
-  for (size_t i = 1; i < n; ++i) {
-    if (begin[i] != begin[i - 1]) {
-      out.push_back(i);
-    }
-  }
-  if (out.back() != n) {
-    out.push_back(n);
-  }
-}
+template <typename T>
+struct Crtp {
+  T &Underlying() { return static_cast<T &>(*this); }
+  T const &Underlying() const { return static_cast<T const &>(*this); }
+};
+
 }  // namespace common
 }  // namespace xgboost
 #endif  // XGBOOST_COMMON_COMMON_H_

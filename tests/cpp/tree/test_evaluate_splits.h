@@ -2,11 +2,14 @@
  * Copyright 2022 by XGBoost Contributors
  */
 #include <gtest/gtest.h>
+#include <xgboost/data.h>
 
 #include <algorithm>  // next_permutation
 #include <numeric>    // iota
 
-#include "../../../src/tree/hist/evaluate_splits.h"
+#include "../../../src/common/hist_util.h"  // HistogramCuts,HistCollection
+#include "../../../src/tree/param.h"        // TrainParam
+#include "../../../src/tree/split_evaluator.h"
 #include "../helpers.h"
 
 namespace xgboost {
@@ -22,7 +25,7 @@ class TestPartitionBasedSplit : public ::testing::Test {
   MetaInfo info_;
   float best_score_{-std::numeric_limits<float>::infinity()};
   common::HistogramCuts cuts_;
-  common::HistCollection<double> hist_;
+  common::HistCollection hist_;
   GradientPairPrecise total_gpair_;
 
   void SetUp() override {
@@ -55,7 +58,7 @@ class TestPartitionBasedSplit : public ::testing::Test {
       total_gpair_ += e;
     }
 
-    auto enumerate = [this, n_feat = info_.num_col_](common::GHistRow<double> hist,
+    auto enumerate = [this, n_feat = info_.num_col_](common::GHistRow hist,
                                                      GradientPairPrecise parent_sum) {
       int32_t best_thresh = -1;
       float best_score{-std::numeric_limits<float>::infinity()};

@@ -23,13 +23,13 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.linalg._
-import org.apache.spark.ml.param._
 import org.apache.spark.ml.util._
 import org.apache.spark.sql._
 import org.apache.spark.sql.functions._
-import org.json4s.DefaultFormats
 import scala.collection.{Iterator, mutable}
 
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.ml.util.{DefaultXGBoostParamsReader, DefaultXGBoostParamsWriter, XGBoostWriter}
 import org.apache.spark.sql.types.StructType
 
 class XGBoostClassifier (
@@ -65,8 +65,6 @@ class XGBoostClassifier (
   def setSilent(value: Int): this.type = set(silent, value)
 
   def setMissing(value: Float): this.type = set(missing, value)
-
-  def setTimeoutRequestWorkers(value: Long): this.type = set(timeoutRequestWorkers, value)
 
   def setCheckpointPath(value: String): this.type = set(checkpointPath, value)
 
@@ -171,6 +169,23 @@ class XGBoostClassifier (
   }
 
   override protected def train(dataset: Dataset[_]): XGBoostClassificationModel = {
+    val _numClasses = getNumClasses(dataset)
+    if (isDefined(numClass) && $(numClass) != _numClasses) {
+      throw new Exception("The number of classes in dataset doesn't match " +
+        "\'num_class\' in xgboost params.")
+    }
+
+    if (_numClasses == 2) {
+      if (!isDefined(objective)) {
+        // If user doesn't set objective, force it to binary:logistic
+        setObjective("binary:logistic")
+      }
+    } else if (_numClasses > 2) {
+      if (!isDefined(objective)) {
+        // If user doesn't set objective, force it to multi:softprob
+        setObjective("multi:softprob")
+      }
+    }
 
     if (!isDefined(evalMetric) || $(evalMetric).isEmpty) {
       set(evalMetric, setupDefaultEvalMetric())
@@ -178,12 +193,6 @@ class XGBoostClassifier (
 
     if (isDefined(customObj) && $(customObj) != null) {
       set(objectiveType, "classification")
-    }
-
-    val _numClasses = getNumClasses(dataset)
-    if (isDefined(numClass) && $(numClass) != _numClasses) {
-      throw new Exception("The number of classes in dataset doesn't match " +
-        "\'num_class\' in xgboost params.")
     }
 
     // Packing with all params plus params user defined
@@ -263,7 +272,7 @@ class XGBoostClassificationModel private[ml](
    * Note: The performance is not ideal, use it carefully!
    */
   override def predict(features: Vector): Double = {
-    import DataUtils._
+    import ml.dmlc.xgboost4j.scala.spark.util.DataUtils._
     val dm = new DMatrix(processMissingValues(
       Iterator(features.asXGB),
       $(missing),
@@ -453,20 +462,18 @@ object XGBoostClassificationModel extends MLReadable[XGBoostClassificationModel]
   override def load(path: String): XGBoostClassificationModel = super.load(path)
 
   private[XGBoostClassificationModel]
-  class XGBoostClassificationModelWriter(instance: XGBoostClassificationModel) extends MLWriter {
+  class XGBoostClassificationModelWriter(instance: XGBoostClassificationModel)
+    extends XGBoostWriter {
 
     override protected def saveImpl(path: String): Unit = {
       // Save metadata and Params
-      implicit val format = DefaultFormats
-      implicit val sc = super.sparkSession.sparkContext
-
       DefaultXGBoostParamsWriter.saveMetadata(instance, path, sc)
+
       // Save model data
       val dataPath = new Path(path, "data").toString
       val internalPath = new Path(dataPath, "XGBoostClassificationModel")
       val outputStream = internalPath.getFileSystem(sc.hadoopConfiguration).create(internalPath)
-      outputStream.writeInt(instance.numClasses)
-      instance._booster.saveModel(outputStream)
+      instance._booster.saveModel(outputStream, getModelFormat())
       outputStream.close()
     }
   }
@@ -479,14 +486,12 @@ object XGBoostClassificationModel extends MLReadable[XGBoostClassificationModel]
     override def load(path: String): XGBoostClassificationModel = {
       implicit val sc = super.sparkSession.sparkContext
 
-
       val metadata = DefaultXGBoostParamsReader.loadMetadata(path, sc, className)
 
       val dataPath = new Path(path, "data").toString
       val internalPath = new Path(dataPath, "XGBoostClassificationModel")
       val dataInStream = internalPath.getFileSystem(sc.hadoopConfiguration).open(internalPath)
-      val numClasses = dataInStream.readInt()
-
+      val numClasses = DefaultXGBoostParamsReader.getNumClass(metadata, dataInStream)
       val booster = SXGBoost.loadModel(dataInStream)
       val model = new XGBoostClassificationModel(metadata.uid, numClasses, booster)
       DefaultXGBoostParamsReader.getAndSetParams(model, metadata)

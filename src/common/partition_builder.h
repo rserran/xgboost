@@ -52,23 +52,23 @@ class PartitionBuilder {
   // Handle dense columns
   // Analog of std::stable_partition, but in no-inplace manner
   template <bool default_left, bool any_missing, typename ColumnType, typename Predicate>
-  inline std::pair<size_t, size_t> PartitionKernel(const ColumnType& column,
+  inline std::pair<size_t, size_t> PartitionKernel(ColumnType* p_column,
                                                    common::Span<const size_t> row_indices,
                                                    common::Span<size_t> left_part,
                                                    common::Span<size_t> right_part,
                                                    size_t base_rowid, Predicate&& pred) {
+    auto& column = *p_column;
     size_t* p_left_part = left_part.data();
     size_t* p_right_part = right_part.data();
     size_t nleft_elems = 0;
     size_t nright_elems = 0;
-    auto state = column.GetInitialState(row_indices.front() - base_rowid);
 
     auto p_row_indices = row_indices.data();
     auto n_samples = row_indices.size();
 
     for (size_t i = 0; i < n_samples; ++i) {
       auto rid = p_row_indices[i];
-      const int32_t bin_id = column.GetBinIdx(rid - base_rowid, &state);
+      const int32_t bin_id = column[rid - base_rowid];
       if (any_missing && bin_id == ColumnType::kMissingId) {
         if (default_left) {
           p_left_part[nleft_elems++] = rid;
@@ -108,15 +108,13 @@ class PartitionBuilder {
 
   template <typename BinIdxType, bool any_missing, bool any_cat>
   void Partition(const size_t node_in_set, const size_t nid, const common::Range1d range,
-                 const int32_t split_cond, GHistIndexMatrix const& gmat,
+                 const bst_bin_t split_cond, GHistIndexMatrix const& gmat,
                  const ColumnMatrix& column_matrix, const RegTree& tree, const size_t* rid) {
     common::Span<const size_t> rid_span(rid + range.begin(), rid + range.end());
     common::Span<size_t> left = GetLeftBuffer(node_in_set, range.begin(), range.end());
     common::Span<size_t> right = GetRightBuffer(node_in_set, range.begin(), range.end());
     const bst_uint fid = tree[nid].SplitIndex();
     const bool default_left = tree[nid].DefaultLeft();
-    const auto column_ptr = column_matrix.GetColumn<BinIdxType, any_missing>(fid);
-
     bool is_cat = tree.GetSplitTypes()[nid] == FeatureType::kCategorical;
     auto node_cats = tree.NodeCats(nid);
 
@@ -146,25 +144,23 @@ class PartitionBuilder {
     };
 
     std::pair<size_t, size_t> child_nodes_sizes;
-    if (column_ptr->GetType() == xgboost::common::kDenseColumn) {
-      const common::DenseColumn<BinIdxType, any_missing>& column =
-            static_cast<const common::DenseColumn<BinIdxType, any_missing>& >(*(column_ptr.get()));
+    if (column_matrix.GetColumnType(fid) == xgboost::common::kDenseColumn) {
+      auto column = column_matrix.DenseColumn<BinIdxType, any_missing>(fid);
       if (default_left) {
-        child_nodes_sizes = PartitionKernel<true, any_missing>(column, rid_span, left, right,
+        child_nodes_sizes = PartitionKernel<true, any_missing>(&column, rid_span, left, right,
                                                                gmat.base_rowid, pred);
       } else {
-        child_nodes_sizes = PartitionKernel<false, any_missing>(column, rid_span, left, right,
+        child_nodes_sizes = PartitionKernel<false, any_missing>(&column, rid_span, left, right,
                                                                 gmat.base_rowid, pred);
       }
     } else {
       CHECK_EQ(any_missing, true);
-      const common::SparseColumn<BinIdxType>& column
-        = static_cast<const common::SparseColumn<BinIdxType>& >(*(column_ptr.get()));
+      auto column = column_matrix.SparseColumn<BinIdxType>(fid, rid_span.front() - gmat.base_rowid);
       if (default_left) {
-        child_nodes_sizes = PartitionKernel<true, any_missing>(column, rid_span, left, right,
+        child_nodes_sizes = PartitionKernel<true, any_missing>(&column, rid_span, left, right,
                                                                gmat.base_rowid, pred);
       } else {
-        child_nodes_sizes = PartitionKernel<false, any_missing>(column, rid_span, left, right,
+        child_nodes_sizes = PartitionKernel<false, any_missing>(&column, rid_span, left, right,
                                                                 gmat.base_rowid, pred);
       }
     }
@@ -172,8 +168,8 @@ class PartitionBuilder {
     const size_t n_left  = child_nodes_sizes.first;
     const size_t n_right = child_nodes_sizes.second;
 
-    SetNLeftElems(node_in_set, range.begin(), range.end(), n_left);
-    SetNRightElems(node_in_set, range.begin(), range.end(), n_right);
+    SetNLeftElems(node_in_set, range.begin(), n_left);
+    SetNRightElems(node_in_set, range.begin(), n_right);
   }
 
   /**
@@ -192,8 +188,7 @@ class PartitionBuilder {
    */
   template <typename Pred>
   void PartitionRange(const size_t node_in_set, const size_t nid, common::Range1d range,
-                      bst_feature_t fidx, common::RowSetCollection* p_row_set_collection,
-                      Pred pred) {
+                      common::RowSetCollection* p_row_set_collection, Pred pred) {
     auto& row_set_collection = *p_row_set_collection;
     const size_t* p_ridx = row_set_collection[nid].begin;
     common::Span<const size_t> ridx(p_ridx + range.begin(), p_ridx + range.end());
@@ -204,8 +199,8 @@ class PartitionBuilder {
     const size_t n_left = child_nodes_sizes.first;
     const size_t n_right = child_nodes_sizes.second;
 
-    this->SetNLeftElems(node_in_set, range.begin(), range.end(), n_left);
-    this->SetNRightElems(node_in_set, range.begin(), range.end(), n_right);
+    this->SetNLeftElems(node_in_set, range.begin(), n_left);
+    this->SetNRightElems(node_in_set, range.begin(), n_right);
   }
 
   // allocate thread local memory, should be called for each specific task
@@ -227,12 +222,12 @@ class PartitionBuilder {
     return { mem_blocks_.at(task_idx)->Right(), end - begin };
   }
 
-  void SetNLeftElems(int nid, size_t begin, size_t end, size_t n_left) {
+  void SetNLeftElems(int nid, size_t begin, size_t n_left) {
     size_t task_idx = GetTaskIdx(nid, begin);
     mem_blocks_.at(task_idx)->n_left = n_left;
   }
 
-  void SetNRightElems(int nid, size_t begin, size_t end, size_t n_right) {
+  void SetNRightElems(int nid, size_t begin, size_t n_right) {
     size_t task_idx = GetTaskIdx(nid, begin);
     mem_blocks_.at(task_idx)->n_right = n_right;
   }

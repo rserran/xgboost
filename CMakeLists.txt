@@ -131,8 +131,8 @@ if (USE_CUDA)
   message(STATUS "Configured CUDA host compiler: ${CMAKE_CUDA_HOST_COMPILER}")
 
   enable_language(CUDA)
-  if (${CMAKE_CUDA_COMPILER_VERSION} VERSION_LESS 10.1)
-    message(FATAL_ERROR "CUDA version must be at least 10.1!")
+  if (${CMAKE_CUDA_COMPILER_VERSION} VERSION_LESS 11.0)
+    message(FATAL_ERROR "CUDA version must be at least 11.0!")
   endif()
   set(GEN_CODE "")
   format_gencode_flags("${GPU_COMPUTE_VER}" GEN_CODE)
@@ -159,6 +159,11 @@ if (USE_OPENMP)
   endif (APPLE)
   find_package(OpenMP REQUIRED)
 endif (USE_OPENMP)
+#Add for IBM i
+if (${CMAKE_SYSTEM_NAME} MATCHES "OS400")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
+  set(CMAKE_CXX_ARCHIVE_CREATE "<CMAKE_AR> -X64 qc <TARGET> <OBJECTS>")
+endif()
 
 if (USE_NCCL)
   find_package(Nccl REQUIRED)
@@ -200,6 +205,10 @@ endif (JVM_BINDINGS)
 
 # Plugin
 add_subdirectory(${xgboost_SOURCE_DIR}/plugin)
+
+if (PLUGIN_RMM)
+  find_package(rmm REQUIRED)
+endif (PLUGIN_RMM)
 
 #-- library
 if (BUILD_STATIC_LIB)

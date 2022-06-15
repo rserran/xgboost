@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2014 by Contributors
+ Copyright (c) 2014-2022 by Contributors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -71,6 +71,7 @@ private[spark] trait LearningTaskParams extends Params {
   final val trainTestRatio = new DoubleParam(this, "trainTestRatio",
     "fraction of training points to use for testing",
     ParamValidators.inRange(0, 1))
+  setDefault(trainTestRatio, 1.0)
 
   final def getTrainTestRatio: Double = $(trainTestRatio)
 
@@ -105,8 +106,6 @@ private[spark] trait LearningTaskParams extends Params {
 
   final def getMaximizeEvaluationMetrics: Boolean = $(maximizeEvaluationMetrics)
 
-  setDefault(objective -> "reg:squarederror", baseScore -> 0.5, trainTestRatio -> 1.0,
-    numEarlyStoppingRounds -> 0, cacheTrainingSet -> false)
 }
 
 private[spark] object LearningTaskParams {

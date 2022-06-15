@@ -16,16 +16,19 @@
 
 package ml.dmlc.xgboost4j.scala.spark
 
+import java.io.{File, FileInputStream}
+
 import ml.dmlc.xgboost4j.scala.{DMatrix, XGBoost => ScalaXGBoost}
 
 import org.apache.spark.ml.linalg._
 import org.apache.spark.sql._
 import org.scalatest.FunSuite
+import org.apache.commons.io.IOUtils
 
 import org.apache.spark.Partitioner
 import org.apache.spark.ml.feature.VectorAssembler
 
-class XGBoostClassifierSuite extends FunSuite with PerTest {
+class XGBoostClassifierSuite extends FunSuite with PerTest with TmpFolderPerSuite {
 
   protected val treeMethod: String = "auto"
 
@@ -107,6 +110,34 @@ class XGBoostClassifierSuite extends FunSuite with PerTest {
     assert(model.numClasses == 6)
     val transformedDf = model.transform(trainingDF)
     assert(!transformedDf.columns.contains("probability"))
+  }
+
+  test("objective will be set if not specifying it") {
+    val training = buildDataFrame(Classification.train)
+    val paramMap = Map("eta" -> "1", "max_depth" -> "6",
+      "num_round" -> 5, "num_workers" -> numWorkers, "tree_method" -> treeMethod)
+    val xgb = new XGBoostClassifier(paramMap)
+    assert(!xgb.isDefined(xgb.objective))
+    xgb.fit(training)
+    assert(xgb.getObjective == "binary:logistic")
+
+    val trainingDF = buildDataFrame(MultiClassification.train)
+    val paramMap1 = Map("eta" -> "0.1", "max_depth" -> "6", "silent" -> "1",
+      "num_class" -> "6", "num_round" -> 5, "num_workers" -> numWorkers,
+      "tree_method" -> treeMethod)
+    val xgb1 = new XGBoostClassifier(paramMap1)
+    assert(!xgb1.isDefined(xgb1.objective))
+    xgb1.fit(trainingDF)
+    assert(xgb1.getObjective == "multi:softprob")
+
+    // shouldn't change user's objective setting
+    val paramMap2 = Map("eta" -> "0.1", "max_depth" -> "6", "silent" -> "1",
+      "num_class" -> "6", "num_round" -> 5, "num_workers" -> numWorkers,
+      "tree_method" -> treeMethod, "objective" -> "multi:softmax")
+    val xgb2 = new XGBoostClassifier(paramMap2)
+    assert(xgb2.getObjective == "multi:softmax")
+    xgb2.fit(trainingDF)
+    assert(xgb2.getObjective == "multi:softmax")
   }
 
   test("use base margin") {
@@ -279,7 +310,7 @@ class XGBoostClassifierSuite extends FunSuite with PerTest {
     val paramMap = Map("eta" -> "1", "max_depth" -> "6", "silent" -> "1",
       "objective" -> "binary:logistic",
       "num_round" -> 5, "num_workers" -> 2, "missing" -> 0)
-    import DataUtils._
+    import ml.dmlc.xgboost4j.scala.spark.util.DataUtils._
     val sparkSession = SparkSession.builder().getOrCreate()
     import sparkSession.implicits._
     val repartitioned = sc.parallelize(Synthetic.train, 3).map(lp => (lp.label, lp)).partitionBy(
@@ -300,7 +331,7 @@ class XGBoostClassifierSuite extends FunSuite with PerTest {
     val paramMap = Map("eta" -> "1", "max_depth" -> "6", "silent" -> "1",
       "objective" -> "binary:logistic",
       "num_round" -> 5, "num_workers" -> 2, "use_external_memory" -> true, "missing" -> 0)
-    import DataUtils._
+    import ml.dmlc.xgboost4j.scala.spark.util.DataUtils._
     val sparkSession = SparkSession.builder().getOrCreate()
     import sparkSession.implicits._
     val repartitioned = sc.parallelize(Synthetic.train, 3).map(lp => (lp.label, lp)).partitionBy(
@@ -389,6 +420,38 @@ class XGBoostClassifierSuite extends FunSuite with PerTest {
 
     val df1 = model.transform(vectorizedInput)
     df1.show()
+  }
+
+  test("XGBoostClassificationModel should be compatible") {
+    val paramMap = Map("eta" -> "0.1", "max_depth" -> "6", "silent" -> "1",
+      "objective" -> "multi:softprob", "num_class" -> "6", "num_round" -> 5,
+      "num_workers" -> numWorkers, "tree_method" -> treeMethod)
+    val trainingDF = buildDataFrame(MultiClassification.train)
+    val xgb = new XGBoostClassifier(paramMap)
+    val model = xgb.fit(trainingDF)
+
+    val modelPath = new File(tempDir.toFile, "xgbc").getPath
+    model.write.option("format", "json").save(modelPath)
+    val nativeJsonModelPath = new File(tempDir.toFile, "nativeModel.json").getPath
+    model.nativeBooster.saveModel(nativeJsonModelPath)
+    assert(compareTwoFiles(new File(modelPath, "data/XGBoostClassificationModel").getPath,
+      nativeJsonModelPath))
+
+    // test default "deprecated"
+    val modelUbjPath = new File(tempDir.toFile, "xgbcUbj").getPath
+    model.write.save(modelUbjPath)
+    val nativeDeprecatedModelPath = new File(tempDir.toFile, "nativeModel").getPath
+    model.nativeBooster.saveModel(nativeDeprecatedModelPath)
+    assert(compareTwoFiles(new File(modelUbjPath, "data/XGBoostClassificationModel").getPath,
+      nativeDeprecatedModelPath))
+
+    // json file should be indifferent with ubj file
+    val modelJsonPath = new File(tempDir.toFile, "xgbcJson").getPath
+    model.write.option("format", "json").save(modelJsonPath)
+    val nativeUbjModelPath = new File(tempDir.toFile, "nativeModel1.ubj").getPath
+    model.nativeBooster.saveModel(nativeUbjModelPath)
+    assert(!compareTwoFiles(new File(modelJsonPath, "data/XGBoostClassificationModel").getPath,
+      nativeUbjModelPath))
   }
 
 }
