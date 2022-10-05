@@ -88,6 +88,9 @@ void IterativeDMatrix::InitFromCUDA(DataIterHandle iter_handle, float missing,
   } while (iter.Next());
   iter.Reset();
 
+  auto n_features = cols;
+  CHECK_GE(n_features, 1) << "Data must has at least 1 column.";
+
   dh::safe_cuda(cudaSetDevice(get_device()));
   if (!ref) {
     HostDeviceVector<FeatureType> ft;
@@ -173,8 +176,15 @@ BatchSet<EllpackPage> IterativeDMatrix::GetEllpackBatches(BatchParam const& para
   }
   if (!ellpack_ && ghist_) {
     ellpack_.reset(new EllpackPage());
-    this->ctx_.gpu_id = param.gpu_id;
-    this->Info().feature_types.SetDevice(param.gpu_id);
+    // Evaluation QuantileDMatrix initialized from CPU data might not have the correct GPU
+    // ID.
+    if (this->ctx_.IsCPU()) {
+      this->ctx_.gpu_id = param.gpu_id;
+    }
+    if (this->ctx_.IsCPU()) {
+      this->ctx_.gpu_id = dh::CurrentDevice();
+    }
+    this->Info().feature_types.SetDevice(this->ctx_.gpu_id);
     *ellpack_->Impl() =
         EllpackPageImpl(&ctx_, *this->ghist_, this->Info().feature_types.ConstDeviceSpan());
   }

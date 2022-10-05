@@ -38,6 +38,7 @@ from .core import (
     Booster,
     DMatrix,
     Metric,
+    QuantileDMatrix,
     XGBoostError,
     _convert_ntree_limit,
     _deprecate_positional_args,
@@ -234,7 +235,7 @@ __model_doc = f"""
 
     feature_types : FeatureTypes
 
-        .. versionadded:: 2.0.0
+        .. versionadded:: 1.7.0
 
         Used for specifying feature types without constructing a dataframe. See
         :py:class:`DMatrix` for details.
@@ -430,7 +431,8 @@ def _wrap_evaluation_matrices(
     enable_categorical: bool,
     feature_types: Optional[FeatureTypes],
 ) -> Tuple[Any, List[Tuple[Any, str]]]:
-    """Convert array_like evaluation matrices into DMatrix.  Perform validation on the way."""
+    """Convert array_like evaluation matrices into DMatrix.  Perform validation on the
+    way."""
     train_dmatrix = create_dmatrix(
         data=X,
         label=y,
@@ -442,6 +444,7 @@ def _wrap_evaluation_matrices(
         missing=missing,
         enable_categorical=enable_categorical,
         feature_types=feature_types,
+        ref=None,
     )
 
     n_validation = 0 if eval_set is None else len(eval_set)
@@ -491,6 +494,7 @@ def _wrap_evaluation_matrices(
                     missing=missing,
                     enable_categorical=enable_categorical,
                     feature_types=feature_types,
+                    ref=train_dmatrix,
                 )
                 evals.append(m)
         nevals = len(evals)
@@ -904,6 +908,17 @@ class XGBModel(XGBModelBase):
 
         return model, metric, params, early_stopping_rounds, callbacks
 
+    def _create_dmatrix(self, ref: Optional[DMatrix], **kwargs: Any) -> DMatrix:
+        # Use `QuantileDMatrix` to save memory.
+        if self.tree_method in ("hist", "gpu_hist"):
+            try:
+                return QuantileDMatrix(
+                    **kwargs, ref=ref, nthread=self.n_jobs, max_bin=self.max_bin
+                )
+            except TypeError:  # `QuantileDMatrix` supports lesser types than DMatrix
+                pass
+        return DMatrix(**kwargs, nthread=self.n_jobs)
+
     def _set_evaluation_result(self, evals_result: TrainingCallback.EvalsLog) -> None:
         if evals_result:
             self.evals_result_ = cast(Dict[str, Dict[str, List[float]]], evals_result)
@@ -996,7 +1011,7 @@ class XGBModel(XGBModelBase):
                 base_margin_eval_set=base_margin_eval_set,
                 eval_group=None,
                 eval_qid=None,
-                create_dmatrix=lambda **kwargs: DMatrix(nthread=self.n_jobs, **kwargs),
+                create_dmatrix=self._create_dmatrix,
                 enable_categorical=self.enable_categorical,
                 feature_types=self.feature_types,
             )
@@ -1387,9 +1402,9 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
         # must match the parameters for `get_params`
         self.use_label_encoder = use_label_encoder
         if use_label_encoder is True:
-            raise ValueError("Label encoder was removed in 1.6.")
+            raise ValueError("Label encoder was removed in 1.6.0.")
         if use_label_encoder is not None:
-            warnings.warn("`use_label_encoder` is deprecated in 2.0.0.")
+            warnings.warn("`use_label_encoder` is deprecated in 1.7.0.")
         super().__init__(objective=objective, **kwargs)
 
     @_deprecate_positional_args
@@ -1479,7 +1494,7 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
                 base_margin_eval_set=base_margin_eval_set,
                 eval_group=None,
                 eval_qid=None,
-                create_dmatrix=lambda **kwargs: DMatrix(nthread=self.n_jobs, **kwargs),
+                create_dmatrix=self._create_dmatrix,
                 enable_categorical=self.enable_categorical,
                 feature_types=self.feature_types,
             )
@@ -1930,7 +1945,7 @@ class XGBRanker(XGBModel, XGBRankerMixIn):
                 base_margin_eval_set=base_margin_eval_set,
                 eval_group=eval_group,
                 eval_qid=eval_qid,
-                create_dmatrix=lambda **kwargs: DMatrix(nthread=self.n_jobs, **kwargs),
+                create_dmatrix=self._create_dmatrix,
                 enable_categorical=self.enable_categorical,
                 feature_types=self.feature_types,
             )
