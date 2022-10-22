@@ -9,6 +9,7 @@ import pytest
 import testing as tm
 
 import xgboost as xgb
+from xgboost import testing
 
 if tm.no_spark()["condition"]:
     pytest.skip(msg=tm.no_spark()["reason"], allow_module_level=True)
@@ -37,7 +38,7 @@ from .utils import SparkTestCase
 
 logging.getLogger("py4j").setLevel(logging.INFO)
 
-pytestmark = pytest.mark.timeout(60)
+pytestmark = testing.timeout(60)
 
 
 class XgboostLocalTest(SparkTestCase):
@@ -1125,3 +1126,7 @@ class XgboostLocalTest(SparkTestCase):
         classifier = SparkXGBClassifier(early_stopping_rounds=1)
         with pytest.raises(ValueError, match="early_stopping_rounds"):
             classifier.fit(self.cls_df_train)
+
+    def test_unsupported_params(self):
+        with pytest.raises(ValueError, match="evals_result"):
+            SparkXGBClassifier(evals_result={})

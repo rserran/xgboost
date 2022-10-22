@@ -1,20 +1,21 @@
-from typing import Callable, Optional
 import collections
 import importlib.util
-import numpy as np
-import xgboost as xgb
-import testing as tm
-import tempfile
-import os
-import shutil
-import pytest
 import json
+import os
+import random
+import tempfile
+from typing import Callable, Optional
+
+import numpy as np
+import pytest
+import testing as tm
+from sklearn.utils.estimator_checks import parametrize_with_checks
+
+import xgboost as xgb
+from xgboost import testing
 
 rng = np.random.RandomState(1994)
-
-pytestmark = [pytest.mark.skipif(**tm.no_sklearn()), pytest.mark.timeout(30)]
-
-from sklearn.utils.estimator_checks import parametrize_with_checks
+pytestmark = [pytest.mark.skipif(**tm.no_sklearn()), testing.timeout(30)]
 
 
 def test_binary_classification():
@@ -998,34 +999,40 @@ def test_deprecate_position_arg():
 def test_pandas_input():
     import pandas as pd
     from sklearn.calibration import CalibratedClassifierCV
+
     rng = np.random.RandomState(1994)
 
     kRows = 100
     kCols = 6
 
-    X = rng.randint(low=0, high=2, size=kRows*kCols)
+    X = rng.randint(low=0, high=2, size=kRows * kCols)
     X = X.reshape(kRows, kCols)
 
     df = pd.DataFrame(X)
     feature_names = []
     for i in range(1, kCols):
-        feature_names += ['k'+str(i)]
+        feature_names += ["k" + str(i)]
 
-    df.columns = ['status'] + feature_names
+    df.columns = ["status"] + feature_names
 
-    target = df['status']
-    train = df.drop(columns=['status'])
+    target = df["status"]
+    train = df.drop(columns=["status"])
     model = xgb.XGBClassifier()
     model.fit(train, target)
     np.testing.assert_equal(model.feature_names_in_, np.array(feature_names))
 
-    clf_isotonic = CalibratedClassifierCV(model,
-                                          cv='prefit', method='isotonic')
+    columns = list(train.columns)
+    random.shuffle(columns, lambda: 0.1)
+    df_incorrect = df[columns]
+    with pytest.raises(ValueError):
+        model.predict(df_incorrect)
+
+    clf_isotonic = CalibratedClassifierCV(model, cv="prefit", method="isotonic")
     clf_isotonic.fit(train, target)
-    assert isinstance(clf_isotonic.calibrated_classifiers_[0].base_estimator,
-                      xgb.XGBClassifier)
-    np.testing.assert_allclose(np.array(clf_isotonic.classes_),
-                               np.array([0, 1]))
+    assert isinstance(
+        clf_isotonic.calibrated_classifiers_[0].base_estimator, xgb.XGBClassifier
+    )
+    np.testing.assert_allclose(np.array(clf_isotonic.classes_), np.array([0, 1]))
 
 
 def run_feature_weights(X, y, fw, tree_method, model=xgb.XGBRegressor):
