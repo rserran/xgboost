@@ -203,7 +203,6 @@ Will print out something similar to (not actual output as it's too long for demo
         "learner_train_param": {
           "booster": "gbtree",
           "disable_default_eval_metric": "0",
-          "dsplit": "auto",
           "objective": "reg:squarederror"
         },
         "metrics": [],
@@ -245,11 +244,11 @@ JSON Schema
 
 Another important feature of JSON format is a documented `schema
 <https://json-schema.org/>`__, based on which one can easily reuse the output model from
-XGBoost.  Here is the initial draft of JSON schema for the output model (not
-serialization, which will not be stable as noted above).  It's subject to change due to
-the beta status.  For an example of parsing XGBoost tree model, see ``/demo/json-model``.
-Please notice the "weight_drop" field used in "dart" booster.  XGBoost does not scale tree
-leaf directly, instead it saves the weights as a separated array.
+XGBoost.  Here is the JSON schema for the output model (not serialization, which will not
+be stable as noted above).  For an example of parsing XGBoost tree model, see
+``/demo/json-model``.  Please notice the "weight_drop" field used in "dart" booster.
+XGBoost does not scale tree leaf directly, instead it saves the weights as a separated
+array.
 
 .. include:: ../model.schema
    :code: json

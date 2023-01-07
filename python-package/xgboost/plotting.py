@@ -2,9 +2,9 @@
 # pylint: disable=too-many-branches
 # coding: utf-8
 """Plotting Library."""
-from io import BytesIO
 import json
-from typing import Optional, Any
+from io import BytesIO
+from typing import Any, Optional
 
 import numpy as np
 
@@ -30,6 +30,7 @@ def plot_importance(
     max_num_features: Optional[int] = None,
     grid: bool = True,
     show_values: bool = True,
+    values_format: str = "{v}",
     **kwargs: Any
 ) -> Axes:
     """Plot importance based on fitted trees.
@@ -66,6 +67,10 @@ def plot_importance(
         The name of feature map file.
     show_values : bool, default True
         Show values on plot. To disable, pass False.
+    values_format : str, default "{v}"
+        Format string for values. "v" will be replaced by the value of the feature importance.
+        e.g. Pass "{v:.2f}" in order to limit the number of digits after the decimal point
+        to two, for each value printed on the graph.
     kwargs :
         Other keywords passed to ax.barh()
 
@@ -109,7 +114,7 @@ def plot_importance(
 
     if show_values is True:
         for x, y in zip(values, ylocs):
-            ax.text(x + 1, y, x, va='center')
+            ax.text(x + 1, y, values_format.format(v=x), va='center')
 
     ax.set_yticks(ylocs)
     ax.set_yticklabels(labels)
@@ -269,8 +274,8 @@ def plot_tree(
 
     """
     try:
-        from matplotlib import pyplot as plt
         from matplotlib import image
+        from matplotlib import pyplot as plt
     except ImportError as e:
         raise ImportError('You must install matplotlib to plot tree') from e
 

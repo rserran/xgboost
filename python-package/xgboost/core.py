@@ -10,6 +10,7 @@ import sys
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from enum import IntEnum, unique
 from functools import wraps
 from inspect import Parameter, signature
 from typing import (
@@ -278,22 +279,6 @@ def _check_call(ret: int) -> None:
         raise XGBoostError(py_str(_LIB.XGBGetLastError()))
 
 
-def _has_categorical(booster: "Booster", data: DataType) -> bool:
-    """Check whether the booster and input data for prediction contain categorical data.
-
-    """
-    from .data import _is_pandas_df, _is_cudf_df
-    if _is_pandas_df(data) or _is_cudf_df(data):
-        ft = booster.feature_types
-        if ft is None:
-            enable_categorical = False
-        else:
-            enable_categorical = any(f == "c" for f in ft)
-    else:
-        enable_categorical = False
-    return enable_categorical
-
-
 def build_info() -> dict:
     """Build information of XGBoost.  The returned value format is not stable. Also, please
     note that build time dependency is not the same as runtime dependency. For instance,
@@ -355,8 +340,7 @@ def ctypes2cupy(cptr: CNumericPtr, length: int, dtype: Type[np.number]) -> CupyT
     """Convert a ctypes pointer array to a cupy array."""
     # pylint: disable=import-error
     import cupy
-    from cupy.cuda.memory import MemoryPointer
-    from cupy.cuda.memory import UnownedMemory
+    from cupy.cuda.memory import MemoryPointer, UnownedMemory
 
     CUPY_TO_CTYPES_MAPPING: Dict[Type[np.number], Type[CNumeric]] = {
         cupy.float32: ctypes.c_float,
@@ -512,8 +496,7 @@ class DataIter(ABC):  # pylint: disable=too-many-instance-attributes
             feature_types: Optional[FeatureTypes] = None,
             **kwargs: Any,
         ) -> None:
-            from .data import dispatch_proxy_set_data
-            from .data import _proxy_transform
+            from .data import _proxy_transform, dispatch_proxy_set_data
 
             new, cat_codes, feature_names, feature_types = _proxy_transform(
                 data,
@@ -626,6 +609,13 @@ def require_keyword_args(
 _deprecate_positional_args = require_keyword_args(False)
 
 
+@unique
+class DataSplitMode(IntEnum):
+    """Supported data split mode for DMatrix."""
+    ROW = 0
+    COL = 1
+
+
 class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
     """Data Matrix used in XGBoost.
 
@@ -653,6 +643,7 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
         label_upper_bound: Optional[ArrayLike] = None,
         feature_weights: Optional[ArrayLike] = None,
         enable_categorical: bool = False,
+        data_split_mode: DataSplitMode = DataSplitMode.ROW,
     ) -> None:
         """Parameters
         ----------
@@ -732,7 +723,7 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
             self.handle: Optional[ctypes.c_void_p] = None
             return
 
-        from .data import dispatch_data_backend, _is_iter
+        from .data import _is_iter, dispatch_data_backend
 
         if _is_iter(data):
             self._init_from_iter(data, enable_categorical)
@@ -746,6 +737,7 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
             feature_names=feature_names,
             feature_types=feature_types,
             enable_categorical=enable_categorical,
+            data_split_mode=data_split_mode,
         )
         assert handle is not None
         self.handle = handle
@@ -1070,7 +1062,11 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
         return ret.value
 
     def num_nonmissing(self) -> int:
-        """Get the number of non-missing values in the DMatrix."""
+        """Get the number of non-missing values in the DMatrix.
+
+            .. versionadded:: 1.7.0
+
+        """
         ret = c_bst_ulong()
         _check_call(_LIB.XGDMatrixNumNonMissing(self.handle, ctypes.byref(ret)))
         return ret.value
@@ -1158,7 +1154,7 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
                 raise ValueError(msg)
             # prohibit to use symbols may affect to parse. e.g. []<
             if not all(isinstance(f, str) and
-                       not any(x in f for x in set(('[', ']', '<')))
+                       not any(x in f for x in ['[', ']', '<'])
                        for f in feature_names):
                 raise ValueError('feature_names must be string, and may not contain [, ] or <')
             feature_names_bytes = [bytes(f, encoding='utf-8') for f in feature_names]
@@ -1346,6 +1342,7 @@ class QuantileDMatrix(DMatrix):
         label_upper_bound: Optional[ArrayLike] = None,
         feature_weights: Optional[ArrayLike] = None,
         enable_categorical: bool = False,
+        data_split_mode: DataSplitMode = DataSplitMode.ROW,
     ) -> None:
         self.max_bin: int = max_bin if max_bin is not None else 256
         self.missing = missing if missing is not None else np.nan
@@ -1406,10 +1403,10 @@ class QuantileDMatrix(DMatrix):
         **meta: Any,
     ) -> None:
         from .data import (
-            _is_dlpack,
-            _transform_dlpack,
-            _is_iter,
             SingleBatchInternalIter,
+            _is_dlpack,
+            _is_iter,
+            _transform_dlpack,
         )
 
         if _is_dlpack(data):
@@ -1506,7 +1503,6 @@ def _configure_metrics(params: BoosterParam) -> BoosterParam:
         and "eval_metric" in params
         and isinstance(params["eval_metric"], list)
     ):
-        params = dict((k, v) for k, v in params.items())
         eval_metrics = params["eval_metric"]
         params.pop("eval_metric", None)
         params_list = list(params.items())
@@ -2235,17 +2231,15 @@ class Booster:
         preds = ctypes.POINTER(ctypes.c_float)()
 
         # once caching is supported, we can pass id(data) as cache id.
-        args = {
-            "type": 0,
-            "training": False,
-            "iteration_begin": iteration_range[0],
-            "iteration_end": iteration_range[1],
-            "missing": missing,
-            "strict_shape": strict_shape,
-            "cache_id": 0,
-        }
-        if predict_type == "margin":
-            args["type"] = 1
+        args = make_jcargs(
+            type=1 if predict_type == "margin" else 0,
+            training=False,
+            iteration_begin=iteration_range[0],
+            iteration_end=iteration_range[1],
+            missing=missing,
+            strict_shape=strict_shape,
+            cache_id=0,
+        )
         shape = ctypes.POINTER(c_bst_ulong)()
         dims = c_bst_ulong()
 
@@ -2258,6 +2252,29 @@ class Booster:
             proxy = None
             p_handle = ctypes.c_void_p()
         assert proxy is None or isinstance(proxy, _ProxyDMatrix)
+
+        from .data import (
+            _array_interface,
+            _is_cudf_df,
+            _is_cupy_array,
+            _is_list,
+            _is_pandas_df,
+            _is_pandas_series,
+            _is_tuple,
+            _transform_pandas_df,
+        )
+
+        enable_categorical = True
+        if _is_pandas_series(data):
+            import pandas as pd
+            data = pd.DataFrame(data)
+        if _is_pandas_df(data):
+            data, fns, _ = _transform_pandas_df(data, enable_categorical)
+            if validate_features:
+                self._validate_features(fns)
+        if _is_list(data) or _is_tuple(data):
+            data = np.array(data)
+
         if validate_features:
             if not hasattr(data, "shape"):
                 raise TypeError(
@@ -2269,20 +2286,6 @@ class Booster:
                     f"got {data.shape[1]}"
                 )
 
-        from .data import (
-            _array_interface,
-            _is_cudf_df,
-            _is_cupy_array,
-            _is_pandas_df,
-            _transform_pandas_df,
-        )
-
-        enable_categorical = _has_categorical(self, data)
-        if _is_pandas_df(data):
-            data, fns, _ = _transform_pandas_df(data, enable_categorical)
-            if validate_features:
-                self._validate_features(fns)
-
         if isinstance(data, np.ndarray):
             from .data import _ensure_np_dtype
 
@@ -2291,7 +2294,7 @@ class Booster:
                 _LIB.XGBoosterPredictFromDense(
                     self.handle,
                     _array_interface(data),
-                    from_pystr_to_cstr(json.dumps(args)),
+                    args,
                     p_handle,
                     ctypes.byref(shape),
                     ctypes.byref(dims),
@@ -2307,8 +2310,8 @@ class Booster:
                     _array_interface(csr.indptr),
                     _array_interface(csr.indices),
                     _array_interface(csr.data),
-                    ctypes.c_size_t(csr.shape[1]),
-                    from_pystr_to_cstr(json.dumps(args)),
+                    c_bst_ulong(csr.shape[1]),
+                    args,
                     p_handle,
                     ctypes.byref(shape),
                     ctypes.byref(dims),
@@ -2325,7 +2328,7 @@ class Booster:
                 _LIB.XGBoosterPredictFromCudaArray(
                     self.handle,
                     interface_str,
-                    from_pystr_to_cstr(json.dumps(args)),
+                    args,
                     p_handle,
                     ctypes.byref(shape),
                     ctypes.byref(dims),
@@ -2346,7 +2349,7 @@ class Booster:
                 _LIB.XGBoosterPredictFromCudaColumnar(
                     self.handle,
                     interfaces_str,
-                    from_pystr_to_cstr(json.dumps(args)),
+                    args,
                     p_handle,
                     ctypes.byref(shape),
                     ctypes.byref(dims),

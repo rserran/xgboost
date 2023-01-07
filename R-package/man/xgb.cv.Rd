@@ -148,9 +148,11 @@ The cross validation function of xgboost
 \details{
 The original sample is randomly partitioned into \code{nfold} equal size subsamples.
 
-Of the \code{nfold} subsamples, a single subsample is retained as the validation data for testing the model, and the remaining \code{nfold - 1} subsamples are used as training data.
+Of the \code{nfold} subsamples, a single subsample is retained as the validation data for testing the model,
+and the remaining \code{nfold - 1} subsamples are used as training data.
 
-The cross-validation process is then repeated \code{nrounds} times, with each of the \code{nfold} subsamples used exactly once as the validation data.
+The cross-validation process is then repeated \code{nrounds} times, with each of the
+\code{nfold} subsamples used exactly once as the validation data.
 
 All observations are used for both training and validation.
 
@@ -158,9 +160,9 @@ Adapted from \url{https://en.wikipedia.org/wiki/Cross-validation_\%28statistics\
 }
 \examples{
 data(agaricus.train, package='xgboost')
-dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label))
+dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label, nthread = 2))
 cv <- xgb.cv(data = dtrain, nrounds = 3, nthread = 2, nfold = 5, metrics = list("rmse","auc"),
-                  max_depth = 3, eta = 1, objective = "binary:logistic")
+             max_depth = 3, eta = 1, objective = "binary:logistic")
 print(cv)
 print(cv, verbose=TRUE)
 

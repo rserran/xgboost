@@ -4,41 +4,41 @@
 #include <thrust/copy.h>
 #include <thrust/reduce.h>
 #include <xgboost/tree_updater.h>
+
 #include <algorithm>
 #include <cmath>
-#include <memory>
 #include <limits>
+#include <memory>
 #include <utility>
 #include <vector>
 
-#include "xgboost/base.h"
-#include "xgboost/data.h"
-#include "xgboost/generic_parameters.h"
-#include "xgboost/host_device_vector.h"
-#include "xgboost/parameter.h"
-#include "xgboost/span.h"
-#include "xgboost/json.h"
-
 #include "../collective/device_communicator.cuh"
-#include "../common/io.h"
+#include "../common/bitfield.h"
+#include "../common/categorical.h"
 #include "../common/device_helpers.cuh"
 #include "../common/hist_util.h"
-#include "../common/bitfield.h"
+#include "../common/io.h"
 #include "../common/timer.h"
-#include "../common/categorical.h"
 #include "../data/ellpack_page.cuh"
-
-#include "param.h"
-#include "driver.h"
-#include "updater_gpu_common.cuh"
-#include "split_evaluator.h"
+#include "../common/cuda_context.cuh"  // CUDAContext
 #include "constraints.cuh"
-#include "gpu_hist/feature_groups.cuh"
-#include "gpu_hist/gradient_based_sampler.cuh"
-#include "gpu_hist/row_partitioner.cuh"
-#include "gpu_hist/histogram.cuh"
+#include "driver.h"
 #include "gpu_hist/evaluate_splits.cuh"
 #include "gpu_hist/expand_entry.cuh"
+#include "gpu_hist/feature_groups.cuh"
+#include "gpu_hist/gradient_based_sampler.cuh"
+#include "gpu_hist/histogram.cuh"
+#include "gpu_hist/row_partitioner.cuh"
+#include "param.h"
+#include "split_evaluator.h"
+#include "updater_gpu_common.cuh"
+#include "xgboost/base.h"
+#include "xgboost/context.h"
+#include "xgboost/data.h"
+#include "xgboost/host_device_vector.h"
+#include "xgboost/json.h"
+#include "xgboost/parameter.h"
+#include "xgboost/span.h"
 #include "xgboost/task.h"
 #include "xgboost/tree_model.h"
 
@@ -345,9 +345,9 @@ struct GPUHistMakerDevice {
   void BuildHist(int nidx) {
     auto d_node_hist = hist.GetNodeHistogram(nidx);
     auto d_ridx = row_partitioner->GetRows(nidx);
-    BuildGradientHistogram(page->GetDeviceAccessor(ctx_->gpu_id),
-                           feature_groups->DeviceAccessor(ctx_->gpu_id), gpair,
-                           d_ridx, d_node_hist, *quantiser);
+    BuildGradientHistogram(ctx_->CUDACtx(), page->GetDeviceAccessor(ctx_->gpu_id),
+                           feature_groups->DeviceAccessor(ctx_->gpu_id), gpair, d_ridx, d_node_hist,
+                           *quantiser);
   }
 
   // Attempt to do subtraction trick
@@ -403,8 +403,7 @@ struct GPUHistMakerDevice {
             go_left = data.split_node.DefaultLeft();
           } else {
             if (data.split_type == FeatureType::kCategorical) {
-              go_left = common::Decision<false>(data.node_cats.Bits(), cut_value,
-                                                data.split_node.DefaultLeft());
+              go_left = common::Decision(data.node_cats.Bits(), cut_value);
             } else {
               go_left = cut_value <= data.split_node.SplitCond();
             }
@@ -481,7 +480,7 @@ struct GPUHistMakerDevice {
           if (common::IsCat(d_feature_types, position)) {
             auto node_cats = categories.subspan(categories_segments[position].beg,
                                                 categories_segments[position].size);
-            go_left = common::Decision<false>(node_cats, element, node.DefaultLeft());
+            go_left = common::Decision(node_cats, element);
           } else {
             go_left = element <= node.SplitCond();
           }
@@ -648,7 +647,7 @@ struct GPUHistMakerDevice {
           return quantiser.ToFixedPoint(gpair);
         });
     GradientPairInt64 root_sum_quantised =
-        dh::Reduce(thrust::cuda::par(alloc), gpair_it, gpair_it + gpair.size(),
+        dh::Reduce(ctx_->CUDACtx()->CTP(), gpair_it, gpair_it + gpair.size(),
                    GradientPairInt64{}, thrust::plus<GradientPairInt64>{});
     using ReduceT = typename decltype(root_sum_quantised)::ValueT;
     collective::Allreduce<collective::Operation::kSum>(
@@ -730,7 +729,7 @@ class GPUHistMaker : public TreeUpdater {
   using GradientSumT = GradientPairPrecise;
 
  public:
-  explicit GPUHistMaker(GenericParameter const* ctx, ObjInfo task)
+  explicit GPUHistMaker(Context const* ctx, ObjInfo task)
       : TreeUpdater(ctx), task_{task} {};
   void Configure(const Args& args) override {
     // Used in test to count how many configurations are performed
@@ -879,9 +878,7 @@ class GPUHistMaker : public TreeUpdater {
 #if !defined(GTEST_TEST)
 XGBOOST_REGISTER_TREE_UPDATER(GPUHistMaker, "grow_gpu_hist")
     .describe("Grow tree with GPU.")
-    .set_body([](GenericParameter const* tparam, ObjInfo task) {
-      return new GPUHistMaker(tparam, task);
-    });
+    .set_body([](Context const* ctx, ObjInfo task) { return new GPUHistMaker(ctx, task); });
 #endif  // !defined(GTEST_TEST)
 
 }  // namespace tree

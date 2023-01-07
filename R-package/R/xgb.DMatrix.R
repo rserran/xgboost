@@ -18,7 +18,7 @@
 #'
 #' @examples
 #' data(agaricus.train, package='xgboost')
-#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label))
+#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label, nthread = 2))
 #' xgb.DMatrix.save(dtrain, 'xgb.DMatrix.data')
 #' dtrain <- xgb.DMatrix('xgb.DMatrix.data')
 #' if (file.exists('xgb.DMatrix.data')) file.remove('xgb.DMatrix.data')
@@ -76,7 +76,7 @@ xgb.get.DMatrix <- function(data, label = NULL, missing = NA, weight = NULL, nth
       stop("label must be provided when data is a matrix")
     }
     dtrain <- xgb.DMatrix(data, label = label, missing = missing, nthread = nthread)
-    if (!is.null(weight)){
+    if (!is.null(weight)) {
       setinfo(dtrain, "weight", weight)
     }
   } else {
@@ -110,7 +110,7 @@ xgb.get.DMatrix <- function(data, label = NULL, missing = NA, weight = NULL, nth
 #' @examples
 #' data(agaricus.train, package='xgboost')
 #' train <- agaricus.train
-#' dtrain <- xgb.DMatrix(train$data, label=train$label)
+#' dtrain <- xgb.DMatrix(train$data, label=train$label, nthread = 2)
 #'
 #' stopifnot(nrow(dtrain) == nrow(train$data))
 #' stopifnot(ncol(dtrain) == ncol(train$data))
@@ -138,7 +138,7 @@ dim.xgb.DMatrix <- function(x) {
 #' @examples
 #' data(agaricus.train, package='xgboost')
 #' train <- agaricus.train
-#' dtrain <- xgb.DMatrix(train$data, label=train$label)
+#' dtrain <- xgb.DMatrix(train$data, label=train$label, nthread = 2)
 #' dimnames(dtrain)
 #' colnames(dtrain)
 #' colnames(dtrain) <- make.names(1:ncol(train$data))
@@ -193,7 +193,7 @@ dimnames.xgb.DMatrix <- function(x) {
 #'
 #' @examples
 #' data(agaricus.train, package='xgboost')
-#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label))
+#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label, nthread = 2))
 #'
 #' labels <- getinfo(dtrain, 'label')
 #' setinfo(dtrain, 'label', 1-labels)
@@ -218,7 +218,7 @@ getinfo.xgb.DMatrix <- function(object, name, ...) {
   }
   if (name == "feature_name" || name == "feature_type") {
     ret <- .Call(XGDMatrixGetStrFeatureInfo_R, object, name)
-  } else if (name != "nrow"){
+  } else if (name != "nrow") {
     ret <- .Call(XGDMatrixGetInfo_R, object, name)
   } else {
     ret <- nrow(object)
@@ -249,7 +249,7 @@ getinfo.xgb.DMatrix <- function(object, name, ...) {
 #'
 #' @examples
 #' data(agaricus.train, package='xgboost')
-#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label))
+#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label, nthread = 2))
 #'
 #' labels <- getinfo(dtrain, 'label')
 #' setinfo(dtrain, 'label', 1-labels)
@@ -328,7 +328,6 @@ setinfo.xgb.DMatrix <- function(object, name, info, ...) {
     return(TRUE)
   }
   stop("setinfo: unknown info name ", name)
-  return(FALSE)
 }
 
 
@@ -345,7 +344,7 @@ setinfo.xgb.DMatrix <- function(object, name, info, ...) {
 #'
 #' @examples
 #' data(agaricus.train, package='xgboost')
-#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label))
+#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label, nthread = 2))
 #'
 #' dsub <- slice(dtrain, 1:42)
 #' labels1 <- getinfo(dsub, 'label')
@@ -401,7 +400,7 @@ slice.xgb.DMatrix <- function(object, idxset, ...) {
 #'
 #' @examples
 #' data(agaricus.train, package='xgboost')
-#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label))
+#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label, nthread = 2))
 #'
 #' dtrain
 #' print(dtrain, verbose=TRUE)
@@ -418,7 +417,7 @@ print.xgb.DMatrix <- function(x, verbose = FALSE, ...) {
   cat(infos)
   cnames <- colnames(x)
   cat('  colnames:')
-  if (verbose & !is.null(cnames)) {
+  if (verbose && !is.null(cnames)) {
     cat("\n'")
     cat(cnames, sep = "','")
     cat("'")

@@ -7,8 +7,7 @@ CXX_STD = CXX14
 
 XGB_RFLAGS = -DXGBOOST_STRICT_R_MODE=1 -DDMLC_LOG_BEFORE_THROW=0\
            -DDMLC_ENABLE_STD_THREAD=$(ENABLE_STD_THREAD) -DDMLC_DISABLE_STDIN=1\
-           -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_CUSTOMIZE_LOGGER=1\
-           -DRABIT_CUSTOMIZE_MSG_
+           -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_CUSTOMIZE_LOGGER=1
 
 # disable the use of thread_local for 32 bit windows:
 ifeq ($(R_OSTYPE)$(WIN),windows)
@@ -23,7 +22,6 @@ PKG_LIBS = $(SHLIB_OPENMP_CXXFLAGS)  -DDMLC_CMAKE_LITTLE_ENDIAN=1  $(SHLIB_PTHRE
 OBJECTS= \
     ./xgboost_R.o \
     ./xgboost_custom.o \
-    ./xgboost_assert.o \
     ./init.o \
     $(PKGROOT)/src/metric/metric.o \
     $(PKGROOT)/src/metric/elementwise_metric.o \
@@ -55,8 +53,10 @@ OBJECTS= \
     $(PKGROOT)/src/data/iterative_dmatrix.o \
     $(PKGROOT)/src/predictor/predictor.o \
     $(PKGROOT)/src/predictor/cpu_predictor.o \
+    $(PKGROOT)/src/predictor/cpu_treeshap.o \
     $(PKGROOT)/src/tree/constraints.o \
     $(PKGROOT)/src/tree/param.o \
+    $(PKGROOT)/src/tree/fit_stump.o \
     $(PKGROOT)/src/tree/tree_model.o \
     $(PKGROOT)/src/tree/tree_updater.o \
     $(PKGROOT)/src/tree/updater_approx.o \
@@ -69,9 +69,12 @@ OBJECTS= \
     $(PKGROOT)/src/linear/updater_coordinate.o \
     $(PKGROOT)/src/linear/updater_shotgun.o \
     $(PKGROOT)/src/learner.o \
+    $(PKGROOT)/src/context.o \
     $(PKGROOT)/src/logging.o \
     $(PKGROOT)/src/global_config.o \
     $(PKGROOT)/src/collective/communicator.o \
+    $(PKGROOT)/src/collective/in_memory_communicator.o \
+    $(PKGROOT)/src/collective/in_memory_handler.o \
     $(PKGROOT)/src/collective/socket.o \
     $(PKGROOT)/src/common/charconv.o \
     $(PKGROOT)/src/common/column_matrix.o \
@@ -84,6 +87,7 @@ OBJECTS= \
     $(PKGROOT)/src/common/pseudo_huber.o \
     $(PKGROOT)/src/common/quantile.o \
     $(PKGROOT)/src/common/random.o \
+    $(PKGROOT)/src/common/stats.o \
     $(PKGROOT)/src/common/survival_util.o \
     $(PKGROOT)/src/common/threading_utils.o \
     $(PKGROOT)/src/common/timer.o \

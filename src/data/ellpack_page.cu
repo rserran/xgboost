@@ -7,6 +7,7 @@
 #include "../common/categorical.h"
 #include "../common/hist_util.cuh"
 #include "../common/random.h"
+#include "../common/transform_iterator.h"  // MakeIndexTransformIter
 #include "./ellpack_page.cuh"
 #include "device_adapter.cuh"
 #include "gradient_index.h"
@@ -25,7 +26,7 @@ EllpackPage::EllpackPage(EllpackPage&& that) { std::swap(impl_, that.impl_); }
 
 size_t EllpackPage::Size() const { return impl_->Size(); }
 
-void EllpackPage::SetBaseRowId(size_t row_id) { impl_->SetBaseRowId(row_id); }
+void EllpackPage::SetBaseRowId(std::size_t row_id) { impl_->SetBaseRowId(row_id); }
 
 // Bin each input data entry, store the bin indices in compressed form.
 __global__ void CompressBinEllpackKernel(
@@ -237,13 +238,25 @@ void CopyDataToEllpack(const AdapterBatchT &batch,
   using DispatchScan =
       cub::DispatchScan<decltype(key_value_index_iter), decltype(out),
                         TupleScanOp<Tuple>, cub::NullType, int64_t>;
+#if THRUST_MAJOR_VERSION >= 2
+  DispatchScan::Dispatch(nullptr, temp_storage_bytes, key_value_index_iter, out,
+                         TupleScanOp<Tuple>(), cub::NullType(), batch.Size(),
+                         nullptr);
+#else
   DispatchScan::Dispatch(nullptr, temp_storage_bytes, key_value_index_iter, out,
                          TupleScanOp<Tuple>(), cub::NullType(), batch.Size(),
                          nullptr, false);
+#endif
   dh::TemporaryArray<char> temp_storage(temp_storage_bytes);
+#if THRUST_MAJOR_VERSION >= 2
+  DispatchScan::Dispatch(temp_storage.data().get(), temp_storage_bytes,
+                         key_value_index_iter, out, TupleScanOp<Tuple>(),
+                         cub::NullType(), batch.Size(), nullptr);
+#else
   DispatchScan::Dispatch(temp_storage.data().get(), temp_storage_bytes,
                          key_value_index_iter, out, TupleScanOp<Tuple>(),
                          cub::NullType(), batch.Size(), nullptr, false);
+#endif
 }
 
 void WriteNullValues(EllpackPageImpl* dst, int device_idx,

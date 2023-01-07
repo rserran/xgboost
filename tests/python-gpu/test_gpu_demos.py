@@ -1,10 +1,13 @@
 import os
 import subprocess
 import sys
+
 import pytest
+
+from xgboost import testing as tm
+
 sys.path.append("tests/python")
-import testing as tm
-import test_demos as td         # noqa
+import test_demos as td  # noqa
 
 
 @pytest.mark.skipif(**tm.no_cupy())
@@ -22,15 +25,5 @@ def test_update_process_demo():
 
 def test_categorical_demo():
     script = os.path.join(td.PYTHON_DEMO_DIR, 'categorical.py')
-    cmd = ['python', script]
-    subprocess.check_call(cmd)
-
-
-@pytest.mark.skipif(**tm.no_dask())
-@pytest.mark.skipif(**tm.no_dask_cuda())
-@pytest.mark.skipif(**tm.no_cupy())
-@pytest.mark.mgpu
-def test_dask_training():
-    script = os.path.join(tm.PROJECT_ROOT, 'demo', 'dask', 'gpu_training.py')
     cmd = ['python', script]
     subprocess.check_call(cmd)

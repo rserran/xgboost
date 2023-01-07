@@ -206,17 +206,29 @@ XGB_DLL int XGBGetGlobalConfig(const char** json_str) {
 }
 
 XGB_DLL int XGDMatrixCreateFromFile(const char *fname, int silent, DMatrixHandle *out) {
-  API_BEGIN();
-  bool load_row_split = false;
-  if (collective::IsFederated()) {
-    LOG(CONSOLE) << "XGBoost federated mode detected, not splitting data among workers";
-  } else if (collective::IsDistributed()) {
-    LOG(CONSOLE) << "XGBoost distributed mode detected, will split data among workers";
-    load_row_split = true;
-  }
   xgboost_CHECK_C_ARG_PTR(fname);
   xgboost_CHECK_C_ARG_PTR(out);
-  *out = new std::shared_ptr<DMatrix>(DMatrix::Load(fname, silent != 0, load_row_split));
+
+  Json config{Object()};
+  config["uri"] = std::string{fname};
+  config["silent"] = silent;
+  std::string config_str;
+  Json::Dump(config, &config_str);
+  return XGDMatrixCreateFromURI(config_str.c_str(), out);
+}
+
+XGB_DLL int XGDMatrixCreateFromURI(const char *config, DMatrixHandle *out) {
+  API_BEGIN();
+  xgboost_CHECK_C_ARG_PTR(config);
+  xgboost_CHECK_C_ARG_PTR(out);
+
+  auto jconfig = Json::Load(StringView{config});
+  std::string uri = RequiredArg<String>(jconfig, "uri", __func__);
+  auto silent = static_cast<bool>(OptionalArg<Integer, int64_t>(jconfig, "silent", 1));
+  auto data_split_mode =
+      static_cast<DataSplitMode>(OptionalArg<Integer, int64_t>(jconfig, "data_split_mode", 0));
+
+  *out = new std::shared_ptr<DMatrix>(DMatrix::Load(uri, silent, data_split_mode));
   API_END();
 }
 
@@ -397,17 +409,14 @@ XGB_DLL int XGDMatrixCreateFromCSREx(const size_t* indptr,
   API_END();
 }
 
-XGB_DLL int XGDMatrixCreateFromCSR(char const *indptr,
-                                   char const *indices, char const *data,
-                                   xgboost::bst_ulong ncol,
-                                   char const* c_json_config,
-                                   DMatrixHandle* out) {
+XGB_DLL int XGDMatrixCreateFromCSR(char const *indptr, char const *indices, char const *data,
+                                   xgboost::bst_ulong ncol, char const *c_json_config,
+                                   DMatrixHandle *out) {
   API_BEGIN();
   xgboost_CHECK_C_ARG_PTR(indptr);
   xgboost_CHECK_C_ARG_PTR(indices);
   xgboost_CHECK_C_ARG_PTR(data);
-  data::CSRArrayAdapter adapter(StringView{indptr}, StringView{indices},
-                                StringView{data}, ncol);
+  data::CSRArrayAdapter adapter(StringView{indptr}, StringView{indices}, StringView{data}, ncol);
   xgboost_CHECK_C_ARG_PTR(c_json_config);
   auto config = Json::Load(StringView{c_json_config});
   float missing = GetMissing(config);

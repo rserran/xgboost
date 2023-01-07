@@ -75,9 +75,11 @@
 #' @details
 #' The original sample is randomly partitioned into \code{nfold} equal size subsamples.
 #'
-#' Of the \code{nfold} subsamples, a single subsample is retained as the validation data for testing the model, and the remaining \code{nfold - 1} subsamples are used as training data.
+#' Of the \code{nfold} subsamples, a single subsample is retained as the validation data for testing the model,
+#' and the remaining \code{nfold - 1} subsamples are used as training data.
 #'
-#' The cross-validation process is then repeated \code{nrounds} times, with each of the \code{nfold} subsamples used exactly once as the validation data.
+#' The cross-validation process is then repeated \code{nrounds} times, with each of the
+#' \code{nfold} subsamples used exactly once as the validation data.
 #'
 #' All observations are used for both training and validation.
 #'
@@ -110,17 +112,17 @@
 #'
 #' @examples
 #' data(agaricus.train, package='xgboost')
-#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label))
+#' dtrain <- with(agaricus.train, xgb.DMatrix(data, label = label, nthread = 2))
 #' cv <- xgb.cv(data = dtrain, nrounds = 3, nthread = 2, nfold = 5, metrics = list("rmse","auc"),
-#'                   max_depth = 3, eta = 1, objective = "binary:logistic")
+#'              max_depth = 3, eta = 1, objective = "binary:logistic")
 #' print(cv)
 #' print(cv, verbose=TRUE)
 #'
 #' @export
-xgb.cv <- function(params=list(), data, nrounds, nfold, label = NULL, missing = NA,
-                   prediction = FALSE, showsd = TRUE, metrics=list(),
+xgb.cv <- function(params = list(), data, nrounds, nfold, label = NULL, missing = NA,
+                   prediction = FALSE, showsd = TRUE, metrics = list(),
                    obj = NULL, feval = NULL, stratified = TRUE, folds = NULL, train_folds = NULL,
-                   verbose = TRUE, print_every_n=1L,
+                   verbose = TRUE, print_every_n = 1L,
                    early_stopping_rounds = NULL, maximize = NULL, callbacks = list(), ...) {
 
   check.deprecation(...)
@@ -192,7 +194,7 @@ xgb.cv <- function(params=list(), data, nrounds, nfold, label = NULL, missing = 
 
   # create the booster-folds
   # train_folds
-  dall <- xgb.get.DMatrix(data, label, missing)
+  dall <- xgb.get.DMatrix(data, label, missing, nthread = params$nthread)
   bst_folds <- lapply(seq_along(folds), function(k) {
     dtest  <- slice(dall, folds[[k]])
     # code originally contributed by @RolandASc on stackoverflow

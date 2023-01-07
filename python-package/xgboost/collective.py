@@ -4,12 +4,12 @@ import json
 import logging
 import pickle
 from enum import IntEnum, unique
-from typing import Any, List, Dict
+from typing import Any, Dict, List
 
 import numpy as np
 
 from ._typing import _T
-from .core import _LIB, _check_call, c_str, py_str, from_pystr_to_cstr
+from .core import _LIB, _check_call, c_str, from_pystr_to_cstr, py_str
 
 LOGGER = logging.getLogger("[xgboost.collective]")
 
@@ -191,6 +191,9 @@ class Op(IntEnum):
     MAX = 0
     MIN = 1
     SUM = 2
+    BITWISE_AND = 3
+    BITWISE_OR = 4
+    BITWISE_XOR = 5
 
 
 def allreduce(  # pylint:disable=invalid-name

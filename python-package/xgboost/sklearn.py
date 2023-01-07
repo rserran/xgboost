@@ -65,7 +65,7 @@ def _check_rf_callback(
         )
 
 
-_SklObjective = Optional[
+SklObjective = Optional[
     Union[str, Callable[[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]]
 ]
 
@@ -144,7 +144,7 @@ __model_doc = f"""
         Boosting learning rate (xgb's "eta")
     verbosity : Optional[int]
         The degree of verbosity. Valid values are 0 (silent) - 3 (debug).
-    objective : {_SklObjective}
+    objective : {SklObjective}
         Specify the learning task and the corresponding learning objective or
         a custom objective function to be used (see note below).
     booster: Optional[str]
@@ -233,7 +233,7 @@ __model_doc = f"""
         should be used to specify categorical data type.  Also, JSON/UBJSON
         serialization format is required.
 
-    feature_types : FeatureTypes
+    feature_types : Optional[FeatureTypes]
 
         .. versionadded:: 1.7.0
 
@@ -546,7 +546,7 @@ class XGBModel(XGBModelBase):
         learning_rate: Optional[float] = None,
         n_estimators: int = 100,
         verbosity: Optional[int] = None,
-        objective: _SklObjective = None,
+        objective: SklObjective = None,
         booster: Optional[str] = None,
         tree_method: Optional[str] = None,
         n_jobs: Optional[int] = None,
@@ -572,7 +572,7 @@ class XGBModel(XGBModelBase):
         validate_parameters: Optional[bool] = None,
         predictor: Optional[str] = None,
         enable_categorical: bool = False,
-        feature_types: FeatureTypes = None,
+        feature_types: Optional[FeatureTypes] = None,
         max_cat_to_onehot: Optional[int] = None,
         max_cat_threshold: Optional[int] = None,
         eval_metric: Optional[Union[str, List[str], Callable]] = None,
@@ -674,7 +674,7 @@ class XGBModel(XGBModelBase):
                     self.kwargs = {}
                 self.kwargs[key] = value
 
-        if hasattr(self, "_Booster"):
+        if self.__sklearn_is_fitted__():
             parameters = self.get_xgb_params()
             self.get_booster().set_param(parameters)
 
@@ -701,39 +701,12 @@ class XGBModel(XGBModelBase):
                 np.iinfo(np.int32).max
             )
 
-        def parse_parameter(value: Any) -> Optional[Union[int, float, str]]:
-            for t in (int, float, str):
-                try:
-                    ret = t(value)
-                    return ret
-                except ValueError:
-                    continue
-            return None
-
-        # Get internal parameter values
-        try:
-            config = json.loads(self.get_booster().save_config())
-            stack = [config]
-            internal = {}
-            while stack:
-                obj = stack.pop()
-                for k, v in obj.items():
-                    if k.endswith("_param"):
-                        for p_k, p_v in v.items():
-                            internal[p_k] = p_v
-                    elif isinstance(v, dict):
-                        stack.append(v)
-
-            for k, v in internal.items():
-                if k in params and params[k] is None:
-                    params[k] = parse_parameter(v)
-        except ValueError:
-            pass
         return params
 
     def get_xgb_params(self) -> Dict[str, Any]:
         """Get xgboost specific parameters."""
-        params = self.get_params()
+        params: Dict[str, Any] = self.get_params()
+
         # Parameters that should not go into native learner.
         wrapper_specific = {
             "importance_type",
@@ -750,6 +723,7 @@ class XGBModel(XGBModelBase):
         for k, v in params.items():
             if k not in wrapper_specific and not callable(v):
                 filtered[k] = v
+
         return filtered
 
     def get_num_boosting_rounds(self) -> int:
@@ -1070,7 +1044,7 @@ class XGBModel(XGBModelBase):
         # error with incompatible data type.
         # Inplace predict doesn't handle as many data types as DMatrix, but it's
         # sufficient for dask interface where input is simpiler.
-        predictor = self.get_params().get("predictor", None)
+        predictor = self.get_xgb_params().get("predictor", None)
         if predictor in ("auto", None) and self.booster != "gblinear":
             return True
         return False
@@ -1336,7 +1310,7 @@ class XGBModel(XGBModelBase):
         -------
         coef_ : array of shape ``[n_features]`` or ``[n_classes, n_features]``
         """
-        if self.get_params()["booster"] != "gblinear":
+        if self.get_xgb_params()["booster"] != "gblinear":
             raise AttributeError(
                 f"Coefficients are not defined for Booster type {self.booster}"
             )
@@ -1366,7 +1340,7 @@ class XGBModel(XGBModelBase):
         -------
         intercept_ : array of shape ``(1,)`` or ``[n_classes]``
         """
-        if self.get_params()["booster"] != "gblinear":
+        if self.get_xgb_params()["booster"] != "gblinear":
             raise AttributeError(
                 f"Intercept (bias) is not defined for Booster type {self.booster}"
             )
@@ -1409,7 +1383,7 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
     def __init__(
         self,
         *,
-        objective: _SklObjective = "binary:logistic",
+        objective: SklObjective = "binary:logistic",
         use_label_encoder: Optional[bool] = None,
         **kwargs: Any,
     ) -> None:
@@ -1712,7 +1686,7 @@ class XGBRegressor(XGBModel, XGBRegressorBase):
     # pylint: disable=missing-docstring
     @_deprecate_positional_args
     def __init__(
-        self, *, objective: _SklObjective = "reg:squarederror", **kwargs: Any
+        self, *, objective: SklObjective = "reg:squarederror", **kwargs: Any
     ) -> None:
         super().__init__(objective=objective, **kwargs)
 

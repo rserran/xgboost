@@ -72,7 +72,6 @@ from .core import (
     QuantileDMatrix,
     _deprecate_positional_args,
     _expect,
-    _has_categorical,
 )
 from .sklearn import (
     XGBClassifier,
@@ -288,10 +287,10 @@ class DaskDMatrix:
         *,
         weight: Optional[_DaskCollection] = None,
         base_margin: Optional[_DaskCollection] = None,
-        missing: float = None,
+        missing: Optional[float] = None,
         silent: bool = False,  # pylint: disable=unused-argument
         feature_names: Optional[FeatureNames] = None,
-        feature_types: FeatureTypes = None,
+        feature_types: Optional[FeatureTypes] = None,
         group: Optional[_DaskCollection] = None,
         qid: Optional[_DaskCollection] = None,
         label_lower_bound: Optional[_DaskCollection] = None,
@@ -304,7 +303,7 @@ class DaskDMatrix:
 
         self.feature_names = feature_names
         self.feature_types = feature_types
-        self.missing = missing
+        self.missing = missing if missing is not None else numpy.nan
         self.enable_categorical = enable_categorical
 
         if qid is not None and weight is not None:
@@ -651,7 +650,7 @@ class DaskQuantileDMatrix(DaskDMatrix):
         *,
         weight: Optional[_DaskCollection] = None,
         base_margin: Optional[_DaskCollection] = None,
-        missing: float = None,
+        missing: Optional[float] = None,
         silent: bool = False,  # disable=unused-argument
         feature_names: Optional[FeatureNames] = None,
         feature_types: Optional[Union[Any, List[Any]]] = None,
@@ -853,7 +852,7 @@ async def _get_rabit_args(
         sched_addr = None
 
     # make sure all workers are online so that we can obtain reliable scheduler_info
-    client.wait_for_workers(n_workers)
+    await client.wait_for_workers(n_workers)  # type: ignore
     env = await client.run_on_scheduler(
         _start_tracker, n_workers, sched_addr, user_addr
     )
@@ -1190,7 +1189,7 @@ def _infer_predict_output(
         kwargs = kwargs.copy()
         if kwargs.pop("predict_type") == "margin":
             kwargs["output_margin"] = True
-    m = DMatrix(test_sample)
+    m = DMatrix(test_sample, enable_categorical=True)
     # generated DMatrix doesn't have feature name, so no validation.
     test_predt = booster.predict(m, validate_features=False, **kwargs)
     n_columns = test_predt.shape[1] if len(test_predt.shape) > 1 else 1
@@ -1247,7 +1246,7 @@ async def _predict_async(
             m = DMatrix(
                 data=partition,
                 missing=missing,
-                enable_categorical=_has_categorical(booster, partition),
+                enable_categorical=True,
             )
             predt = booster.predict(
                 data=m,
@@ -1315,6 +1314,7 @@ async def _predict_async(
                 base_margin=base_margin,
                 feature_names=feature_names,
                 feature_types=feature_types,
+                enable_categorical=True,
             )
             predt = booster.predict(
                 m,
@@ -2129,7 +2129,7 @@ class DaskXGBRanker(DaskScikitLearnBase, XGBRankerMixIn):
         eval_group: Optional[Sequence[_DaskCollection]] = None,
         eval_qid: Optional[Sequence[_DaskCollection]] = None,
         eval_metric: Optional[Union[str, Sequence[str], Callable]] = None,
-        early_stopping_rounds: int = None,
+        early_stopping_rounds: Optional[int] = None,
         verbose: Union[int, bool] = False,
         xgb_model: Optional[Union[XGBModel, Booster]] = None,
         sample_weight_eval_set: Optional[Sequence[_DaskCollection]] = None,

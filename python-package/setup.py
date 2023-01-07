@@ -1,13 +1,14 @@
 """Setup xgboost package."""
+import logging
 import os
 import shutil
 import subprocess
-import logging
-from typing import Optional, List
 import sys
 from platform import system
-from setuptools import setup, find_packages, Extension
-from setuptools.command import build_ext, sdist, install_lib, install
+from typing import List, Optional
+
+from setuptools import Extension, find_packages, setup
+from setuptools.command import build_ext, install, install_lib, sdist
 
 # You can't use `pip install .` as pip copies setup.py to a temporary
 # directory, parent directory is no longer reachable (isolated build) .
@@ -278,8 +279,7 @@ class Install(install.install):  # pylint: disable=too-many-instance-attributes
     arguments.
 
     '''
-    user_options = install.install.user_options + list(
-        (k, v[0], v[1]) for k, v in USER_OPTIONS.items())
+    user_options = install.install.user_options + [(k, v[0], v[1]) for k, v in USER_OPTIONS.items()]
 
     def initialize_options(self) -> None:
         super().initialize_options()

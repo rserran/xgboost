@@ -3,8 +3,8 @@
  */
 #include <thrust/binary_search.h>
 #include <thrust/execution_policy.h>
-#include <thrust/iterator/discard_iterator.h>
 #include <thrust/iterator/constant_iterator.h>
+#include <thrust/iterator/discard_iterator.h>
 #include <thrust/transform_scan.h>
 #include <thrust/unique.h>
 
@@ -20,6 +20,7 @@
 #include "hist_util.h"
 #include "quantile.cuh"
 #include "quantile.h"
+#include "transform_iterator.h"  // MakeIndexTransformIter
 #include "xgboost/span.h"
 
 namespace xgboost {
@@ -640,7 +641,7 @@ void SketchContainer::MakeCuts(HistogramCuts* p_cuts) {
                           thrust::equal_to<bst_feature_t>{},
                           [] __device__(auto l, auto r) { return l.value > r.value ? l : r; });
     dh::CopyDeviceSpanToVector(&max_values, dh::ToSpan(d_max_values));
-    auto max_it = common::MakeIndexTransformIter([&](auto i) {
+    auto max_it = MakeIndexTransformIter([&](auto i) {
       if (IsCat(h_feature_types, i)) {
         return max_values[i].value;
       }

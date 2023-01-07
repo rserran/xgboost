@@ -66,7 +66,7 @@ TEST(Learner, CheckGroup) {
 
   std::shared_ptr<DMatrix> p_mat{
       RandomDataGenerator{kNumRows, kNumCols, 0.0f}.GenerateDMatrix()};
-  std::vector<bst_float> weight(kNumGroups);
+  std::vector<bst_float> weight(kNumGroups, 1);
   std::vector<bst_int> group(kNumGroups);
   group[0] = 2;
   group[1] = 3;
@@ -98,8 +98,7 @@ TEST(Learner, SLOW_CheckMultiBatch) {  // NOLINT
   dmlc::TemporaryDirectory tempdir;
   const std::string tmp_file = tempdir.path + "/big.libsvm";
   CreateBigTestData(tmp_file, 50000);
-  std::shared_ptr<DMatrix> dmat(xgboost::DMatrix::Load(
-      tmp_file + "#" + tmp_file + ".cache", true, false, "auto"));
+  std::shared_ptr<DMatrix> dmat(xgboost::DMatrix::Load(tmp_file + "#" + tmp_file + ".cache"));
   EXPECT_FALSE(dmat->SingleColBlock());
   size_t num_row = dmat->Info().num_row_;
   std::vector<bst_float> labels(num_row);
@@ -363,7 +362,7 @@ TEST(Learner, ConstantSeed) {
   CHECK_NE(v_0, v_1);
 
   {
-    rng.seed(GenericParameter::kDefaultSeed);
+    rng.seed(Context::kDefaultSeed);
     std::uniform_real_distribution<float> dist;
     float v_2 = dist(rng);
     CHECK_EQ(v_0, v_2);

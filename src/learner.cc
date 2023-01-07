@@ -35,10 +35,10 @@
 #include "common/version.h"
 #include "xgboost/base.h"
 #include "xgboost/c_api.h"
+#include "xgboost/context.h"  // Context
 #include "xgboost/data.h"
 #include "xgboost/feature_map.h"
 #include "xgboost/gbm.h"
-#include "xgboost/generic_parameters.h"
 #include "xgboost/host_device_vector.h"
 #include "xgboost/json.h"
 #include "xgboost/logging.h"
@@ -52,15 +52,6 @@ namespace {
 
 const char* kMaxDeltaStepDefaultValue = "0.7";
 }  // anonymous namespace
-
-namespace xgboost {
-
-enum class DataSplitMode : int {
-  kAuto = 0, kCol = 1, kRow = 2
-};
-}  // namespace xgboost
-
-DECLARE_FIELD_ENUM_CLASS(xgboost::DataSplitMode);
 
 namespace xgboost {
 Learner::~Learner() = default;
@@ -282,8 +273,6 @@ void LearnerModelParam::Copy(LearnerModelParam const& that) {
 }
 
 struct LearnerTrainParam : public XGBoostParameter<LearnerTrainParam> {
-  // data split mode, can be row, col, or none.
-  DataSplitMode dsplit {DataSplitMode::kAuto};
   // flag to disable default metric
   bool disable_default_eval_metric {false};
   // FIXME(trivialfis): The following parameters belong to model itself, but can be
@@ -293,12 +282,6 @@ struct LearnerTrainParam : public XGBoostParameter<LearnerTrainParam> {
 
   // declare parameters
   DMLC_DECLARE_PARAMETER(LearnerTrainParam) {
-    DMLC_DECLARE_FIELD(dsplit)
-        .set_default(DataSplitMode::kAuto)
-        .add_enum("auto", DataSplitMode::kAuto)
-        .add_enum("col", DataSplitMode::kCol)
-        .add_enum("row", DataSplitMode::kRow)
-        .describe("Data split mode for distributed training.");
     DMLC_DECLARE_FIELD(disable_default_eval_metric)
         .set_default(false)
         .describe("Flag to disable default metric. Set to >0 to disable");
@@ -314,55 +297,6 @@ struct LearnerTrainParam : public XGBoostParameter<LearnerTrainParam> {
 
 DMLC_REGISTER_PARAMETER(LearnerModelParamLegacy);
 DMLC_REGISTER_PARAMETER(LearnerTrainParam);
-DMLC_REGISTER_PARAMETER(GenericParameter);
-
-int constexpr GenericParameter::kCpuId;
-int64_t constexpr GenericParameter::kDefaultSeed;
-
-GenericParameter::GenericParameter() : cfs_cpu_count_{common::GetCfsCPUCount()} {}
-
-void GenericParameter::ConfigureGpuId(bool require_gpu) {
-#if defined(XGBOOST_USE_CUDA)
-  if (gpu_id == kCpuId) {  // 0. User didn't specify the `gpu_id'
-    if (require_gpu) {     // 1. `tree_method' or `predictor' or both are using
-                           // GPU.
-      // 2. Use device 0 as default.
-      this->UpdateAllowUnknown(Args{{"gpu_id", "0"}});
-    }
-  }
-
-  // 3. When booster is loaded from a memory image (Python pickle or R
-  // raw model), number of available GPUs could be different.  Wrap around it.
-  int32_t n_gpus = common::AllVisibleGPUs();
-  if (n_gpus == 0) {
-    if (gpu_id != kCpuId) {
-      LOG(WARNING) << "No visible GPU is found, setting `gpu_id` to -1";
-    }
-    this->UpdateAllowUnknown(Args{{"gpu_id", std::to_string(kCpuId)}});
-  } else if (fail_on_invalid_gpu_id) {
-    CHECK(gpu_id == kCpuId || gpu_id < n_gpus)
-      << "Only " << n_gpus << " GPUs are visible, gpu_id "
-      << gpu_id << " is invalid.";
-  } else if (gpu_id != kCpuId && gpu_id >= n_gpus) {
-    LOG(WARNING) << "Only " << n_gpus
-                 << " GPUs are visible, setting `gpu_id` to " << gpu_id % n_gpus;
-    this->UpdateAllowUnknown(Args{{"gpu_id", std::to_string(gpu_id % n_gpus)}});
-  }
-#else
-  // Just set it to CPU, don't think about it.
-  this->UpdateAllowUnknown(Args{{"gpu_id", std::to_string(kCpuId)}});
-#endif  // defined(XGBOOST_USE_CUDA)
-
-  common::SetDevice(this->gpu_id);
-}
-
-int32_t GenericParameter::Threads() const {
-  auto n_threads = common::OmpGetNumThreads(nthread);
-  if (cfs_cpu_count_ > 0) {
-    n_threads = std::min(n_threads, cfs_cpu_count_);
-  }
-  return n_threads;
-}
 
 using LearnerAPIThreadLocalStore =
     dmlc::ThreadLocalStore<std::map<Learner const *, XGBAPIThreadLocalEntry>>;
@@ -468,7 +402,7 @@ class LearnerConfiguration : public Learner {
     monitor_.Init("Learner");
     auto& local_cache = (*ThreadLocalPredictionCache::Get())[this];
     for (std::shared_ptr<DMatrix> const& d : cache) {
-      local_cache.Cache(d, GenericParameter::kCpuId);
+      local_cache.Cache(d, Context::kCpuId);
     }
   }
   ~LearnerConfiguration() override {
@@ -501,12 +435,6 @@ class LearnerConfiguration : public Learner {
     ctx_.UpdateAllowUnknown(args);
 
     ConsoleLogger::Configure(args);
-
-    // add additional parameters
-    // These are cosntraints that need to be satisfied.
-    if (tparam_.dsplit == DataSplitMode::kAuto && collective::IsDistributed()) {
-      tparam_.dsplit = DataSplitMode::kRow;
-    }
 
     // set seed only before the model is initialized
     if (!initialized || ctx_.seed != old_seed) {
@@ -548,6 +476,9 @@ class LearnerConfiguration : public Learner {
     // If configuration is loaded, ensure that the model came from the same version
     CHECK(IsA<Object>(in));
     auto origin_version = Version::Load(in);
+    if (std::get<0>(Version::kInvalid) == std::get<0>(origin_version)) {
+      LOG(WARNING) << "Invalid version string in config";
+    }
 
     if (!Version::Same(origin_version)) {
       LOG(WARNING) << ModelMsg();
@@ -1109,11 +1040,6 @@ class LearnerIO : public LearnerConfiguration {
     auto n = tparam_.__DICT__();
     cfg_.insert(n.cbegin(), n.cend());
 
-    // copy dsplit from config since it will not run again during restore
-    if (tparam_.dsplit == DataSplitMode::kAuto && collective::IsDistributed()) {
-      tparam_.dsplit = DataSplitMode::kRow;
-    }
-
     this->need_configuration_ = true;
   }
 
@@ -1253,16 +1179,6 @@ class LearnerImpl : public LearnerIO {
       local_map->erase(this);
     }
   }
-  // Configuration before data is known.
-  void CheckDataSplitMode() {
-    if (collective::IsDistributed()) {
-      CHECK(tparam_.dsplit != DataSplitMode::kAuto)
-        << "Precondition violated; dsplit cannot be 'auto' in distributed mode";
-      if (tparam_.dsplit == DataSplitMode::kCol) {
-        LOG(FATAL) << "Column-wise data split is currently not supported.";
-      }
-    }
-  }
 
   std::vector<std::string> DumpModel(const FeatureMap& fmap, bool with_stats,
                                      std::string format) override {
@@ -1320,7 +1236,6 @@ class LearnerImpl : public LearnerIO {
       common::GlobalRandom().seed(ctx_.seed * kRandSeedMagic + iter);
     }
 
-    this->CheckDataSplitMode();
     this->ValidateDMatrix(train.get(), true);
 
     auto local_cache = this->GetPredictionCache();
@@ -1349,7 +1264,6 @@ class LearnerImpl : public LearnerIO {
       common::GlobalRandom().seed(ctx_.seed * kRandSeedMagic + iter);
     }
 
-    this->CheckDataSplitMode();
     this->ValidateDMatrix(train.get(), true);
 
     auto local_cache = this->GetPredictionCache();
@@ -1498,19 +1412,14 @@ class LearnerImpl : public LearnerIO {
     MetaInfo const& info = p_fmat->Info();
     info.Validate(ctx_.gpu_id);
 
-    auto const row_based_split = [this]() {
-      return tparam_.dsplit == DataSplitMode::kRow || tparam_.dsplit == DataSplitMode::kAuto;
-    };
-    if (row_based_split()) {
-      if (is_training) {
-        CHECK_EQ(learner_model_param_.num_feature, p_fmat->Info().num_col_)
-            << "Number of columns does not match number of features in "
-               "booster.";
-      } else {
-        CHECK_GE(learner_model_param_.num_feature, p_fmat->Info().num_col_)
-            << "Number of columns does not match number of features in "
-               "booster.";
-      }
+    if (is_training) {
+      CHECK_EQ(learner_model_param_.num_feature, p_fmat->Info().num_col_)
+          << "Number of columns does not match number of features in "
+             "booster.";
+    } else {
+      CHECK_GE(learner_model_param_.num_feature, p_fmat->Info().num_col_)
+          << "Number of columns does not match number of features in "
+             "booster.";
     }
 
     if (p_fmat->Info().num_row_ == 0) {

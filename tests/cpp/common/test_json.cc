@@ -27,7 +27,6 @@ std::string GetModelStr() {
   "train_parameter": {
     "debug_verbose": "0",
     "disable_default_eval_metric": "0",
-    "dsplit": "auto",
     "nthread": "0",
     "seed": "0",
     "seed_per_iteration": "0",
@@ -590,7 +589,7 @@ TEST(Json, DISABLED_RoundTripExhaustive) {
     }
   };
   int64_t int32_max = static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
-  GenericParameter ctx;
+  Context ctx;
   common::ParallelFor(int32_max, ctx.Threads(), [&](auto i) { test(static_cast<uint32_t>(i)); });
 }
 

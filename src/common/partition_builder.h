@@ -10,15 +10,15 @@
 #include <xgboost/data.h>
 
 #include <algorithm>
+#include <limits>
 #include <memory>
 #include <utility>
-#include <limits>
 #include <vector>
 
+#include "../tree/hist/expand_entry.h"
 #include "categorical.h"
 #include "column_matrix.h"
-#include "../tree/hist/expand_entry.h"
-#include "xgboost/generic_parameters.h"
+#include "xgboost/context.h"
 #include "xgboost/tree_model.h"
 
 namespace xgboost {
@@ -144,7 +144,7 @@ class PartitionBuilder {
         auto gidx = gidx_calc(ridx);
         bool go_left = default_left;
         if (gidx > -1) {
-          go_left = Decision(node_cats, cut_values[gidx], default_left);
+          go_left = Decision(node_cats, cut_values[gidx]);
         }
         return go_left;
       } else {
@@ -157,7 +157,7 @@ class PartitionBuilder {
       bool go_left = default_left;
       if (gidx > -1) {
         if (is_cat) {
-          go_left = Decision(node_cats, cut_values[gidx], default_left);
+          go_left = Decision(node_cats, cut_values[gidx]);
         } else {
           go_left = cut_values[gidx] <= nodes[node_in_set].split.split_value;
         }

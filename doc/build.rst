@@ -313,7 +313,7 @@ Installing the development version (Linux / Mac OSX)
 Make sure you have installed git and a recent C++ compiler supporting C++11 (See above
 sections for requirements of building C++ core).
 
-Due to the use of git-submodules, ``devtools::install_github`` can no longer be used to
+Due to the use of git-submodules, ``remotes::install_github()`` cannot be used to
 install the latest version of R package. Thus, one has to run git to check out the code
 first, see :ref:`get_source` on how to initialize the git repository for XGBoost. The
 simplest way to install the R package after obtaining the source code is:
@@ -503,10 +503,3 @@ XGBoost uses `Sphinx <https://www.sphinx-doc.org/en/stable/>`_ for documentation
   Checkout the ``requirements.txt`` file under ``doc/``
 
 Under ``xgboost/doc`` directory, run ``make <format>`` with ``<format>`` replaced by the format you want.  For a list of supported formats, run ``make help`` under the same directory.
-
-*********
-Makefiles
-*********
-
-It's only used for creating shorthands for running linters, performing packaging tasks
-etc.  So the remaining makefiles are legacy.

@@ -129,8 +129,8 @@ TEST(MetaInfo, SaveLoadBinary) {
     EXPECT_EQ(inforead.group_ptr_, info.group_ptr_);
     EXPECT_EQ(inforead.weights_.HostVector(), info.weights_.HostVector());
 
-    auto orig_margin = info.base_margin_.View(xgboost::GenericParameter::kCpuId);
-    auto read_margin = inforead.base_margin_.View(xgboost::GenericParameter::kCpuId);
+    auto orig_margin = info.base_margin_.View(xgboost::Context::kCpuId);
+    auto read_margin = inforead.base_margin_.View(xgboost::Context::kCpuId);
     EXPECT_TRUE(std::equal(orig_margin.Values().cbegin(), orig_margin.Values().cend(),
                            read_margin.Values().cbegin()));
 
@@ -175,7 +175,7 @@ TEST(MetaInfo, LoadQid) {
     os.set_stream(nullptr);
   }
   std::unique_ptr<xgboost::DMatrix> dmat(
-    xgboost::DMatrix::Load(tmp_file, true, false, "libsvm"));
+    xgboost::DMatrix::Load(tmp_file, true, xgboost::DataSplitMode::kRow, "libsvm"));
 
   const xgboost::MetaInfo& info = dmat->Info();
   const std::vector<xgboost::bst_uint> expected_group_ptr{0, 4, 8, 12};
