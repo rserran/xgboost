@@ -4,8 +4,23 @@ AC_PREREQ(2.69)
 
 AC_INIT([xgboost],[2.0.0],[],[xgboost],[])
 
-# Use this line to set CC variable to a C compiler
-AC_PROG_CC
+: ${R_HOME=`R RHOME`}
+if test -z "${R_HOME}"; then
+  echo "could not determine R_HOME"
+  exit 1
+fi
+
+CXX14=`"${R_HOME}/bin/R" CMD config CXX14`
+CXX14STD=`"${R_HOME}/bin/R" CMD config CXX14STD`
+CXX="${CXX14} ${CXX14STD}"
+CXXFLAGS=`"${R_HOME}/bin/R" CMD config CXXFLAGS`
+
+CC=`"${R_HOME}/bin/R" CMD config CC`
+CFLAGS=`"${R_HOME}/bin/R" CMD config CFLAGS`
+CPPFLAGS=`"${R_HOME}/bin/R" CMD config CPPFLAGS`
+
+LDFLAGS=`"${R_HOME}/bin/R" CMD config LDFLAGS`
+AC_LANG(C++)
 
 ### Check whether backtrace() is part of libc or the external lib libexecinfo
 AC_MSG_CHECKING([Backtrace lib])
@@ -40,7 +55,7 @@ then
   ac_pkg_openmp=no
   AC_MSG_CHECKING([whether OpenMP will work in a package])
   AC_LANG_CONFTEST([AC_LANG_PROGRAM([[#include <omp.h>]], [[ return (omp_get_max_threads() <= 1); ]])])
-  ${CC} -o conftest conftest.c ${CPPFLAGS} ${LDFLAGS} ${OPENMP_LIB} ${OPENMP_CXXFLAGS} 2>/dev/null && ./conftest && ac_pkg_openmp=yes
+  ${CXX} -o conftest conftest.cpp ${CPPFLAGS} ${LDFLAGS} ${OPENMP_LIB} ${OPENMP_CXXFLAGS} 2>/dev/null && ./conftest && ac_pkg_openmp=yes
   AC_MSG_RESULT([${ac_pkg_openmp}])
   if test "${ac_pkg_openmp}" = no; then
     OPENMP_CXXFLAGS=''

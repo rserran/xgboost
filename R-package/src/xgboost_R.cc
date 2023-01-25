@@ -205,11 +205,11 @@ XGB_DLL SEXP XGDMatrixCreateFromCSR_R(SEXP indptr, SEXP indices, SEXP data, SEXP
   if (DMLC_LITTLE_ENDIAN) {
     jindptr["typestr"] = String{"<i4"};
     jindices["typestr"] = String{"<i4"};
-    jdata["typestr"] = String{"<i8"};
+    jdata["typestr"] = String{"<f8"};
   } else {
     jindptr["typestr"] = String{">i4"};
     jindices["typestr"] = String{">i4"};
-    jdata["typestr"] = String{">i8"};
+    jdata["typestr"] = String{">f8"};
   }
   std::string indptr, indices, data;
   Json::Dump(jindptr, &indptr);
@@ -456,27 +456,6 @@ XGB_DLL SEXP XGBoosterEvalOneIter_R(SEXP handle, SEXP iter, SEXP dmats, SEXP evn
                                   len, &ret));
   R_API_END();
   return mkString(ret);
-}
-
-XGB_DLL SEXP XGBoosterPredict_R(SEXP handle, SEXP dmat, SEXP option_mask,
-                                SEXP ntree_limit, SEXP training) {
-  SEXP ret;
-  R_API_BEGIN();
-  bst_ulong olen;
-  const float *res;
-  CHECK_CALL(XGBoosterPredict(R_ExternalPtrAddr(handle),
-                              R_ExternalPtrAddr(dmat),
-                              asInteger(option_mask),
-                              asInteger(ntree_limit),
-                              asInteger(training),
-                              &olen, &res));
-  ret = PROTECT(allocVector(REALSXP, olen));
-  for (size_t i = 0; i < olen; ++i) {
-    REAL(ret)[i] = res[i];
-  }
-  R_API_END();
-  UNPROTECT(1);
-  return ret;
 }
 
 XGB_DLL SEXP XGBoosterPredictFromDMatrix_R(SEXP handle, SEXP dmat, SEXP json_config)  {
