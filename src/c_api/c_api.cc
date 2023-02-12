@@ -1,29 +1,32 @@
-// Copyright (c) 2014-2022 by Contributors
+/**
+ * Copyright 2014-2023 by XGBoost Contributors
+ */
+#include "xgboost/c_api.h"
+
 #include <rabit/c_api.h>
 
 #include <cstring>
 #include <fstream>
-#include <vector>
-#include <string>
 #include <memory>
+#include <string>
+#include <vector>
 
-#include "xgboost/base.h"
-#include "xgboost/data.h"
-#include "xgboost/host_device_vector.h"
-#include "xgboost/learner.h"
-#include "xgboost/c_api.h"
-#include "xgboost/logging.h"
-#include "xgboost/version_config.h"
-#include "xgboost/json.h"
-#include "xgboost/global_config.h"
-
-#include "c_api_error.h"
-#include "c_api_utils.h"
 #include "../collective/communicator-inl.h"
-#include "../common/io.h"
 #include "../common/charconv.h"
+#include "../common/io.h"
 #include "../data/adapter.h"
 #include "../data/simple_dmatrix.h"
+#include "c_api_error.h"
+#include "c_api_utils.h"
+#include "xgboost/base.h"
+#include "xgboost/data.h"
+#include "xgboost/global_config.h"
+#include "xgboost/host_device_vector.h"
+#include "xgboost/json.h"
+#include "xgboost/learner.h"
+#include "xgboost/logging.h"
+#include "xgboost/string_view.h"  // StringView
+#include "xgboost/version_config.h"
 
 #if defined(XGBOOST_USE_FEDERATED)
 #include "../../plugin/federated/federated_server.h"
@@ -55,6 +58,13 @@ void XGBBuildInfoDevice(Json *p_info) {
 }
 }  // namespace xgboost
 #endif
+
+namespace {
+void DeprecatedFunc(StringView old, StringView since, StringView replacement) {
+  LOG(WARNING) << "`" << old << "` is deprecated since" << since << ", use `" << replacement
+               << "` instead.";
+}
+}  // anonymous namespace
 
 XGB_DLL int XGBuildInfo(char const **out) {
   API_BEGIN();
@@ -279,7 +289,7 @@ XGB_DLL int XGDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHandle proxy
   auto jconfig = Json::Load(StringView{config});
   auto missing = GetMissing(jconfig);
   std::string cache = RequiredArg<String>(jconfig, "cache_prefix", __func__);
-  auto n_threads = OptionalArg<Integer, int64_t>(jconfig, "nthread", common::OmpGetNumThreads(0));
+  auto n_threads = OptionalArg<Integer, int64_t>(jconfig, "nthread", 0);
 
   xgboost_CHECK_C_ARG_PTR(next);
   xgboost_CHECK_C_ARG_PTR(reset);
@@ -296,7 +306,7 @@ XGB_DLL int XGDeviceQuantileDMatrixCreateFromCallback(DataIterHandle iter, DMatr
                                                       int nthread, int max_bin,
                                                       DMatrixHandle *out) {
   API_BEGIN();
-  LOG(WARNING) << __func__ << " is deprecated. Use `XGQuantileDMatrixCreateFromCallback` instead.";
+  DeprecatedFunc(__func__, "1.7.0", "XGQuantileDMatrixCreateFromCallback");
   *out = new std::shared_ptr<xgboost::DMatrix>{
       xgboost::DMatrix::Create(iter, proxy, nullptr, reset, next, missing, nthread, max_bin)};
   API_END();
@@ -319,7 +329,7 @@ XGB_DLL int XGQuantileDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHand
   xgboost_CHECK_C_ARG_PTR(config);
   auto jconfig = Json::Load(StringView{config});
   auto missing = GetMissing(jconfig);
-  auto n_threads = OptionalArg<Integer, int64_t>(jconfig, "nthread", common::OmpGetNumThreads(0));
+  auto n_threads = OptionalArg<Integer, int64_t>(jconfig, "nthread", 0);
   auto max_bin = OptionalArg<Integer, int64_t>(jconfig, "max_bin", 256);
 
   xgboost_CHECK_C_ARG_PTR(next);
@@ -396,14 +406,11 @@ XGB_DLL int XGProxyDMatrixSetDataCSR(DMatrixHandle handle, char const *indptr,
 
 // End Create from data iterator
 
-XGB_DLL int XGDMatrixCreateFromCSREx(const size_t* indptr,
-                                     const unsigned* indices,
-                                     const bst_float* data,
-                                     size_t nindptr,
-                                     size_t nelem,
-                                     size_t num_col,
-                                     DMatrixHandle* out) {
+XGB_DLL int XGDMatrixCreateFromCSREx(const size_t *indptr, const unsigned *indices,
+                                     const bst_float *data, size_t nindptr, size_t nelem,
+                                     size_t num_col, DMatrixHandle *out) {
   API_BEGIN();
+  DeprecatedFunc(__func__, "2.0.0", "XGDMatrixCreateFromCSR");
   data::CSRAdapter adapter(indptr, indices, data, nindptr - 1, nelem, num_col);
   *out = new std::shared_ptr<DMatrix>(DMatrix::Create(&adapter, std::nan(""), 1));
   API_END();
@@ -420,7 +427,7 @@ XGB_DLL int XGDMatrixCreateFromCSR(char const *indptr, char const *indices, char
   xgboost_CHECK_C_ARG_PTR(c_json_config);
   auto config = Json::Load(StringView{c_json_config});
   float missing = GetMissing(config);
-  auto n_threads = OptionalArg<Integer, int64_t>(config, "nthread", common::OmpGetNumThreads(0));
+  auto n_threads = OptionalArg<Integer, int64_t>(config, "nthread", 0);
   xgboost_CHECK_C_ARG_PTR(out);
   *out = new std::shared_ptr<DMatrix>(DMatrix::Create(&adapter, missing, n_threads));
   API_END();
@@ -435,21 +442,35 @@ XGB_DLL int XGDMatrixCreateFromDense(char const *data,
   xgboost_CHECK_C_ARG_PTR(c_json_config);
   auto config = Json::Load(StringView{c_json_config});
   float missing = GetMissing(config);
-  auto n_threads = OptionalArg<Integer, int64_t>(config, "nthread", common::OmpGetNumThreads(0));
+  auto n_threads = OptionalArg<Integer, int64_t>(config, "nthread", 0);
   xgboost_CHECK_C_ARG_PTR(out);
-  *out =
-      new std::shared_ptr<DMatrix>(DMatrix::Create(&adapter, missing, n_threads));
+  *out = new std::shared_ptr<DMatrix>(DMatrix::Create(&adapter, missing, n_threads));
   API_END();
 }
 
-XGB_DLL int XGDMatrixCreateFromCSCEx(const size_t* col_ptr,
-                                     const unsigned* indices,
-                                     const bst_float* data,
-                                     size_t nindptr,
-                                     size_t,
-                                     size_t num_row,
-                                     DMatrixHandle* out) {
+XGB_DLL int XGDMatrixCreateFromCSC(char const *indptr, char const *indices, char const *data,
+                                   xgboost::bst_ulong nrow, char const *c_json_config,
+                                   DMatrixHandle *out) {
   API_BEGIN();
+  xgboost_CHECK_C_ARG_PTR(indptr);
+  xgboost_CHECK_C_ARG_PTR(indices);
+  xgboost_CHECK_C_ARG_PTR(data);
+  data::CSCArrayAdapter adapter{StringView{indptr}, StringView{indices}, StringView{data}, nrow};
+  xgboost_CHECK_C_ARG_PTR(c_json_config);
+  auto config = Json::Load(StringView{c_json_config});
+  float missing = GetMissing(config);
+  auto n_threads = OptionalArg<Integer, int64_t>(config, "nthread", common::OmpGetNumThreads(0));
+  xgboost_CHECK_C_ARG_PTR(out);
+  *out = new std::shared_ptr<DMatrix>(DMatrix::Create(&adapter, missing, n_threads));
+
+  API_END();
+}
+
+XGB_DLL int XGDMatrixCreateFromCSCEx(const size_t *col_ptr, const unsigned *indices,
+                                     const bst_float *data, size_t nindptr, size_t, size_t num_row,
+                                     DMatrixHandle *out) {
+  API_BEGIN();
+  DeprecatedFunc(__func__, "2.0.0", "XGDMatrixCreateFromCSC");
   data::CSCAdapter adapter(col_ptr, indices, data, nindptr - 1, num_row);
   xgboost_CHECK_C_ARG_PTR(out);
   *out = new std::shared_ptr<DMatrix>(DMatrix::Create(&adapter, std::nan(""), 1));
@@ -506,8 +527,7 @@ XGB_DLL int XGDMatrixCreateFromArrowCallback(XGDMatrixCallbackNext *next, char c
   auto jconfig = Json::Load(StringView{config});
   auto missing = GetMissing(jconfig);
   auto n_batches = RequiredArg<Integer>(jconfig, "nbatch", __func__);
-  auto n_threads =
-      OptionalArg<Integer, std::int64_t>(jconfig, "nthread", common::OmpGetNumThreads(0));
+  auto n_threads = OptionalArg<Integer, std::int64_t>(jconfig, "nthread", 0);
   data::RecordBatchesIterAdapter adapter(next, n_batches);
   xgboost_CHECK_C_ARG_PTR(out);
   *out = new std::shared_ptr<DMatrix>(DMatrix::Create(&adapter, missing, n_threads));
@@ -1203,8 +1223,7 @@ XGB_DLL int XGBoosterGetModelRaw(BoosterHandle handle, xgboost::bst_ulong *out_l
   raw_str.resize(0);
 
   common::MemoryBufferStream fo(&raw_str);
-  LOG(WARNING) << "`" << __func__
-               << "` is deprecated, please use `XGBoosterSaveModelToBuffer` instead.";
+  DeprecatedFunc(__func__, "1.6.0", "XGBoosterSaveModelToBuffer");
 
   learner->Configure();
   learner->SaveModel(&fo);

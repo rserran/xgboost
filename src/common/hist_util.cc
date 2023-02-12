@@ -1,5 +1,5 @@
-/*!
- * Copyright 2017-2020 by Contributors
+/**
+ * Copyright 2017-2023 by XGBoost Contributors
  * \file hist_util.cc
  */
 #include <dmlc/timer.h>
@@ -45,14 +45,16 @@ HistogramCuts SketchOnDMatrix(DMatrix *m, int32_t max_bins, int32_t n_threads, b
 
   if (!use_sorted) {
     HostSketchContainer container(max_bins, m->Info().feature_types.ConstHostSpan(), reduced,
-                                  HostSketchContainer::UseGroup(info), n_threads);
+                                  HostSketchContainer::UseGroup(info),
+                                  m->Info().data_split_mode == DataSplitMode::kCol, n_threads);
     for (auto const& page : m->GetBatches<SparsePage>()) {
       container.PushRowPage(page, info, hessian);
     }
     container.MakeCuts(&out);
   } else {
     SortedSketchContainer container{max_bins, m->Info().feature_types.ConstHostSpan(), reduced,
-                                    HostSketchContainer::UseGroup(info), n_threads};
+                                    HostSketchContainer::UseGroup(info),
+                                    m->Info().data_split_mode == DataSplitMode::kCol, n_threads};
     for (auto const& page : m->GetBatches<SortedCSCPage>()) {
       container.PushColPage(page, info, hessian);
     }
@@ -193,9 +195,9 @@ class GHistBuildingManager {
 };
 
 template <bool do_prefetch, class BuildingManager>
-void RowsWiseBuildHistKernel(const std::vector<GradientPair> &gpair,
-                            const RowSetCollection::Elem row_indices, const GHistIndexMatrix &gmat,
-                            GHistRow hist) {
+void RowsWiseBuildHistKernel(Span<GradientPair const> gpair,
+                             const RowSetCollection::Elem row_indices, const GHistIndexMatrix &gmat,
+                             GHistRow hist) {
   constexpr bool kAnyMissing = BuildingManager::kAnyMissing;
   constexpr bool kFirstPage = BuildingManager::kFirstPage;
   using BinIdxType = typename BuildingManager::BinIdxType;
@@ -262,9 +264,9 @@ void RowsWiseBuildHistKernel(const std::vector<GradientPair> &gpair,
 }
 
 template <class BuildingManager>
-void ColsWiseBuildHistKernel(const std::vector<GradientPair> &gpair,
-                            const RowSetCollection::Elem row_indices, const GHistIndexMatrix &gmat,
-                            GHistRow hist) {
+void ColsWiseBuildHistKernel(Span<GradientPair const> gpair,
+                             const RowSetCollection::Elem row_indices, const GHistIndexMatrix &gmat,
+                             GHistRow hist) {
   constexpr bool kAnyMissing = BuildingManager::kAnyMissing;
   constexpr bool kFirstPage = BuildingManager::kFirstPage;
   using BinIdxType = typename BuildingManager::BinIdxType;
@@ -315,9 +317,8 @@ void ColsWiseBuildHistKernel(const std::vector<GradientPair> &gpair,
 }
 
 template <class BuildingManager>
-void BuildHistDispatch(const std::vector<GradientPair> &gpair,
-                       const RowSetCollection::Elem row_indices, const GHistIndexMatrix &gmat,
-                       GHistRow hist) {
+void BuildHistDispatch(Span<GradientPair const> gpair, const RowSetCollection::Elem row_indices,
+                       const GHistIndexMatrix &gmat, GHistRow hist) {
   if (BuildingManager::kReadByColumn) {
     ColsWiseBuildHistKernel<BuildingManager>(gpair, row_indices, gmat, hist);
   } else {
@@ -344,33 +345,31 @@ void BuildHistDispatch(const std::vector<GradientPair> &gpair,
 }
 
 template <bool any_missing>
-void GHistBuilder::BuildHist(const std::vector<GradientPair> &gpair,
-                             const RowSetCollection::Elem row_indices,
-                             const GHistIndexMatrix &gmat,
+void GHistBuilder::BuildHist(Span<GradientPair const> gpair,
+                             const RowSetCollection::Elem row_indices, const GHistIndexMatrix &gmat,
                              GHistRow hist, bool force_read_by_column) const {
   /* force_read_by_column is used for testing the columnwise building of histograms.
    * default force_read_by_column = false
    */
   constexpr double kAdhocL2Size = 1024 * 1024 * 0.8;
-  const bool hist_fit_to_l2 = kAdhocL2Size > 2*sizeof(float)*gmat.cut.Ptrs().back();
+  const bool hist_fit_to_l2 = kAdhocL2Size > 2 * sizeof(float) * gmat.cut.Ptrs().back();
   bool first_page = gmat.base_rowid == 0;
   bool read_by_column = !hist_fit_to_l2 && !any_missing;
   auto bin_type_size = gmat.index.GetBinTypeSize();
 
   GHistBuildingManager<any_missing>::DispatchAndExecute(
-    {first_page, read_by_column || force_read_by_column, bin_type_size},
-    [&](auto t) {
-      using BuildingManager = decltype(t);
-      BuildHistDispatch<BuildingManager>(gpair, row_indices, gmat, hist);
-    });
+      {first_page, read_by_column || force_read_by_column, bin_type_size}, [&](auto t) {
+        using BuildingManager = decltype(t);
+        BuildHistDispatch<BuildingManager>(gpair, row_indices, gmat, hist);
+      });
 }
 
-template void GHistBuilder::BuildHist<true>(const std::vector<GradientPair> &gpair,
+template void GHistBuilder::BuildHist<true>(Span<GradientPair const> gpair,
                                             const RowSetCollection::Elem row_indices,
                                             const GHistIndexMatrix &gmat, GHistRow hist,
                                             bool force_read_by_column) const;
 
-template void GHistBuilder::BuildHist<false>(const std::vector<GradientPair> &gpair,
+template void GHistBuilder::BuildHist<false>(Span<GradientPair const> gpair,
                                              const RowSetCollection::Elem row_indices,
                                              const GHistIndexMatrix &gmat, GHistRow hist,
                                              bool force_read_by_column) const;

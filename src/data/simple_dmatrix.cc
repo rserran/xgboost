@@ -1,23 +1,23 @@
-/*!
- * Copyright 2014~2022 by XGBoost Contributors
+/**
+ * Copyright 2014~2023 by XGBoost Contributors
  * \file simple_dmatrix.cc
  * \brief the input data structure for gradient boosting
  * \author Tianqi Chen
  */
-#include <vector>
+#include "simple_dmatrix.h"
+
+#include <algorithm>
 #include <limits>
 #include <type_traits>
-#include <algorithm>
+#include <vector>
 
-#include "xgboost/data.h"
-#include "xgboost/c_api.h"
-
-#include "simple_dmatrix.h"
-#include "./simple_batch_iterator.h"
 #include "../common/random.h"
 #include "../common/threading_utils.h"
+#include "./simple_batch_iterator.h"
 #include "adapter.h"
 #include "gradient_index.h"
+#include "xgboost/c_api.h"
+#include "xgboost/data.h"
 
 namespace xgboost {
 namespace data {
@@ -46,9 +46,12 @@ DMatrix* SimpleDMatrix::Slice(common::Span<int32_t const> ridxs) {
   return out;
 }
 
-DMatrix* SimpleDMatrix::SliceCol(std::size_t start, std::size_t size) {
+DMatrix* SimpleDMatrix::SliceCol(int num_slices, int slice_id) {
   auto out = new SimpleDMatrix;
   SparsePage& out_page = *out->sparse_page_;
+  auto const slice_size = info_.num_col_ / num_slices;
+  auto const slice_start = slice_size * slice_id;
+  auto const slice_end = (slice_id == num_slices - 1) ? info_.num_col_ : slice_start + slice_size;
   for (auto const &page : this->GetBatches<SparsePage>()) {
     auto batch = page.GetView();
     auto& h_data = out_page.data.HostVector();
@@ -58,7 +61,7 @@ DMatrix* SimpleDMatrix::SliceCol(std::size_t start, std::size_t size) {
       auto inst = batch[i];
       auto prev_size = h_data.size();
       std::copy_if(inst.begin(), inst.end(), std::back_inserter(h_data), [&](Entry e) {
-        return e.index >= start && e.index < start + size;
+        return e.index >= slice_start && e.index < slice_end;
       });
       rptr += h_data.size() - prev_size;
       h_offset.emplace_back(rptr);
@@ -229,7 +232,9 @@ SimpleDMatrix::SimpleDMatrix(AdapterT* adapter, float missing, int nthread) {
         offset_vec.emplace_back(offset_vec.back());
       }
     } else {
-      CHECK((std::is_same<AdapterT, CSCAdapter>::value)) << "Expecting CSCAdapter";
+      CHECK((std::is_same<AdapterT, CSCAdapter>::value ||
+             std::is_same<AdapterT, CSCArrayAdapter>::value))
+          << "Expecting CSCAdapter";
       info_.num_row_ = offset_vec.size() - 1;
     }
   } else {
@@ -267,20 +272,14 @@ void SimpleDMatrix::SaveToLocalFile(const std::string& fname) {
     fo->Write(sparse_page_->data.HostVector());
 }
 
-template SimpleDMatrix::SimpleDMatrix(DenseAdapter* adapter, float missing,
-                                     int nthread);
-template SimpleDMatrix::SimpleDMatrix(ArrayAdapter* adapter, float missing,
-                                     int nthread);
-template SimpleDMatrix::SimpleDMatrix(CSRAdapter* adapter, float missing,
-                                     int nthread);
-template SimpleDMatrix::SimpleDMatrix(CSRArrayAdapter* adapter, float missing,
-                                     int nthread);
-template SimpleDMatrix::SimpleDMatrix(CSCAdapter* adapter, float missing,
-                                     int nthread);
-template SimpleDMatrix::SimpleDMatrix(DataTableAdapter* adapter, float missing,
-                                     int nthread);
-template SimpleDMatrix::SimpleDMatrix(FileAdapter* adapter, float missing,
-                                     int nthread);
+template SimpleDMatrix::SimpleDMatrix(DenseAdapter* adapter, float missing, int nthread);
+template SimpleDMatrix::SimpleDMatrix(ArrayAdapter* adapter, float missing, int nthread);
+template SimpleDMatrix::SimpleDMatrix(CSRAdapter* adapter, float missing, int nthread);
+template SimpleDMatrix::SimpleDMatrix(CSRArrayAdapter* adapter, float missing, int nthread);
+template SimpleDMatrix::SimpleDMatrix(CSCArrayAdapter* adapter, float missing, int nthread);
+template SimpleDMatrix::SimpleDMatrix(CSCAdapter* adapter, float missing, int nthread);
+template SimpleDMatrix::SimpleDMatrix(DataTableAdapter* adapter, float missing, int nthread);
+template SimpleDMatrix::SimpleDMatrix(FileAdapter* adapter, float missing, int nthread);
 template SimpleDMatrix::SimpleDMatrix(
     IteratorAdapter<DataIterHandle, XGBCallbackDataIterNext, XGBoostBatchCSR>
         *adapter,

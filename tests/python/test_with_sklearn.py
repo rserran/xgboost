@@ -154,6 +154,32 @@ def test_ranking():
     np.testing.assert_almost_equal(pred, pred_orig)
 
 
+def test_ranking_metric() -> None:
+    from sklearn.metrics import roc_auc_score
+
+    X, y, qid, w = tm.make_ltr(512, 4, 3, 2)
+    # use auc for test as ndcg_score in sklearn works only on label gain instead of exp
+    # gain.
+    # note that the auc in sklearn is different from the one in XGBoost. The one in
+    # sklearn compares the number of mis-classified docs, while the one in xgboost
+    # compares the number of mis-classified pairs.
+    ltr = xgb.XGBRanker(
+        eval_metric=roc_auc_score, n_estimators=10, tree_method="hist", max_depth=2
+    )
+    ltr.fit(
+        X,
+        y,
+        qid=qid,
+        sample_weight=w,
+        eval_set=[(X, y)],
+        eval_qid=[qid],
+        sample_weight_eval_set=[w],
+        verbose=True,
+    )
+    results = ltr.evals_result()
+    assert results["validation_0"]["roc_auc_score"][-1] > 0.6
+
+
 def test_stacking_regression():
     from sklearn.datasets import load_diabetes
     from sklearn.ensemble import RandomForestRegressor, StackingRegressor
@@ -1417,3 +1443,41 @@ def test_evaluation_metric():
     with pytest.raises(AssertionError):
         # shape check inside the `merror` function
         clf.fit(X, y, eval_set=[(X, y)])
+
+def test_weighted_evaluation_metric():
+    from sklearn.datasets import make_hastie_10_2
+    from sklearn.metrics import log_loss
+    X, y = make_hastie_10_2(n_samples=2000, random_state=42)
+    labels, y = np.unique(y, return_inverse=True)
+    X_train, X_test = X[:1600], X[1600:]
+    y_train, y_test = y[:1600], y[1600:]
+    weights_eval_set = np.random.choice([1, 2], len(X_test))
+
+    np.random.seed(0)
+    weights_train = np.random.choice([1, 2], len(X_train))
+
+    clf = xgb.XGBClassifier(
+        tree_method="hist",
+        eval_metric=log_loss,
+        n_estimators=16,
+        objective="binary:logistic",
+    )
+    clf.fit(X_train, y_train, sample_weight=weights_train, eval_set=[(X_test, y_test)],
+            sample_weight_eval_set=[weights_eval_set])
+    custom = clf.evals_result()
+
+    clf = xgb.XGBClassifier(
+        tree_method="hist",
+        eval_metric="logloss",
+        n_estimators=16,
+        objective="binary:logistic"
+    )
+    clf.fit(X_train, y_train, sample_weight=weights_train, eval_set=[(X_test, y_test)],
+            sample_weight_eval_set=[weights_eval_set])
+    internal = clf.evals_result()
+
+    np.testing.assert_allclose(
+        custom["validation_0"]["log_loss"],
+        internal["validation_0"]["logloss"],
+        atol=1e-6
+    )

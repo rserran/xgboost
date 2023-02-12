@@ -96,6 +96,9 @@ def make_categorical(
         l_n_samples = min(
             n_samples // n_workers, n_samples - i * (n_samples // n_workers)
         )
+        # make sure there's at least one sample for testing empty DMatrix
+        if n_samples == 1 and i == 0:
+            l_n_samples = 1
         future = client.submit(
             pack,
             n_samples=l_n_samples,
@@ -1480,6 +1483,27 @@ class TestWithDask:
             quantile_hist["Valid"]["rmse"], dmatrix_hist["Valid"]["rmse"]
         )
 
+    def test_empty_quantile_dmatrix(self, client: Client) -> None:
+        X, y = make_categorical(client, 2, 30, 13)
+        X_valid, y_valid = make_categorical(client, 10000, 30, 13)
+        X_valid, y_valid, _ = deterministic_repartition(client, X_valid, y_valid, None)
+
+        Xy = xgb.dask.DaskQuantileDMatrix(client, X, y, enable_categorical=True)
+        Xy_valid = xgb.dask.DaskQuantileDMatrix(
+            client, X_valid, y_valid, ref=Xy, enable_categorical=True
+        )
+        result = xgb.dask.train(
+            client,
+            {"tree_method": "hist"},
+            Xy,
+            num_boost_round=10,
+            evals=[(Xy_valid, "Valid")],
+        )
+        predt = xgb.dask.inplace_predict(client, result["booster"], X).compute()
+        np.testing.assert_allclose(y.compute(), predt)
+        rmse = result["history"]["Valid"]["rmse"][-1]
+        assert rmse < 32.0
+
     @given(params=hist_parameter_strategy, dataset=tm.dataset_strategy)
     @settings(
         deadline=None, max_examples=10, suppress_health_check=suppress, print_blob=True
@@ -1489,62 +1513,6 @@ class TestWithDask:
     ) -> None:
         num_rounds = 10
         self.run_updater_test(client, params, num_rounds, dataset, 'approx')
-
-    def run_quantile(self, name: str) -> None:
-        exe: Optional[str] = None
-        for possible_path in {'./testxgboost', './build/testxgboost',
-                              '../build/cpubuild/testxgboost',
-                              '../cpu-build/testxgboost'}:
-            if os.path.exists(possible_path):
-                exe = possible_path
-        if exe is None:
-            return
-
-        test = "--gtest_filter=Quantile." + name
-
-        def runit(
-            worker_addr: str, rabit_args: Dict[str, Union[int, str]]
-        ) -> subprocess.CompletedProcess:
-            # setup environment for running the c++ part.
-            env = os.environ.copy()
-            env['DMLC_TRACKER_PORT'] = str(rabit_args['DMLC_TRACKER_PORT'])
-            env["DMLC_TRACKER_URI"] = str(rabit_args["DMLC_TRACKER_URI"])
-            return subprocess.run([str(exe), test], env=env, capture_output=True)
-
-        with LocalCluster(n_workers=4, dashboard_address=":0") as cluster:
-            with Client(cluster) as client:
-                workers = tm.get_client_workers(client)
-                rabit_args = client.sync(
-                    xgb.dask._get_rabit_args, len(workers), None, client
-                )
-                futures = client.map(runit,
-                                     workers,
-                                     pure=False,
-                                     workers=workers,
-                                     rabit_args=rabit_args)
-                results = client.gather(futures)
-
-                for ret in results:
-                    msg = ret.stdout.decode('utf-8')
-                    assert msg.find('1 test from Quantile') != -1, msg
-                    assert ret.returncode == 0, msg
-
-    @pytest.mark.skipif(**tm.no_dask())
-    @pytest.mark.gtest
-    def test_quantile_basic(self) -> None:
-        self.run_quantile('DistributedBasic')
-        self.run_quantile('SortedDistributedBasic')
-
-    @pytest.mark.skipif(**tm.no_dask())
-    @pytest.mark.gtest
-    def test_quantile(self) -> None:
-        self.run_quantile('Distributed')
-        self.run_quantile('SortedDistributed')
-
-    @pytest.mark.skipif(**tm.no_dask())
-    @pytest.mark.gtest
-    def test_quantile_same_on_all_workers(self) -> None:
-        self.run_quantile("SameOnAllWorkers")
 
     def test_adaptive(self) -> None:
         def get_score(config: Dict) -> float:

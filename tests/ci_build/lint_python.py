@@ -132,16 +132,7 @@ def main(args: argparse.Namespace) -> None:
             run_black(path)
             for path in [
                 # core
-                "python-package/xgboost/__init__.py",
-                "python-package/xgboost/_typing.py",
-                "python-package/xgboost/callback.py",
-                "python-package/xgboost/compat.py",
-                "python-package/xgboost/config.py",
-                "python-package/xgboost/dask.py",
-                "python-package/xgboost/sklearn.py",
-                "python-package/xgboost/spark",
-                "python-package/xgboost/federated.py",
-                "python-package/xgboost/testing",
+                "python-package/",
                 # tests
                 "tests/python/test_config.py",
                 "tests/python/test_data_iterator.py",
@@ -159,6 +150,7 @@ def main(args: argparse.Namespace) -> None:
                 "demo/guide-python/feature_weights.py",
                 "demo/guide-python/sklearn_parallel.py",
                 "demo/guide-python/spark_estimator_examples.py",
+                "demo/guide-python/individual_trees.py",
                 # CI
                 "tests/ci_build/lint_python.py",
                 "tests/ci_build/test_r_package.py",
@@ -200,6 +192,7 @@ def main(args: argparse.Namespace) -> None:
                 "demo/guide-python/external_memory.py",
                 "demo/guide-python/cat_in_the_dat.py",
                 "demo/guide-python/feature_weights.py",
+                "demo/guide-python/individual_trees.py",
                 # tests
                 "tests/python/test_dt.py",
                 "tests/python/test_data_iterator.py",

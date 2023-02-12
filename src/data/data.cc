@@ -1,5 +1,5 @@
-/*!
- * Copyright 2015-2022 by XGBoost Contributors
+/**
+ * Copyright 2015-2023 by XGBoost Contributors
  * \file data.cc
  */
 #include "xgboost/data.h"
@@ -27,6 +27,7 @@
 #include "sparse_page_writer.h"
 #include "validation.h"
 #include "xgboost/c_api.h"
+#include "xgboost/context.h"
 #include "xgboost/host_device_vector.h"
 #include "xgboost/learner.h"
 #include "xgboost/logging.h"
@@ -850,7 +851,8 @@ DMatrix* DMatrix::Load(const std::string& uri, bool silent, DataSplitMode data_s
       std::unique_ptr<dmlc::Parser<uint32_t>> parser(
           dmlc::Parser<uint32_t>::Create(fname.c_str(), partid, npart, file_format.c_str()));
       data::FileAdapter adapter(parser.get());
-      dmat = DMatrix::Create(&adapter, std::numeric_limits<float>::quiet_NaN(), 1, cache_file);
+      dmat = DMatrix::Create(&adapter, std::numeric_limits<float>::quiet_NaN(), Context{}.Threads(),
+                             cache_file);
     } else {
       data::FileIterator iter{fname, static_cast<uint32_t>(partid), static_cast<uint32_t>(npart),
                               file_format};
@@ -895,10 +897,7 @@ DMatrix* DMatrix::Load(const std::string& uri, bool silent, DataSplitMode data_s
     if (!cache_file.empty()) {
       LOG(FATAL) << "Column-wise data split is not support for external memory.";
     }
-    auto slice_cols = (dmat->Info().num_col_ + 1) / npart;
-    auto slice_start = slice_cols * partid;
-    auto size = std::min(slice_cols, dmat->Info().num_col_ - slice_start);
-    auto* sliced = dmat->SliceCol(slice_start, size);
+    auto* sliced = dmat->SliceCol(npart, partid);
     delete dmat;
     return sliced;
   } else {
@@ -943,31 +942,33 @@ DMatrix* DMatrix::Create(AdapterT* adapter, float missing, int nthread, const st
   return new data::SimpleDMatrix(adapter, missing, nthread);
 }
 
-template DMatrix* DMatrix::Create<data::DenseAdapter>(
-    data::DenseAdapter* adapter, float missing, int nthread,
-    const std::string& cache_prefix);
-template DMatrix* DMatrix::Create<data::ArrayAdapter>(
-    data::ArrayAdapter* adapter, float missing, int nthread,
-    const std::string& cache_prefix);
-template DMatrix* DMatrix::Create<data::CSRAdapter>(
-    data::CSRAdapter* adapter, float missing, int nthread,
-    const std::string& cache_prefix);
-template DMatrix* DMatrix::Create<data::CSCAdapter>(
-    data::CSCAdapter* adapter, float missing, int nthread,
-    const std::string& cache_prefix);
-template DMatrix* DMatrix::Create<data::DataTableAdapter>(
-    data::DataTableAdapter* adapter, float missing, int nthread,
-    const std::string& cache_prefix);
-template DMatrix* DMatrix::Create<data::FileAdapter>(
-    data::FileAdapter* adapter, float missing, int nthread,
-    const std::string& cache_prefix);
-template DMatrix* DMatrix::Create<data::CSRArrayAdapter>(
-    data::CSRArrayAdapter* adapter, float missing, int nthread,
-    const std::string& cache_prefix);
-template DMatrix *
-DMatrix::Create(data::IteratorAdapter<DataIterHandle, XGBCallbackDataIterNext,
-                                      XGBoostBatchCSR> *adapter,
-                float missing, int nthread, const std::string &cache_prefix);
+template DMatrix* DMatrix::Create<data::DenseAdapter>(data::DenseAdapter* adapter, float missing,
+                                                      std::int32_t nthread,
+                                                      const std::string& cache_prefix);
+template DMatrix* DMatrix::Create<data::ArrayAdapter>(data::ArrayAdapter* adapter, float missing,
+                                                      std::int32_t nthread,
+                                                      const std::string& cache_prefix);
+template DMatrix* DMatrix::Create<data::CSRAdapter>(data::CSRAdapter* adapter, float missing,
+                                                    std::int32_t nthread,
+                                                    const std::string& cache_prefix);
+template DMatrix* DMatrix::Create<data::CSCAdapter>(data::CSCAdapter* adapter, float missing,
+                                                    std::int32_t nthread,
+                                                    const std::string& cache_prefix);
+template DMatrix* DMatrix::Create<data::DataTableAdapter>(data::DataTableAdapter* adapter,
+                                                          float missing, std::int32_t nthread,
+                                                          const std::string& cache_prefix);
+template DMatrix* DMatrix::Create<data::FileAdapter>(data::FileAdapter* adapter, float missing,
+                                                     std::int32_t nthread,
+                                                     const std::string& cache_prefix);
+template DMatrix* DMatrix::Create<data::CSRArrayAdapter>(data::CSRArrayAdapter* adapter,
+                                                         float missing, std::int32_t nthread,
+                                                         const std::string& cache_prefix);
+template DMatrix* DMatrix::Create<data::CSCArrayAdapter>(data::CSCArrayAdapter* adapter,
+                                                         float missing, std::int32_t nthread,
+                                                         const std::string& cache_prefix);
+template DMatrix* DMatrix::Create(
+    data::IteratorAdapter<DataIterHandle, XGBCallbackDataIterNext, XGBoostBatchCSR>* adapter,
+    float missing, int nthread, const std::string& cache_prefix);
 template DMatrix* DMatrix::Create<data::RecordBatchesIterAdapter>(
     data::RecordBatchesIterAdapter* adapter, float missing, int nthread, const std::string&);
 
@@ -1219,20 +1220,19 @@ void SparsePage::PushCSC(const SparsePage &batch) {
   self_offset = std::move(offset);
 }
 
-template uint64_t
-SparsePage::Push(const data::DenseAdapterBatch& batch, float missing, int nthread);
-template uint64_t
-SparsePage::Push(const data::ArrayAdapterBatch& batch, float missing, int nthread);
-template uint64_t
-SparsePage::Push(const data::CSRAdapterBatch& batch, float missing, int nthread);
-template uint64_t
-SparsePage::Push(const data::CSRArrayAdapterBatch& batch, float missing, int nthread);
-template uint64_t
-SparsePage::Push(const data::CSCAdapterBatch& batch, float missing, int nthread);
-template uint64_t
-SparsePage::Push(const data::DataTableAdapterBatch& batch, float missing, int nthread);
-template uint64_t
-SparsePage::Push(const data::FileAdapterBatch& batch, float missing, int nthread);
+template uint64_t SparsePage::Push(const data::DenseAdapterBatch& batch, float missing,
+                                   int nthread);
+template uint64_t SparsePage::Push(const data::ArrayAdapterBatch& batch, float missing,
+                                   int nthread);
+template uint64_t SparsePage::Push(const data::CSRAdapterBatch& batch, float missing, int nthread);
+template uint64_t SparsePage::Push(const data::CSRArrayAdapterBatch& batch, float missing,
+                                   int nthread);
+template uint64_t SparsePage::Push(const data::CSCArrayAdapterBatch& batch, float missing,
+                                   int nthread);
+template uint64_t SparsePage::Push(const data::CSCAdapterBatch& batch, float missing, int nthread);
+template uint64_t SparsePage::Push(const data::DataTableAdapterBatch& batch, float missing,
+                                   int nthread);
+template uint64_t SparsePage::Push(const data::FileAdapterBatch& batch, float missing, int nthread);
 
 namespace data {
 
