@@ -8,15 +8,16 @@
 #define XGBOOST_METRIC_H_
 
 #include <dmlc/registry.h>
-#include <xgboost/model.h>
-#include <xgboost/data.h>
 #include <xgboost/base.h>
+#include <xgboost/data.h>
 #include <xgboost/host_device_vector.h>
+#include <xgboost/model.h>
 
-#include <vector>
-#include <string>
 #include <functional>
+#include <memory>  // shared_ptr
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace xgboost {
 struct Context;
@@ -54,12 +55,15 @@ class Metric : public Configurable {
     out["name"] = String(this->Name());
   }
 
-  /*!
-   * \brief evaluate a specific metric
-   * \param preds prediction
-   * \param info information, including label etc.
+  /**
+   * \brief Evaluate a metric with DMatrix as input.
+   *
+   * \param preds Prediction
+   * \param p_fmat DMatrix that contains related information like labels.
    */
-  virtual double Eval(const HostDeviceVector<bst_float>& preds, const MetaInfo& info) = 0;
+  virtual double Evaluate(HostDeviceVector<bst_float> const& preds,
+                          std::shared_ptr<DMatrix> p_fmat) = 0;
+
   /*! \return name of metric */
   virtual const char* Name() const = 0;
   /*! \brief virtual destructor */

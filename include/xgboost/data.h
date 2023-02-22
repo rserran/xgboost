@@ -124,18 +124,7 @@ class MetaInfo {
     return weights_.Size() != 0 ?  weights_.HostVector()[i] : 1.0f;
   }
   /*! \brief get sorted indexes (argsort) of labels by absolute value (used by cox loss) */
-  inline const std::vector<size_t>& LabelAbsSort() const {
-    if (label_order_cache_.size() == labels.Size()) {
-      return label_order_cache_;
-    }
-    label_order_cache_.resize(labels.Size());
-    std::iota(label_order_cache_.begin(), label_order_cache_.end(), 0);
-    const auto& l = labels.Data()->HostVector();
-    XGBOOST_PARALLEL_STABLE_SORT(label_order_cache_.begin(), label_order_cache_.end(),
-              [&l](size_t i1, size_t i2) {return std::abs(l[i1]) < std::abs(l[i2]);});
-
-    return label_order_cache_;
-  }
+  const std::vector<size_t>& LabelAbsSort(Context const* ctx) const;
   /*! \brief clear all the information */
   void Clear();
   /*!
@@ -538,6 +527,11 @@ class DMatrix {
   /*! \brief Whether the matrix is dense. */
   bool IsDense() const {
     return Info().num_nonzero_ == Info().num_row_ * Info().num_col_;
+  }
+
+  /*! \brief Whether the data is split column-wise. */
+  bool IsColumnSplit() const {
+    return Info().data_split_mode == DataSplitMode::kCol;
   }
 
   /*!

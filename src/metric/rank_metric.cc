@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "../collective/communicator-inl.h"
+#include "../common/algorithm.h"  // Sort
 #include "../common/math.h"
 #include "../common/ranking_utils.h"  // MakeMetricName
 #include "../common/threading_utils.h"
@@ -92,7 +93,7 @@ namespace metric {
 DMLC_REGISTRY_FILE_TAG(rank_metric);
 
 /*! \brief AMS: also records best threshold */
-struct EvalAMS : public Metric {
+struct EvalAMS : public MetricNoCache {
  public:
   explicit EvalAMS(const char* param) {
     CHECK(param != nullptr)  // NOLINT
@@ -113,7 +114,7 @@ struct EvalAMS : public Metric {
     const auto &h_preds = preds.ConstHostVector();
     common::ParallelFor(ndata, ctx_->Threads(),
                         [&](bst_omp_uint i) { rec[i] = std::make_pair(h_preds[i], i); });
-    XGBOOST_PARALLEL_SORT(rec.begin(), rec.end(), common::CmpFirst);
+    common::Sort(ctx_, rec.begin(), rec.end(), common::CmpFirst);
     auto ntop = static_cast<unsigned>(ratio_ * ndata);
     if (ntop == 0) ntop = ndata;
     const double br = 10.0;
@@ -155,10 +156,10 @@ struct EvalAMS : public Metric {
 };
 
 /*! \brief Evaluate rank list */
-struct EvalRank : public Metric, public EvalRankConfig {
+struct EvalRank : public MetricNoCache, public EvalRankConfig {
  private:
   // This is used to compute the ranking metrics on the GPU - for training jobs that run on the GPU.
-  std::unique_ptr<xgboost::Metric> rank_gpu_;
+  std::unique_ptr<MetricNoCache> rank_gpu_;
 
  public:
   double Eval(const HostDeviceVector<bst_float>& preds, const MetaInfo& info) override {
@@ -322,7 +323,7 @@ struct EvalMAP : public EvalRank {
 };
 
 /*! \brief Cox: Partial likelihood of the Cox proportional hazards model */
-struct EvalCox : public Metric {
+struct EvalCox : public MetricNoCache {
  public:
   EvalCox() = default;
   double Eval(const HostDeviceVector<bst_float>& preds, const MetaInfo& info) override {
@@ -330,7 +331,7 @@ struct EvalCox : public Metric {
     using namespace std;  // NOLINT(*)
 
     const auto ndata = static_cast<bst_omp_uint>(info.labels.Size());
-    const auto &label_order = info.LabelAbsSort();
+    const auto &label_order = info.LabelAbsSort(ctx_);
 
     // pre-compute a sum for the denominator
     double exp_p_sum = 0;  // we use double because we might need the precision with large datasets

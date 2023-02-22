@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "collective/communicator-inl.h"
+#include "common/api_entry.h"  // XGBAPIThreadLocalEntry
 #include "common/charconv.h"
 #include "common/common.h"
 #include "common/io.h"
@@ -430,7 +431,9 @@ class LearnerConfiguration : public Learner {
     monitor_.Init("Learner");
     auto& local_cache = (*ThreadLocalPredictionCache::Get())[this];
     for (std::shared_ptr<DMatrix> const& d : cache) {
-      local_cache.Cache(d, Context::kCpuId);
+      if (d) {
+        local_cache.Cache(d, Context::kCpuId);
+      }
     }
   }
   ~LearnerConfiguration() override {
@@ -692,6 +695,11 @@ class LearnerConfiguration : public Learner {
                          });
         } else if (IsA<Object>(kv.second)) {
           stack.push(kv.second);
+        } else if (kv.first == "metrics") {
+          auto const& array = get<Array const>(kv.second);
+          for (auto const& v : array) {
+            stack.push(v);
+          }
         }
       }
     }
@@ -1296,9 +1304,8 @@ class LearnerImpl : public LearnerIO {
     this->ValidateDMatrix(train.get(), true);
 
     auto local_cache = this->GetPredictionCache();
-    local_cache->Cache(train, ctx_.gpu_id);
-
-    gbm_->DoBoost(train.get(), in_gpair, &local_cache->Entry(train.get()), obj_.get());
+    auto& predt = local_cache->Cache(train, ctx_.gpu_id);
+    gbm_->DoBoost(train.get(), in_gpair, &predt, obj_.get());
     monitor_.Stop("BoostOneIter");
   }
 
@@ -1332,7 +1339,7 @@ class LearnerImpl : public LearnerIO {
 
       obj_->EvalTransform(&out);
       for (auto& ev : metrics_) {
-        os << '\t' << data_names[i] << '-' << ev->Name() << ':' << ev->Eval(out, m->Info());
+        os << '\t' << data_names[i] << '-' << ev->Name() << ':' << ev->Evaluate(out, m);
       }
     }
 

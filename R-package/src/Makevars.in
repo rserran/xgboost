@@ -36,6 +36,8 @@ OBJECTS= \
     $(PKGROOT)/src/objective/hinge.o \
     $(PKGROOT)/src/objective/aft_obj.o \
     $(PKGROOT)/src/objective/adaptive.o \
+    $(PKGROOT)/src/objective/init_estimation.o \
+    $(PKGROOT)/src/objective/quantile_obj.o \
     $(PKGROOT)/src/gbm/gbm.o \
     $(PKGROOT)/src/gbm/gbtree.o \
     $(PKGROOT)/src/gbm/gbtree_model.o \
@@ -91,6 +93,7 @@ OBJECTS= \
     $(PKGROOT)/src/common/survival_util.o \
     $(PKGROOT)/src/common/threading_utils.o \
     $(PKGROOT)/src/common/ranking_utils.o \
+    $(PKGROOT)/src/common/quantile_loss_utils.o \
     $(PKGROOT)/src/common/timer.o \
     $(PKGROOT)/src/common/version.o \
     $(PKGROOT)/src/c_api/c_api.o \
