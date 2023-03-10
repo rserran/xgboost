@@ -28,21 +28,14 @@ namespace tree {
 
 DMLC_REGISTRY_FILE_TAG(updater_quantile_hist);
 
-void QuantileHistMaker::Configure(const Args &args) {
-  param_.UpdateAllowUnknown(args);
-}
-
-void QuantileHistMaker::Update(HostDeviceVector<GradientPair> *gpair, DMatrix *dmat,
+void QuantileHistMaker::Update(TrainParam const *param, HostDeviceVector<GradientPair> *gpair,
+                               DMatrix *dmat,
                                common::Span<HostDeviceVector<bst_node_t>> out_position,
                                const std::vector<RegTree *> &trees) {
-  // rescale learning rate according to size of trees
-  float lr = param_.learning_rate;
-  param_.learning_rate = lr / trees.size();
-
   // build tree
   const size_t n_trees = trees.size();
   if (!pimpl_) {
-    pimpl_.reset(new Builder(n_trees, param_, dmat, task_, ctx_));
+    pimpl_.reset(new Builder(n_trees, param, dmat, *task_, ctx_));
   }
 
   size_t t_idx{0};
@@ -51,8 +44,6 @@ void QuantileHistMaker::Update(HostDeviceVector<GradientPair> *gpair, DMatrix *d
     this->pimpl_->UpdateTree(gpair, dmat, p_tree, &t_row_position);
     ++t_idx;
   }
-
-  param_.learning_rate = lr;
 }
 
 bool QuantileHistMaker::UpdatePredictionCache(const DMatrix *data,
@@ -107,7 +98,7 @@ CPUExpandEntry QuantileHistMaker::Builder::InitRoot(
     auto weight = evaluator_->InitRoot(GradStats{grad_stat});
     p_tree->Stat(RegTree::kRoot).sum_hess = grad_stat.GetHess();
     p_tree->Stat(RegTree::kRoot).base_weight = weight;
-    (*p_tree)[RegTree::kRoot].SetLeaf(param_.learning_rate * weight);
+    (*p_tree)[RegTree::kRoot].SetLeaf(param_->learning_rate * weight);
 
     std::vector<CPUExpandEntry> entries{node};
     monitor_->Start("EvaluateSplits");
@@ -173,7 +164,7 @@ void QuantileHistMaker::Builder::ExpandTree(DMatrix *p_fmat, RegTree *p_tree,
                                             HostDeviceVector<bst_node_t> *p_out_position) {
   monitor_->Start(__func__);
 
-  Driver<CPUExpandEntry> driver(param_);
+  Driver<CPUExpandEntry> driver(*param_);
   driver.Push(this->InitRoot(p_fmat, p_tree, gpair_h));
   auto const &tree = *p_tree;
   auto expand_set = driver.Pop();
@@ -283,9 +274,8 @@ void QuantileHistMaker::Builder::InitData(DMatrix *fmat, const RegTree &tree,
     histogram_builder_->Reset(n_total_bins, HistBatch(param_), ctx_->Threads(), page_id,
                               collective::IsDistributed(), fmat->IsColumnSplit());
 
-    auto m_gpair =
-        linalg::MakeTensorView(*gpair, {gpair->size(), static_cast<std::size_t>(1)}, ctx_->gpu_id);
-    SampleGradient(ctx_, param_, m_gpair);
+    auto m_gpair = linalg::MakeTensorView(ctx_, *gpair, gpair->size(), static_cast<std::size_t>(1));
+    SampleGradient(ctx_, *param_, m_gpair);
   }
 
   // store a pointer to the tree
@@ -297,6 +287,8 @@ void QuantileHistMaker::Builder::InitData(DMatrix *fmat, const RegTree &tree,
 
 XGBOOST_REGISTER_TREE_UPDATER(QuantileHistMaker, "grow_quantile_histmaker")
     .describe("Grow tree using quantized histogram.")
-    .set_body([](Context const *ctx, ObjInfo task) { return new QuantileHistMaker(ctx, task); });
+    .set_body([](Context const *ctx, ObjInfo const *task) {
+      return new QuantileHistMaker(ctx, task);
+    });
 }  // namespace tree
 }  // namespace xgboost

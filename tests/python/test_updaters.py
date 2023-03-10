@@ -5,15 +5,15 @@ from typing import Any, Dict, List
 import numpy as np
 import pytest
 from hypothesis import given, note, settings, strategies
+
+import xgboost as xgb
+from xgboost import testing as tm
 from xgboost.testing.params import (
     cat_parameter_strategy,
     exact_parameter_strategy,
     hist_parameter_strategy,
 )
 from xgboost.testing.updater import check_init_estimation, check_quantile_loss
-
-import xgboost as xgb
-from xgboost import testing as tm
 
 
 def train_result(param, dmat, num_rounds):
@@ -447,7 +447,8 @@ class TestTreeMethod:
             {
                 "tree_method": tree_method,
                 "objective": "reg:absoluteerror",
-                "subsample": 0.8
+                "subsample": 0.8,
+                "eta": 1.0,
             },
             Xy,
             num_boost_round=10,

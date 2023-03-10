@@ -1,5 +1,5 @@
-/*!
- * Copyright 2014-2022 by XGBoost Contributors
+/**
+ * Copyright 2014-2023 by XGBoost Contributors
  * \file tree_updater.h
  * \brief General primitive for tree learning,
  *   Updating a collection of trees given the information.
@@ -9,26 +9,28 @@
 #define XGBOOST_TREE_UPDATER_H_
 
 #include <dmlc/registry.h>
-#include <xgboost/base.h>
-#include <xgboost/context.h>
-#include <xgboost/data.h>
-#include <xgboost/host_device_vector.h>
-#include <xgboost/linalg.h>
-#include <xgboost/model.h>
-#include <xgboost/task.h>
-#include <xgboost/tree_model.h>
+#include <xgboost/base.h>                // for Args, GradientPair
+#include <xgboost/data.h>                // DMatrix
+#include <xgboost/host_device_vector.h>  // for HostDeviceVector
+#include <xgboost/linalg.h>              // for VectorView
+#include <xgboost/model.h>               // for Configurable
+#include <xgboost/span.h>                // for Span
+#include <xgboost/tree_model.h>          // for RegTree
 
-#include <functional>
-#include <string>
-#include <utility>
-#include <vector>
+#include <functional>                    // for function
+#include <string>                        // for string
+#include <vector>                        // for vector
 
 namespace xgboost {
+namespace tree {
+struct TrainParam;
+}
 
 class Json;
 struct Context;
+struct ObjInfo;
 
-/*!
+/**
  * \brief interface of tree update module, that performs update of a tree.
  */
 class TreeUpdater : public Configurable {
@@ -50,14 +52,16 @@ class TreeUpdater : public Configurable {
    *  used for modifying existing trees (like `prune`).  Return true if it can modify
    *  existing trees.
    */
-  virtual bool CanModifyTree() const { return false; }
+  [[nodiscard]] virtual bool CanModifyTree() const { return false; }
   /*!
    * \brief Wether the out_position in `Update` is valid. This determines whether adaptive
    *        tree can be used.
    */
-  virtual bool HasNodePosition() const { return false; }
-  /*!
+  [[nodiscard]] virtual bool HasNodePosition() const { return false; }
+  /**
    * \brief perform update to the tree models
+   *
+   * \param param Hyper-parameter for constructing trees.
    * \param gpair the gradient pair statistics of the data
    * \param data The data matrix passed to the updater.
    * \param out_position The leaf index for each row.  The index is negated if that row is
@@ -67,8 +71,8 @@ class TreeUpdater : public Configurable {
    *         but maybe different random seeds, usually one tree is passed in at a time,
    *         there can be multiple trees when we train random forest style model
    */
-  virtual void Update(HostDeviceVector<GradientPair>* gpair, DMatrix* data,
-                      common::Span<HostDeviceVector<bst_node_t>> out_position,
+  virtual void Update(tree::TrainParam const* param, HostDeviceVector<GradientPair>* gpair,
+                      DMatrix* data, common::Span<HostDeviceVector<bst_node_t>> out_position,
                       const std::vector<RegTree*>& out_trees) = 0;
 
   /*!
@@ -86,14 +90,15 @@ class TreeUpdater : public Configurable {
     return false;
   }
 
-  virtual char const* Name() const = 0;
+  [[nodiscard]] virtual char const* Name() const = 0;
 
-  /*!
+  /**
    * \brief Create a tree updater given name
    * \param name Name of the tree updater.
    * \param ctx A global runtime parameter
+   * \param task Infomation about the objective.
    */
-  static TreeUpdater* Create(const std::string& name, Context const* ctx, ObjInfo task);
+  static TreeUpdater* Create(const std::string& name, Context const* ctx, ObjInfo const* task);
 };
 
 /*!
@@ -101,7 +106,7 @@ class TreeUpdater : public Configurable {
  */
 struct TreeUpdaterReg
     : public dmlc::FunctionRegEntryBase<
-          TreeUpdaterReg, std::function<TreeUpdater*(Context const* ctx, ObjInfo task)>> {};
+          TreeUpdaterReg, std::function<TreeUpdater*(Context const* ctx, ObjInfo const* task)>> {};
 
 /*!
  * \brief Macro to register tree updater.

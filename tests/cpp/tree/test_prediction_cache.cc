@@ -7,7 +7,9 @@
 
 #include <memory>
 
+#include "../../../src/tree/param.h"  // for TrainParam
 #include "../helpers.h"
+#include "xgboost/task.h"             // for ObjInfo
 
 namespace xgboost {
 
@@ -70,14 +72,16 @@ class TestPredictionCache : public ::testing::Test {
         ctx.gpu_id = Context::kCpuId;
       }
 
-      std::unique_ptr<TreeUpdater> updater{
-          TreeUpdater::Create(updater_name, &ctx, ObjInfo{ObjInfo::kRegression})};
+      ObjInfo task{ObjInfo::kRegression};
+      std::unique_ptr<TreeUpdater> updater{TreeUpdater::Create(updater_name, &ctx, &task)};
       RegTree tree;
       std::vector<RegTree *> trees{&tree};
       auto gpair = GenerateRandomGradients(n_samples_);
-      updater->Configure(Args{{"max_bin", "64"}});
+      tree::TrainParam param;
+      param.UpdateAllowUnknown(Args{{"max_bin", "64"}});
+
       std::vector<HostDeviceVector<bst_node_t>> position(1);
-      updater->Update(&gpair, Xy_.get(), position, trees);
+      updater->Update(&param, &gpair, Xy_.get(), position, trees);
       HostDeviceVector<float> out_prediction_cached;
       out_prediction_cached.SetDevice(ctx.gpu_id);
       out_prediction_cached.Resize(n_samples_);

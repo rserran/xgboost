@@ -64,8 +64,7 @@ class QuantileRegression : public ObjFunction {
     out_gpair->SetDevice(ctx_->gpu_id);
     out_gpair->Resize(n_targets * info.num_row_);
     auto gpair =
-        linalg::MakeTensorView(ctx_->IsCPU() ? out_gpair->HostSpan() : out_gpair->DeviceSpan(),
-                               {info.num_row_, n_alphas, n_targets / n_alphas}, ctx_->gpu_id);
+        linalg::MakeTensorView(ctx_, out_gpair, info.num_row_, n_alphas, n_targets / n_alphas);
 
     info.weights_.SetDevice(ctx_->gpu_id);
     common::OptionalWeights weight{ctx_->IsCPU() ? info.weights_.ConstHostSpan()
@@ -80,15 +79,8 @@ class QuantileRegression : public ObjFunction {
 
     linalg::ElementWiseKernel(
         ctx_, gpair, [=] XGBOOST_DEVICE(std::size_t i, GradientPair const&) mutable {
-          auto idx = linalg::UnravelIndex(static_cast<std::size_t>(i),
-                                          {static_cast<std::size_t>(n_samples),
-                                           static_cast<std::size_t>(alpha.size()),
-                                           static_cast<std::size_t>(n_targets / alpha.size())});
-
-          // std::tie is not available for cuda kernel.
-          std::size_t sample_id = std::get<0>(idx);
-          std::size_t quantile_id = std::get<1>(idx);
-          std::size_t target_id = std::get<2>(idx);
+          auto [sample_id, quantile_id, target_id] =
+              linalg::UnravelIndex(i, n_samples, alpha.size(), n_targets / alpha.size());
 
           auto d = predt(i) - labels(sample_id, target_id);
           auto h = weight[sample_id];
@@ -183,10 +175,11 @@ class QuantileRegression : public ObjFunction {
   }
 
   void UpdateTreeLeaf(HostDeviceVector<bst_node_t> const& position, MetaInfo const& info,
-                      HostDeviceVector<float> const& prediction, std::int32_t group_idx,
-                      RegTree* p_tree) const override {
+                      float learning_rate, HostDeviceVector<float> const& prediction,
+                      std::int32_t group_idx, RegTree* p_tree) const override {
     auto alpha = param_.quantile_alpha[group_idx];
-    ::xgboost::obj::UpdateTreeLeaf(ctx_, position, group_idx, info, prediction, alpha, p_tree);
+    ::xgboost::obj::UpdateTreeLeaf(ctx_, position, group_idx, info, learning_rate, prediction,
+                                   alpha, p_tree);
   }
 
   void Configure(Args const& args) override {

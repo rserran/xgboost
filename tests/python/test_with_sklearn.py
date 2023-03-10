@@ -8,11 +8,12 @@ from typing import Callable, Optional
 import numpy as np
 import pytest
 from sklearn.utils.estimator_checks import parametrize_with_checks
-from xgboost.testing.shared import get_feature_weights, validate_data_initialization
-from xgboost.testing.updater import get_basescore
 
 import xgboost as xgb
 from xgboost import testing as tm
+from xgboost.testing.ranking import run_ranking_qid_df
+from xgboost.testing.shared import get_feature_weights, validate_data_initialization
+from xgboost.testing.updater import get_basescore
 
 rng = np.random.RandomState(1994)
 pytestmark = [pytest.mark.skipif(**tm.no_sklearn()), tm.timeout(30)]
@@ -178,6 +179,13 @@ def test_ranking_metric() -> None:
     )
     results = ltr.evals_result()
     assert results["validation_0"]["roc_auc_score"][-1] > 0.6
+
+
+@pytest.mark.skipif(**tm.no_pandas())
+def test_ranking_qid_df():
+    import pandas as pd
+
+    run_ranking_qid_df(pd, "hist")
 
 
 def test_stacking_regression():
@@ -1018,14 +1026,18 @@ def test_XGBClassifier_resume():
 
 
 def test_constraint_parameters():
-    reg = xgb.XGBRegressor(interaction_constraints='[[0, 1], [2, 3, 4]]')
+    reg = xgb.XGBRegressor(interaction_constraints="[[0, 1], [2, 3, 4]]")
     X = np.random.randn(10, 10)
     y = np.random.randn(10)
     reg.fit(X, y)
 
     config = json.loads(reg.get_booster().save_config())
-    assert config['learner']['gradient_booster']['updater']['grow_colmaker'][
-        'train_param']['interaction_constraints'] == '[[0, 1], [2, 3, 4]]'
+    assert (
+        config["learner"]["gradient_booster"]["tree_train_param"][
+            "interaction_constraints"
+        ]
+        == "[[0, 1], [2, 3, 4]]"
+    )
 
 
 def test_parameter_validation():
