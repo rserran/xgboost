@@ -24,6 +24,7 @@
 #include "../../src/data/array_interface.h"
 #include "../../src/gbm/gbtree_model.h"
 #include "filesystem.h"  // dmlc::TemporaryDirectory
+#include "xgboost/linalg.h"
 
 #if defined(__CUDACC__)
 #define DeclareUnifiedTest(name) GPU ## name
@@ -187,7 +188,7 @@ class SimpleRealUniformDistribution {
 };
 
 template <typename T>
-Json GetArrayInterface(HostDeviceVector<T> *storage, size_t rows, size_t cols) {
+Json GetArrayInterface(HostDeviceVector<T> const* storage, size_t rows, size_t cols) {
   Json array_interface{Object()};
   array_interface["data"] = std::vector<Json>(2);
   if (storage->DeviceCanRead()) {
@@ -317,8 +318,8 @@ GenerateRandomCategoricalSingleColumn(int n, size_t num_categories) {
   return x;
 }
 
-std::shared_ptr<DMatrix> GetDMatrixFromData(const std::vector<float> &x,
-                                            int num_rows, int num_columns);
+std::shared_ptr<DMatrix> GetDMatrixFromData(const std::vector<float>& x, std::size_t num_rows,
+                                            bst_feature_t num_columns);
 
 /**
  * \brief Create Sparse Page using data iterator.
@@ -393,7 +394,7 @@ typedef void *DMatrixHandle;  // NOLINT(*);
 class ArrayIterForTest {
  protected:
   HostDeviceVector<float> data_;
-  size_t iter_ {0};
+  size_t iter_{0};
   DMatrixHandle proxy_;
   std::unique_ptr<RandomDataGenerator> rng_;
 
@@ -417,6 +418,11 @@ class ArrayIterForTest {
   auto Proxy() -> decltype(proxy_) { return proxy_; }
 
   explicit ArrayIterForTest(float sparsity, size_t rows, size_t cols, size_t batches);
+  /**
+   * \brief Create iterator with user provided data.
+   */
+  explicit ArrayIterForTest(Context const* ctx, HostDeviceVector<float> const& data,
+                            std::size_t n_samples, bst_feature_t n_features, std::size_t n_batches);
   virtual ~ArrayIterForTest();
 };
 
@@ -432,6 +438,10 @@ class NumpyArrayIterForTest : public ArrayIterForTest {
  public:
   explicit NumpyArrayIterForTest(float sparsity, size_t rows = Rows(), size_t cols = Cols(),
                                  size_t batches = Batches());
+  explicit NumpyArrayIterForTest(Context const* ctx, HostDeviceVector<float> const& data,
+                                 std::size_t n_samples, bst_feature_t n_features,
+                                 std::size_t n_batches)
+      : ArrayIterForTest{ctx, data, n_samples, n_features, n_batches} {}
   int Next() override;
   ~NumpyArrayIterForTest() override = default;
 };
@@ -461,7 +471,7 @@ inline LearnerModelParam MakeMP(bst_feature_t n_features, float base_score, uint
                                 int32_t device = Context::kCpuId) {
   size_t shape[1]{1};
   LearnerModelParam mparam(n_features, linalg::Tensor<float, 1>{{base_score}, shape, device},
-                           n_groups);
+                           n_groups, 1, MultiStrategy::kComposite);
   return mparam;
 }
 
