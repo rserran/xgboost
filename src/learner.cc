@@ -326,7 +326,7 @@ struct LearnerTrainParam : public XGBoostParameter<LearnerTrainParam> {
   std::string booster;
   std::string objective;
   // This is a training parameter and is not saved (nor loaded) in the model.
-  MultiStrategy multi_strategy{MultiStrategy::kComposite};
+  MultiStrategy multi_strategy{MultiStrategy::kOneOutputPerTree};
 
   // declare parameters
   DMLC_DECLARE_PARAMETER(LearnerTrainParam) {
@@ -339,12 +339,12 @@ struct LearnerTrainParam : public XGBoostParameter<LearnerTrainParam> {
         .set_default("reg:squarederror")
         .describe("Objective function used for obtaining gradient.");
     DMLC_DECLARE_FIELD(multi_strategy)
-        .add_enum("composite", MultiStrategy::kComposite)
-        .add_enum("monolithic", MultiStrategy::kMonolithic)
-        .set_default(MultiStrategy::kComposite)
+        .add_enum("one_output_per_tree", MultiStrategy::kOneOutputPerTree)
+        .add_enum("multi_output_tree", MultiStrategy::kMultiOutputTree)
+        .set_default(MultiStrategy::kOneOutputPerTree)
         .describe(
-            "Strategy used for training multi-target models. `monolithic` means building one "
-            "single tree for all targets.");
+            "Strategy used for training multi-target models. `multi_output_tree` means building "
+            "one single tree for all targets.");
   }
 };
 
@@ -440,7 +440,7 @@ class LearnerConfiguration : public Learner {
         info.Validate(Ctx()->gpu_id);
         // We estimate it from input data.
         linalg::Tensor<float, 1> base_score;
-        UsePtr(obj_)->InitEstimation(info, &base_score);
+        InitEstimation(info, &base_score);
         CHECK_EQ(base_score.Size(), 1);
         mparam_.base_score = base_score(0);
         CHECK(!std::isnan(mparam_.base_score));
@@ -857,13 +857,31 @@ class LearnerConfiguration : public Learner {
       mparam_.num_target = n_targets;
     }
   }
+
+  void InitEstimation(MetaInfo const& info, linalg::Tensor<float, 1>* base_score) {
+    // Special handling for vertical federated learning.
+    if (collective::IsFederated() && info.data_split_mode == DataSplitMode::kCol) {
+      // We assume labels are only available on worker 0, so the estimation is calculated there
+      // and added to other workers.
+      if (collective::GetRank() == 0) {
+        UsePtr(obj_)->InitEstimation(info, base_score);
+        collective::Broadcast(base_score->Data()->HostPointer(),
+                              sizeof(bst_float) * base_score->Size(), 0);
+      } else {
+        base_score->Reshape(1);
+        collective::Broadcast(base_score->Data()->HostPointer(),
+                              sizeof(bst_float) * base_score->Size(), 0);
+      }
+    } else {
+      UsePtr(obj_)->InitEstimation(info, base_score);
+    }
+  }
 };
 
 std::string const LearnerConfiguration::kEvalMetric {"eval_metric"};  // NOLINT
 
 class LearnerIO : public LearnerConfiguration {
  private:
-  std::set<std::string> saved_configs_ = {"num_round"};
   // Used to identify the offset of JSON string when
   // Will be removed once JSON takes over.  Right now we still loads some RDS files from R.
   std::string const serialisation_header_ { u8"CONFIG-offset:" };
@@ -1016,21 +1034,11 @@ class LearnerIO : public LearnerConfiguration {
     CHECK(fi->Read(&tparam_.booster)) << "BoostLearner: wrong model format";
 
     obj_.reset(ObjFunction::Create(tparam_.objective, &ctx_));
-    gbm_.reset(GradientBooster::Create(tparam_.booster, &ctx_,
-                                       &learner_model_param_));
+    gbm_.reset(GradientBooster::Create(tparam_.booster, &ctx_, &learner_model_param_));
     gbm_->Load(fi);
     if (mparam_.contain_extra_attrs != 0) {
       std::vector<std::pair<std::string, std::string> > attr;
       fi->Read(&attr);
-      for (auto& kv : attr) {
-        const std::string prefix = "SAVED_PARAM_";
-        if (kv.first.find(prefix) == 0) {
-          const std::string saved_param = kv.first.substr(prefix.length());
-          if (saved_configs_.find(saved_param) != saved_configs_.end()) {
-            cfg_[saved_param] = kv.second;
-          }
-        }
-      }
       attributes_ = std::map<std::string, std::string>(attr.begin(), attr.end());
     }
     bool warn_old_model { false };
@@ -1113,16 +1121,6 @@ class LearnerIO : public LearnerConfiguration {
     std::vector<std::pair<std::string, std::string> > extra_attr;
     mparam.contain_extra_attrs = 1;
 
-    {
-      std::vector<std::string> saved_params;
-      for (const auto& key : saved_params) {
-        auto it = cfg_.find(key);
-        if (it != cfg_.end()) {
-          mparam.contain_extra_attrs = 1;
-          extra_attr.emplace_back("SAVED_PARAM_" + key, it->second);
-        }
-      }
-    }
     {
       // Similar to JSON model IO, we save the objective.
       Json j_obj { Object() };
@@ -1307,7 +1305,7 @@ class LearnerImpl : public LearnerIO {
     monitor_.Stop("PredictRaw");
 
     monitor_.Start("GetGradient");
-    obj_->GetGradient(predt.predictions, train->Info(), iter, &gpair_);
+    GetGradient(predt.predictions, train->Info(), iter, &gpair_);
     monitor_.Stop("GetGradient");
     TrainingObserver::Instance().Observe(gpair_, "Gradients");
 
@@ -1486,6 +1484,28 @@ class LearnerImpl : public LearnerIO {
   }
 
  private:
+  void GetGradient(HostDeviceVector<bst_float> const& preds, MetaInfo const& info, int iteration,
+                   HostDeviceVector<GradientPair>* out_gpair) {
+    // Special handling for vertical federated learning.
+    if (collective::IsFederated() && info.data_split_mode == DataSplitMode::kCol) {
+      // We assume labels are only available on worker 0, so the gradients are calculated there
+      // and broadcast to other workers.
+      if (collective::GetRank() == 0) {
+        obj_->GetGradient(preds, info, iteration, out_gpair);
+        collective::Broadcast(out_gpair->HostPointer(), out_gpair->Size() * sizeof(GradientPair),
+                              0);
+      } else {
+        CHECK_EQ(info.labels.Size(), 0)
+            << "In vertical federated learning, labels should only be on the first worker";
+        out_gpair->Resize(preds.Size());
+        collective::Broadcast(out_gpair->HostPointer(), out_gpair->Size() * sizeof(GradientPair),
+                              0);
+      }
+    } else {
+      obj_->GetGradient(preds, info, iteration, out_gpair);
+    }
+  }
+
   /*! \brief random number transformation seed. */
   static int32_t constexpr kRandSeedMagic = 127;
   // gradient pairs

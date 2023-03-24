@@ -59,6 +59,8 @@ void CreateSimpleTestData(const std::string& filename);
 // 0-based indexing.
 void CreateBigTestData(const std::string& filename, size_t n_entries, bool zero_based = true);
 
+void CreateTestCSV(std::string const& path, size_t rows, size_t cols);
+
 void CheckObjFunction(std::unique_ptr<xgboost::ObjFunction> const& obj,
                       std::vector<xgboost::bst_float> preds,
                       std::vector<xgboost::bst_float> labels,
@@ -471,7 +473,7 @@ inline LearnerModelParam MakeMP(bst_feature_t n_features, float base_score, uint
                                 int32_t device = Context::kCpuId) {
   size_t shape[1]{1};
   LearnerModelParam mparam(n_features, linalg::Tensor<float, 1>{{base_score}, shape, device},
-                           n_groups, 1, MultiStrategy::kComposite);
+                           n_groups, 1, MultiStrategy::kOneOutputPerTree);
   return mparam;
 }
 

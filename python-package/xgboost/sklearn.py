@@ -312,6 +312,19 @@ __model_doc = f"""
         needs to be set to have categorical feature support. See :doc:`Categorical Data
         </tutorials/categorical>` and :ref:`cat-param` for details.
 
+    multi_strategy : Optional[str]
+
+        .. versionadded:: 2.0.0
+
+        .. note:: This parameter is working-in-progress.
+
+        The strategy used for training multi-target models, including multi-target
+        regression and multi-class classification. See :doc:`/tutorials/multioutput` for
+        more information.
+
+        - ``one_output_per_tree``: One model for each target.
+        - ``multi_output_tree``:  Use multi-target trees.
+
     eval_metric : Optional[Union[str, List[str], Callable]]
 
         .. versionadded:: 1.6.0
@@ -355,18 +368,21 @@ __model_doc = f"""
 
         .. versionadded:: 1.6.0
 
-        Activates early stopping. Validation metric needs to improve at least once in
-        every **early_stopping_rounds** round(s) to continue training.  Requires at least
-        one item in **eval_set** in :py:meth:`fit`.
+        - Activates early stopping. Validation metric needs to improve at least once in
+          every **early_stopping_rounds** round(s) to continue training.  Requires at
+          least one item in **eval_set** in :py:meth:`fit`.
 
-        The method returns the model from the last iteration (not the best one).  If
-        there's more than one item in **eval_set**, the last entry will be used for early
-        stopping.  If there's more than one metric in **eval_metric**, the last metric
-        will be used for early stopping.
+        - The method returns the model from the last iteration, not the best one, use a
+          callback :py:class:`xgboost.callback.EarlyStopping` if returning the best
+          model is preferred.
 
-        If early stopping occurs, the model will have three additional fields:
-        :py:attr:`best_score`, :py:attr:`best_iteration` and
-        :py:attr:`best_ntree_limit`.
+        - If there's more than one item in **eval_set**, the last entry will be used for
+          early stopping.  If there's more than one metric in **eval_metric**, the last
+          metric will be used for early stopping.
+
+        - If early stopping occurs, the model will have three additional fields:
+          :py:attr:`best_score`, :py:attr:`best_iteration` and
+          :py:attr:`best_ntree_limit`.
 
         .. note::
 
@@ -466,7 +482,9 @@ Parameters
         doc.extend([get_doc(i) for i in items])
         if end_note:
             doc.append(end_note)
-        full_doc = [header + "\n\n"]
+        full_doc = [
+            header + "\nSee :doc:`/python/sklearn_estimator` for more information.\n"
+        ]
         full_doc.extend(doc)
         cls.__doc__ = "".join(full_doc)
         return cls
@@ -624,6 +642,7 @@ class XGBModel(XGBModelBase):
         feature_types: Optional[FeatureTypes] = None,
         max_cat_to_onehot: Optional[int] = None,
         max_cat_threshold: Optional[int] = None,
+        multi_strategy: Optional[str] = None,
         eval_metric: Optional[Union[str, List[str], Callable]] = None,
         early_stopping_rounds: Optional[int] = None,
         callbacks: Optional[List[TrainingCallback]] = None,
@@ -670,6 +689,7 @@ class XGBModel(XGBModelBase):
         self.feature_types = feature_types
         self.max_cat_to_onehot = max_cat_to_onehot
         self.max_cat_threshold = max_cat_threshold
+        self.multi_strategy = multi_strategy
         self.eval_metric = eval_metric
         self.early_stopping_rounds = early_stopping_rounds
         self.callbacks = callbacks
@@ -1131,10 +1151,10 @@ class XGBModel(XGBModelBase):
         base_margin: Optional[ArrayLike] = None,
         iteration_range: Optional[Tuple[int, int]] = None,
     ) -> ArrayLike:
-        """Predict with `X`.  If the model is trained with early stopping, then `best_iteration`
-        is used automatically.  For tree models, when data is on GPU, like cupy array or
-        cuDF dataframe and `predictor` is not specified, the prediction is run on GPU
-        automatically, otherwise it will run on CPU.
+        """Predict with `X`.  If the model is trained with early stopping, then
+        :py:attr:`best_iteration` is used automatically.  For tree models, when data is
+        on GPU, like cupy array or cuDF dataframe and `predictor` is not specified, the
+        prediction is run on GPU automatically, otherwise it will run on CPU.
 
         .. note:: This function is only thread safe for `gbtree` and `dart`.
 
@@ -1209,8 +1229,8 @@ class XGBModel(XGBModelBase):
         ntree_limit: int = 0,
         iteration_range: Optional[Tuple[int, int]] = None,
     ) -> np.ndarray:
-        """Return the predicted leaf every tree for each sample. If the model is trained with
-        early stopping, then `best_iteration` is used automatically.
+        """Return the predicted leaf every tree for each sample. If the model is trained
+        with early stopping, then :py:attr:`best_iteration` is used automatically.
 
         Parameters
         ----------
@@ -1620,7 +1640,9 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
         base_margin: Optional[ArrayLike] = None,
         iteration_range: Optional[Tuple[int, int]] = None,
     ) -> np.ndarray:
-        """Predict the probability of each `X` example being of a given class.
+        """Predict the probability of each `X` example being of a given class. If the
+        model is trained with early stopping, then :py:attr:`best_iteration` is used
+        automatically.
 
         .. note:: This function is only thread safe for `gbtree` and `dart`.
 
@@ -1646,6 +1668,7 @@ class XGBClassifier(XGBModel, XGBClassifierBase):
         prediction :
             a numpy array of shape array-like of shape (n_samples, n_classes) with the
             probability of each data example being of a given class.
+
         """
         # custom obj:      Do nothing as we don't know what to do.
         # softprob:        Do nothing, output is proba.
@@ -2107,11 +2130,13 @@ class XGBRanker(XGBModel, XGBRankerMixIn):
         return super().apply(X, ntree_limit, iteration_range)
 
     def score(self, X: ArrayLike, y: ArrayLike) -> float:
-        """Evaluate score for data using the last evaluation metric.
+        """Evaluate score for data using the last evaluation metric. If the model is
+        trained with early stopping, then :py:attr:`best_iteration` is used
+        automatically.
 
         Parameters
         ----------
-        X : pd.DataFrame|cudf.DataFrame
+        X : Union[pd.DataFrame, cudf.DataFrame]
           Feature matrix. A DataFrame with a special `qid` column.
 
         y :

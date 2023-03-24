@@ -190,7 +190,7 @@ void IterativeDMatrix::InitFromCPU(DataIterHandle iter_handle, float missing,
   // From here on Info() has the correct data shape
   Info().num_row_ = accumulated_rows;
   Info().num_nonzero_ = nnz;
-  collective::Allreduce<collective::Operation::kMax>(&info_.num_col_, 1);
+  Info().SynchronizeNumberOfColumns();
   CHECK(std::none_of(column_sizes.cbegin(), column_sizes.cend(), [&](auto f) {
     return f > accumulated_rows;
   })) << "Something went wrong during iteration.";
@@ -257,6 +257,7 @@ void IterativeDMatrix::InitFromCPU(DataIterHandle iter_handle, float missing,
   }
   iter.Reset();
   CHECK_EQ(rbegin, Info().num_row_);
+  CHECK_EQ(this->ghist_->Features(), Info().num_col_);
 
   /**
    * Generate column matrix
