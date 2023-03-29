@@ -72,12 +72,13 @@ class GloablApproxBuilder {
       } else {
         CHECK_EQ(n_total_bins, page.cut.TotalBins());
       }
-      partitioner_.emplace_back(this->ctx_, page.Size(), page.base_rowid, p_fmat->IsColumnSplit());
+      partitioner_.emplace_back(this->ctx_, page.Size(), page.base_rowid,
+                                p_fmat->Info().IsColumnSplit());
       n_batches_++;
     }
 
     histogram_builder_.Reset(n_total_bins, BatchSpec(*param_, hess), ctx_->Threads(), n_batches_,
-                             collective::IsDistributed(), p_fmat->IsColumnSplit());
+                             collective::IsDistributed(), p_fmat->Info().IsColumnSplit());
     monitor_->Stop(__func__);
   }
 
@@ -91,7 +92,7 @@ class GloablApproxBuilder {
     for (auto const &g : gpair) {
       root_sum.Add(g);
     }
-    if (p_fmat->IsRowSplit()) {
+    if (p_fmat->Info().IsRowSplit()) {
       collective::Allreduce<collective::Operation::kSum>(reinterpret_cast<double *>(&root_sum), 2);
     }
     std::vector<CPUExpandEntry> nodes{best};
@@ -116,7 +117,7 @@ class GloablApproxBuilder {
     return nodes.front();
   }
 
-  void UpdatePredictionCache(DMatrix const *data, linalg::VectorView<float> out_preds) const {
+  void UpdatePredictionCache(DMatrix const *data, linalg::MatrixView<float> out_preds) const {
     monitor_->Start(__func__);
     // Caching prediction seems redundant for approx tree method, as sketching takes up
     // majority of training time.
@@ -303,7 +304,7 @@ class GlobalApproxUpdater : public TreeUpdater {
     }
   }
 
-  bool UpdatePredictionCache(const DMatrix *data, linalg::VectorView<float> out_preds) override {
+  bool UpdatePredictionCache(const DMatrix *data, linalg::MatrixView<float> out_preds) override {
     if (data != cached_ || !pimpl_) {
       return false;
     }

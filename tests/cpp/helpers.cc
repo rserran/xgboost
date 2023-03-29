@@ -191,15 +191,9 @@ double GetMultiMetricEval(xgboost::Metric* metric,
 }
 
 namespace xgboost {
-bool IsNear(std::vector<xgboost::bst_float>::const_iterator _beg1,
-            std::vector<xgboost::bst_float>::const_iterator _end1,
-            std::vector<xgboost::bst_float>::const_iterator _beg2) {
-  for (auto iter1 = _beg1, iter2 = _beg2; iter1 != _end1; ++iter1, ++iter2) {
-    if (std::abs(*iter1 - *iter2) > xgboost::kRtEps){
-      return false;
-    }
-  }
-  return true;
+
+float GetBaseScore(Json const &config) {
+  return std::stof(get<String const>(config["learner"]["learner_model_param"]["base_score"]));
 }
 
 SimpleLCG::StateType SimpleLCG::operator()() {
@@ -555,23 +549,6 @@ std::unique_ptr<DMatrix> CreateSparsePageDMatrixWithRC(
   }
   std::unique_ptr<DMatrix> dmat(DMatrix::Load(uri));
   return dmat;
-}
-
-gbm::GBTreeModel CreateTestModel(LearnerModelParam const* param, Context const* ctx,
-                                 size_t n_classes) {
-  gbm::GBTreeModel model(param, ctx);
-
-  for (size_t i = 0; i < n_classes; ++i) {
-    std::vector<std::unique_ptr<RegTree>> trees;
-    trees.push_back(std::unique_ptr<RegTree>(new RegTree));
-    if (i == 0) {
-      (*trees.back())[0].SetLeaf(1.5f);
-      (*trees.back()).Stat(0).sum_hess = 1.0f;
-    }
-    model.CommitModel(std::move(trees), i);
-  }
-
-  return model;
 }
 
 std::unique_ptr<GradientBooster> CreateTrainedGBM(std::string name, Args kwargs, size_t kRows,
