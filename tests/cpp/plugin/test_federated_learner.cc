@@ -8,71 +8,113 @@
 
 #include "../../../plugin/federated/federated_server.h"
 #include "../../../src/collective/communicator-inl.h"
+#include "../../../src/common/linalg_op.h"
 #include "../helpers.h"
+#include "../objective_helpers.h"  // for MakeObjNamesForTest, ObjTestNameGenerator
 #include "helpers.h"
 
 namespace xgboost {
-
-class FederatedLearnerTest : public BaseFederatedTest {
- protected:
-  static auto constexpr kRows{16};
-  static auto constexpr kCols{16};
-};
-
-void VerifyBaseScore(size_t rows, size_t cols, float expected_base_score) {
-  auto const world_size = collective::GetWorldSize();
-  auto const rank = collective::GetRank();
-  std::shared_ptr<DMatrix> Xy_{RandomDataGenerator{rows, cols, 0}.GenerateDMatrix(rank == 0)};
-  std::shared_ptr<DMatrix> sliced{Xy_->SliceCol(world_size, rank)};
-  std::unique_ptr<Learner> learner{Learner::Create({sliced})};
+namespace {
+auto MakeModel(std::string objective, std::shared_ptr<DMatrix> dmat) {
+  std::unique_ptr<Learner> learner{Learner::Create({dmat})};
   learner->SetParam("tree_method", "approx");
-  learner->SetParam("objective", "binary:logistic");
-  learner->UpdateOneIter(0, sliced);
+  learner->SetParam("objective", objective);
+  if (objective.find("quantile") != std::string::npos) {
+    learner->SetParam("quantile_alpha", "0.5");
+  }
+  if (objective.find("multi") != std::string::npos) {
+    learner->SetParam("num_class", "3");
+  }
+  learner->UpdateOneIter(0, dmat);
   Json config{Object{}};
   learner->SaveConfig(&config);
-  auto base_score = GetBaseScore(config);
-  ASSERT_EQ(base_score, expected_base_score);
-}
 
-void VerifyModel(size_t rows, size_t cols, Json const& expected_model) {
-  auto const world_size = collective::GetWorldSize();
-  auto const rank = collective::GetRank();
-  std::shared_ptr<DMatrix> Xy_{RandomDataGenerator{rows, cols, 0}.GenerateDMatrix(rank == 0)};
-  std::shared_ptr<DMatrix> sliced{Xy_->SliceCol(world_size, rank)};
-  std::unique_ptr<Learner> learner{Learner::Create({sliced})};
-  learner->SetParam("tree_method", "approx");
-  learner->SetParam("objective", "binary:logistic");
-  learner->UpdateOneIter(0, sliced);
   Json model{Object{}};
   learner->SaveModel(&model);
+  return model;
+}
+
+void VerifyObjective(size_t rows, size_t cols, float expected_base_score, Json expected_model,
+                     std::string objective) {
+  auto const world_size = collective::GetWorldSize();
+  auto const rank = collective::GetRank();
+  std::shared_ptr<DMatrix> dmat{RandomDataGenerator{rows, cols, 0}.GenerateDMatrix(rank == 0)};
+
+  if (rank == 0) {
+    auto &h_upper = dmat->Info().labels_upper_bound_.HostVector();
+    auto &h_lower = dmat->Info().labels_lower_bound_.HostVector();
+    h_lower.resize(rows);
+    h_upper.resize(rows);
+    for (size_t i = 0; i < rows; ++i) {
+      h_lower[i] = 1;
+      h_upper[i] = 10;
+    }
+
+    if (objective.find("rank:") != std::string::npos) {
+      auto h_label = dmat->Info().labels.HostView();
+      std::size_t k = 0;
+      for (auto &v : h_label) {
+        v = k % 2 == 0;
+        ++k;
+      }
+    }
+  }
+  std::shared_ptr<DMatrix> sliced{dmat->SliceCol(world_size, rank)};
+
+  auto model = MakeModel(objective, sliced);
+  auto base_score = GetBaseScore(model);
+  ASSERT_EQ(base_score, expected_base_score);
   ASSERT_EQ(model, expected_model);
 }
+}  // namespace
 
-TEST_F(FederatedLearnerTest, BaseScore) {
-  std::shared_ptr<DMatrix> Xy_{RandomDataGenerator{kRows, kCols, 0}.GenerateDMatrix(true)};
-  std::unique_ptr<Learner> learner{Learner::Create({Xy_})};
-  learner->SetParam("tree_method", "approx");
-  learner->SetParam("objective", "binary:logistic");
-  learner->UpdateOneIter(0, Xy_);
-  Json config{Object{}};
-  learner->SaveConfig(&config);
-  auto base_score = GetBaseScore(config);
-  ASSERT_NE(base_score, ObjFunction::DefaultBaseScore());
+class FederatedLearnerTest : public ::testing::TestWithParam<std::string> {
+  std::unique_ptr<ServerForTest> server_;
+  static int const kWorldSize{3};
 
-  RunWithFederatedCommunicator(kWorldSize, server_address_, &VerifyBaseScore, kRows, kCols,
-                               base_score);
+ protected:
+  void SetUp() override { server_ = std::make_unique<ServerForTest>(kWorldSize); }
+  void TearDown() override { server_.reset(nullptr); }
+
+  void Run(std::string objective) {
+    static auto constexpr kRows{16};
+    static auto constexpr kCols{16};
+
+    std::shared_ptr<DMatrix> dmat{RandomDataGenerator{kRows, kCols, 0}.GenerateDMatrix(true)};
+
+    auto &h_upper = dmat->Info().labels_upper_bound_.HostVector();
+    auto &h_lower = dmat->Info().labels_lower_bound_.HostVector();
+    h_lower.resize(kRows);
+    h_upper.resize(kRows);
+    for (size_t i = 0; i < kRows; ++i) {
+      h_lower[i] = 1;
+      h_upper[i] = 10;
+    }
+    if (objective.find("rank:") != std::string::npos) {
+      auto h_label = dmat->Info().labels.HostView();
+      std::size_t k = 0;
+      for (auto &v : h_label) {
+        v = k % 2 == 0;
+        ++k;
+      }
+    }
+
+    auto model = MakeModel(objective, dmat);
+    auto score = GetBaseScore(model);
+
+    RunWithFederatedCommunicator(kWorldSize, server_->Address(), &VerifyObjective, kRows, kCols,
+                                 score, model, objective);
+  }
+};
+
+TEST_P(FederatedLearnerTest, Objective) {
+  std::string objective = GetParam();
+  this->Run(objective);
 }
 
-TEST_F(FederatedLearnerTest, Model) {
-  std::shared_ptr<DMatrix> Xy_{RandomDataGenerator{kRows, kCols, 0}.GenerateDMatrix(true)};
-  std::unique_ptr<Learner> learner{Learner::Create({Xy_})};
-  learner->SetParam("tree_method", "approx");
-  learner->SetParam("objective", "binary:logistic");
-  learner->UpdateOneIter(0, Xy_);
-  Json model{Object{}};
-  learner->SaveModel(&model);
-
-  RunWithFederatedCommunicator(kWorldSize, server_address_, &VerifyModel, kRows, kCols,
-                               std::cref(model));
-}
+INSTANTIATE_TEST_SUITE_P(FederatedLearnerObjective, FederatedLearnerTest,
+                         ::testing::ValuesIn(MakeObjNamesForTest()),
+                         [](const ::testing::TestParamInfo<FederatedLearnerTest::ParamType> &info) {
+                           return ObjTestNameGenerator(info);
+                         });
 }  // namespace xgboost

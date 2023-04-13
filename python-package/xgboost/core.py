@@ -94,9 +94,9 @@ def from_cstr_to_pystr(data: CStrPptr, length: c_bst_ulong) -> List[str]:
 
     Parameters
     ----------
-    data : ctypes pointer
+    data :
         pointer to data
-    length : ctypes pointer
+    length :
         pointer to length of data
     """
     res = []
@@ -126,33 +126,14 @@ def _parse_eval_str(result: str) -> List[Tuple[str, float]]:
 IterRange = TypeVar("IterRange", Optional[Tuple[int, int]], Tuple[int, int])
 
 
-def _convert_ntree_limit(
-    booster: "Booster", ntree_limit: Optional[int], iteration_range: IterRange
-) -> IterRange:
-    if ntree_limit is not None and ntree_limit != 0:
-        warnings.warn(
-            "ntree_limit is deprecated, use `iteration_range` or model "
-            "slicing instead.",
-            UserWarning,
-        )
-        if iteration_range is not None and iteration_range[1] != 0:
-            raise ValueError(
-                "Only one of `iteration_range` and `ntree_limit` can be non zero."
-            )
-        num_parallel_tree, _ = _get_booster_layer_trees(booster)
-        num_parallel_tree = max([num_parallel_tree, 1])
-        iteration_range = (0, ntree_limit // num_parallel_tree)
-    return iteration_range
-
-
 def _expect(expectations: Sequence[Type], got: Type) -> str:
     """Translate input error into string.
 
     Parameters
     ----------
-    expectations: sequence
+    expectations :
         a list of expected value.
-    got:
+    got :
         actual input
 
     Returns
@@ -282,7 +263,7 @@ def _check_call(ret: int) -> None:
 
     Parameters
     ----------
-    ret : int
+    ret :
         return value from API calls
     """
     if ret != 0:
@@ -290,10 +271,10 @@ def _check_call(ret: int) -> None:
 
 
 def build_info() -> dict:
-    """Build information of XGBoost.  The returned value format is not stable. Also, please
-    note that build time dependency is not the same as runtime dependency. For instance,
-    it's possible to build XGBoost with older CUDA version but run it with the lastest
-    one.
+    """Build information of XGBoost.  The returned value format is not stable. Also,
+    please note that build time dependency is not the same as runtime dependency. For
+    instance, it's possible to build XGBoost with older CUDA version but run it with the
+    lastest one.
 
       .. versionadded:: 1.6.0
 
@@ -677,28 +658,28 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
         data :
             Data source of DMatrix. See :ref:`py-data` for a list of supported input
             types.
-        label : array_like
+        label :
             Label of the training data.
-        weight : array_like
+        weight :
             Weight for each instance.
 
-            .. note:: For ranking task, weights are per-group.
+             .. note::
 
-                In ranking task, one weight is assigned to each group (not each
-                data point). This is because we only care about the relative
-                ordering of data points within each group, so it doesn't make
-                sense to assign weights to individual data points.
+                 For ranking task, weights are per-group.  In ranking task, one weight
+                 is assigned to each group (not each data point). This is because we
+                 only care about the relative ordering of data points within each group,
+                 so it doesn't make sense to assign weights to individual data points.
 
-        base_margin: array_like
+        base_margin :
             Base margin used for boosting from existing model.
-        missing : float, optional
-            Value in the input data which needs to be present as a missing
-            value. If None, defaults to np.nan.
-        silent : boolean, optional
+        missing :
+            Value in the input data which needs to be present as a missing value. If
+            None, defaults to np.nan.
+        silent :
             Whether print messages during construction
-        feature_names : list, optional
+        feature_names :
             Set names for features.
-        feature_types : FeatureTypes
+        feature_types :
 
             Set types for features.  When `enable_categorical` is set to `True`, string
             "c" represents categorical data type while "q" represents numerical feature
@@ -708,20 +689,20 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
             `.cat.codes` method. This is useful when users want to specify categorical
             features without having to construct a dataframe as input.
 
-        nthread : integer, optional
+        nthread :
             Number of threads to use for loading data when parallelization is
             applicable. If -1, uses maximum threads available on the system.
-        group : array_like
+        group :
             Group size for all ranking group.
-        qid : array_like
+        qid :
             Query ID for data samples, used for ranking.
-        label_lower_bound : array_like
+        label_lower_bound :
             Lower bound for survival training.
-        label_upper_bound : array_like
+        label_upper_bound :
             Upper bound for survival training.
-        feature_weights : array_like, optional
+        feature_weights :
             Set feature weights for column sampling.
-        enable_categorical: boolean, optional
+        enable_categorical :
 
             .. versionadded:: 1.3.0
 
@@ -1508,41 +1489,6 @@ Objective = Callable[[np.ndarray, DMatrix], Tuple[np.ndarray, np.ndarray]]
 Metric = Callable[[np.ndarray, DMatrix], Tuple[str, float]]
 
 
-def _get_booster_layer_trees(model: "Booster") -> Tuple[int, int]:
-    """Get number of trees added to booster per-iteration.  This function will be removed
-    once `best_ntree_limit` is dropped in favor of `best_iteration`.  Returns
-    `num_parallel_tree` and `num_groups`.
-
-    """
-    config = json.loads(model.save_config())
-    booster = config["learner"]["gradient_booster"]["name"]
-    if booster == "gblinear":
-        num_parallel_tree = 0
-    elif booster == "dart":
-        num_parallel_tree = int(
-            config["learner"]["gradient_booster"]["gbtree"]["gbtree_model_param"][
-                "num_parallel_tree"
-            ]
-        )
-    elif booster == "gbtree":
-        try:
-            num_parallel_tree = int(
-                config["learner"]["gradient_booster"]["gbtree_model_param"][
-                    "num_parallel_tree"
-                ]
-            )
-        except KeyError:
-            num_parallel_tree = int(
-                config["learner"]["gradient_booster"]["gbtree_train_param"][
-                    "num_parallel_tree"
-                ]
-            )
-    else:
-        raise ValueError(f"Unknown booster: {booster}")
-    num_groups = int(config["learner"]["learner_model_param"]["num_class"])
-    return num_parallel_tree, num_groups
-
-
 def _configure_metrics(params: BoosterParam) -> BoosterParam:
     if (
         isinstance(params, dict)
@@ -1576,11 +1522,11 @@ class Booster:
         """
         Parameters
         ----------
-        params : dict
+        params :
             Parameters for boosters.
-        cache : list
+        cache :
             List of cache items.
-        model_file : string/os.PathLike/Booster/bytearray
+        model_file :
             Path to the model file if it's string or PathLike.
         """
         cache = cache if cache is not None else []
@@ -1766,6 +1712,7 @@ class Booster:
         string.
 
         .. versionadded:: 1.0.0
+
         """
         json_string = ctypes.c_char_p()
         length = c_bst_ulong()
@@ -1798,8 +1745,8 @@ class Booster:
 
         Returns
         -------
-        booster: `Booster`
-            a copied booster model
+        booster :
+            A copied booster model
         """
         return copy.copy(self)
 
@@ -1808,12 +1755,12 @@ class Booster:
 
         Parameters
         ----------
-        key : str
+        key :
             The key to get attribute from.
 
         Returns
         -------
-        value : str
+        value :
             The attribute value of the key, returns None if attribute do not exist.
         """
         ret = ctypes.c_char_p()
@@ -1932,9 +1879,9 @@ class Booster:
 
         Parameters
         ----------
-        params: dict/list/str
+        params :
            list of key,value pairs, dict of key to value or simply str key
-        value: optional
+        value :
            value of the specified parameter, when params is str key
         """
         if isinstance(params, Mapping):
@@ -1957,11 +1904,11 @@ class Booster:
 
         Parameters
         ----------
-        dtrain : DMatrix
+        dtrain :
             Training data.
-        iteration : int
+        iteration :
             Current iteration number.
-        fobj : function
+        fobj :
             Customized objective function.
 
         """
@@ -2100,7 +2047,6 @@ class Booster:
         self,
         data: DMatrix,
         output_margin: bool = False,
-        ntree_limit: int = 0,
         pred_leaf: bool = False,
         pred_contribs: bool = False,
         approx_contribs: bool = False,
@@ -2126,9 +2072,6 @@ class Booster:
 
         output_margin :
             Whether to output the raw untransformed margin value.
-
-        ntree_limit :
-            Deprecated, use `iteration_range` instead.
 
         pred_leaf :
             When this option is on, the output will be a matrix of (nsample,
@@ -2196,7 +2139,6 @@ class Booster:
             raise TypeError("Expecting data to be a DMatrix object, got: ", type(data))
         if validate_features:
             self._validate_dmatrix_features(data)
-        iteration_range = _convert_ntree_limit(self, ntree_limit, iteration_range)
         args = {
             "type": 0,
             "training": training,
@@ -2264,8 +2206,7 @@ class Booster:
 
         Parameters
         ----------
-        data : numpy.ndarray/scipy.sparse.csr_matrix/cupy.ndarray/
-               cudf.DataFrame/pd.DataFrame
+        data :
             The input data, must not be a view for numpy array.  Set
             ``predictor`` to ``gpu_predictor`` for running prediction on CuPy
             array or CuDF DataFrame.
@@ -2449,7 +2390,7 @@ class Booster:
 
         Parameters
         ----------
-        fname : string or os.PathLike
+        fname :
             Output file name
 
         """
@@ -2522,8 +2463,6 @@ class Booster:
             self.best_iteration = int(self.attr("best_iteration"))  # type: ignore
         if self.attr("best_score") is not None:
             self.best_score = float(self.attr("best_score"))  # type: ignore
-        if self.attr("best_ntree_limit") is not None:
-            self.best_ntree_limit = int(self.attr("best_ntree_limit"))  # type: ignore
 
     def num_boosted_rounds(self) -> int:
         """Get number of boosted rounds.  For gblinear this is reset to 0 after
@@ -2555,13 +2494,13 @@ class Booster:
 
         Parameters
         ----------
-        fout : string or os.PathLike
+        fout :
             Output file name.
-        fmap : string or os.PathLike, optional
+        fmap :
             Name of the file containing feature map names.
-        with_stats : bool, optional
+        with_stats :
             Controls whether the split statistics are output.
-        dump_format : string, optional
+        dump_format :
             Format of model dump file. Can be 'text' or 'json'.
         """
         if isinstance(fout, (str, os.PathLike)):
@@ -2665,9 +2604,9 @@ class Booster:
 
         Parameters
         ----------
-        fmap:
+        fmap :
            The name of feature map file.
-        importance_type:
+        importance_type :
             One of the importance types defined above.
 
         Returns
@@ -2716,7 +2655,7 @@ class Booster:
 
         Parameters
         ----------
-        fmap: str or os.PathLike (optional)
+        fmap :
            The name of feature map file.
         """
         # pylint: disable=too-many-locals
@@ -2882,15 +2821,15 @@ class Booster:
 
         Parameters
         ----------
-        feature: str
+        feature :
             The name of the feature.
-        fmap: str or os.PathLike (optional)
+        fmap:
             The name of feature map file.
-        bin: int, default None
+        bin :
             The maximum number of bins.
             Number of bins equals number of unique split values n_unique,
             if bins == None or bins > n_unique.
-        as_pandas: bool, default True
+        as_pandas :
             Return pd.DataFrame when pandas is installed.
             If False or pandas is not installed, return numpy ndarray.
 
