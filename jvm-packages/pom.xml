@@ -41,8 +41,8 @@
         <maven.wagon.http.retryHandler.count>5</maven.wagon.http.retryHandler.count>
         <log.capi.invocation>OFF</log.capi.invocation>
         <use.cuda>OFF</use.cuda>
-        <cudf.version>22.12.0</cudf.version>
-        <spark.rapids.version>22.12.0</spark.rapids.version>
+        <cudf.version>23.02.0</cudf.version>
+        <spark.rapids.version>23.02.0</spark.rapids.version>
         <cudf.classifier>cuda11</cudf.classifier>
     </properties>
     <repositories>
@@ -374,7 +374,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-checkstyle-plugin</artifactId>
-                <version>3.2.1</version>
+                <version>3.2.2</version>
                 <configuration>
                     <configLocation>checkstyle.xml</configLocation>
                     <failOnViolation>true</failOnViolation>
@@ -450,7 +450,7 @@
         <plugins>
             <plugin>
                 <artifactId>maven-project-info-reports-plugin</artifactId>
-                <version>3.4.2</version>
+                <version>3.4.3</version>
             </plugin>
             <plugin>
                 <groupId>net.alchim31.maven</groupId>
@@ -469,7 +469,7 @@
         <dependency>
             <groupId>com.esotericsoftware</groupId>
             <artifactId>kryo</artifactId>
-            <version>5.4.0</version>
+            <version>5.5.0</version>
         </dependency>
         <dependency>
             <groupId>org.scala-lang</groupId>
@@ -495,13 +495,13 @@
         <dependency>
             <groupId>org.scalatest</groupId>
             <artifactId>scalatest_${scala.binary.version}</artifactId>
-            <version>3.0.8</version>
+            <version>3.2.15</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.scalactic</groupId>
             <artifactId>scalactic_${scala.binary.version}</artifactId>
-            <version>3.0.8</version>
+            <version>3.2.15</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

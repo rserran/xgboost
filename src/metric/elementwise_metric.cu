@@ -8,6 +8,7 @@
  */
 #include <dmlc/registry.h>
 
+#include <array>
 #include <cmath>
 
 #include "../collective/communicator-inl.h"
@@ -197,10 +198,8 @@ class PseudoErrorLoss : public MetricNoCache {
           auto v = common::Sqr(slope) * (std::sqrt((1 + common::Sqr(a / slope))) - 1) * wt;
           return std::make_tuple(v, wt);
         });
-    double dat[2]{result.Residue(), result.Weights()};
-    if (collective::IsDistributed()) {
-      collective::Allreduce<collective::Operation::kSum>(dat, 2);
-    }
+    std::array<double, 2> dat{result.Residue(), result.Weights()};
+    collective::GlobalSum(info, &dat);
     return EvalRowMAPE::GetFinal(dat[0], dat[1]);
   }
 };
@@ -217,7 +216,7 @@ struct EvalError {
     }
   }
   const char *Name() const {
-    static std::string name;
+    static thread_local std::string name;
     if (has_param_) {
       std::ostringstream os;
       os << "error";
@@ -315,7 +314,7 @@ struct EvalTweedieNLogLik {
         << "tweedie variance power must be in interval [1, 2)";
   }
   const char *Name() const {
-    static std::string name;
+    static thread_local std::string name;
     std::ostringstream os;
     os << "tweedie-nloglik@" << rho_;
     name = os.str();
@@ -366,8 +365,8 @@ struct EvalEWiseBase : public MetricNoCache {
           return std::make_tuple(residue, wt);
         });
 
-    double dat[2]{result.Residue(), result.Weights()};
-    collective::Allreduce<collective::Operation::kSum>(dat, 2);
+    std::array<double, 2> dat{result.Residue(), result.Weights()};
+    collective::GlobalSum(info, &dat);
     return Policy::GetFinal(dat[0], dat[1]);
   }
 
@@ -438,8 +437,8 @@ class QuantileError : public MetricNoCache {
     CHECK(!alpha_.Empty());
     if (info.num_row_ == 0) {
       // empty DMatrix on distributed env
-      double dat[2]{0.0, 0.0};
-      collective::Allreduce<collective::Operation::kSum>(dat, 2);
+      std::array<double, 2> dat{0.0, 0.0};
+      collective::GlobalSum(info, &dat);
       CHECK_GT(dat[1], 0);
       return dat[0] / dat[1];
     }
@@ -476,8 +475,8 @@ class QuantileError : public MetricNoCache {
               loss(y_predt(sample_id, quantile_id, target_id), y_true(sample_id, target_id)) * w;
           return std::make_tuple(l, w);
         });
-    double dat[2]{result.Residue(), result.Weights()};
-    collective::Allreduce<collective::Operation::kSum>(dat, 2);
+    std::array<double, 2> dat{result.Residue(), result.Weights()};
+    collective::GlobalSum(info, &dat);
     CHECK_GT(dat[1], 0);
     return dat[0] / dat[1];
   }
