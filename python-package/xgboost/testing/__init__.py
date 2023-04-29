@@ -317,13 +317,15 @@ class TestDataset:
             enable_categorical=True,
         )
 
-    def get_device_dmat(self) -> xgb.QuantileDMatrix:
+    def get_device_dmat(self, max_bin: Optional[int]) -> xgb.QuantileDMatrix:
         import cupy as cp
 
         w = None if self.w is None else cp.array(self.w)
         X = cp.array(self.X, dtype=np.float32)
         y = cp.array(self.y, dtype=np.float32)
-        return xgb.QuantileDMatrix(X, y, weight=w, base_margin=self.margin)
+        return xgb.QuantileDMatrix(
+            X, y, weight=w, base_margin=self.margin, max_bin=max_bin
+        )
 
     def get_external_dmat(self) -> xgb.DMatrix:
         n_samples = self.X.shape[0]
@@ -431,8 +433,11 @@ def make_ltr(
     """Make a dataset for testing LTR."""
     rng = np.random.default_rng(1994)
     X = rng.normal(0, 1.0, size=n_samples * n_features).reshape(n_samples, n_features)
-    y = rng.integers(0, max_rel, size=n_samples)
-    qid = rng.integers(0, n_query_groups, size=n_samples)
+    y = np.sum(X, axis=1)
+    y -= y.min()
+    y = np.round(y / y.max() * max_rel).astype(np.int32)
+
+    qid = rng.integers(0, n_query_groups, size=n_samples, dtype=np.int32)
     w = rng.normal(0, 1.0, size=n_query_groups)
     w -= np.min(w)
     w /= np.max(w)
@@ -877,6 +882,13 @@ def normpath(path: str) -> str:
 
 def data_dir(path: str) -> str:
     return os.path.join(demo_dir(path), "data")
+
+
+def load_agaricus(path: str) -> Tuple[xgb.DMatrix, xgb.DMatrix]:
+    dpath = data_dir(path)
+    dtrain = xgb.DMatrix(os.path.join(dpath, "agaricus.txt.train?format=libsvm"))
+    dtest = xgb.DMatrix(os.path.join(dpath, "agaricus.txt.test?format=libsvm"))
+    return dtrain, dtest
 
 
 def project_root(path: str) -> str:

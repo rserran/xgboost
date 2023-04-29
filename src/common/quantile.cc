@@ -6,6 +6,7 @@
 #include <limits>
 #include <utility>
 
+#include "../collective/aggregator.h"
 #include "../collective/communicator-inl.h"
 #include "../data/adapter.h"
 #include "categorical.h"
@@ -15,17 +16,16 @@ namespace xgboost {
 namespace common {
 
 template <typename WQSketch>
-SketchContainerImpl<WQSketch>::SketchContainerImpl(std::vector<bst_row_t> columns_size,
+SketchContainerImpl<WQSketch>::SketchContainerImpl(Context const *ctx,
+                                                   std::vector<bst_row_t> columns_size,
                                                    int32_t max_bins,
                                                    Span<FeatureType const> feature_types,
-                                                   bool use_group, bool col_split,
-                                                   int32_t n_threads)
+                                                   bool use_group)
     : feature_types_(feature_types.cbegin(), feature_types.cend()),
       columns_size_{std::move(columns_size)},
       max_bins_{max_bins},
       use_group_ind_{use_group},
-      col_split_{col_split},
-      n_threads_{n_threads} {
+      n_threads_{ctx->Threads()} {
   monitor_.Init(__func__);
   CHECK_NE(columns_size_.size(), 0);
   sketches_.resize(columns_size_.size());
@@ -202,10 +202,10 @@ void SketchContainerImpl<WQSketch>::GatherSketchInfo(
 }
 
 template <typename WQSketch>
-void SketchContainerImpl<WQSketch>::AllreduceCategories() {
+void SketchContainerImpl<WQSketch>::AllreduceCategories(MetaInfo const& info) {
   auto world_size = collective::GetWorldSize();
   auto rank = collective::GetRank();
-  if (world_size == 1 || col_split_) {
+  if (world_size == 1 || info.IsColumnSplit()) {
     return;
   }
 
@@ -273,6 +273,7 @@ void SketchContainerImpl<WQSketch>::AllreduceCategories() {
 
 template <typename WQSketch>
 void SketchContainerImpl<WQSketch>::AllReduce(
+    MetaInfo const& info,
     std::vector<typename WQSketch::SummaryContainer> *p_reduced,
     std::vector<int32_t>* p_num_cuts) {
   monitor_.Start(__func__);
@@ -281,7 +282,7 @@ void SketchContainerImpl<WQSketch>::AllReduce(
   collective::Allreduce<collective::Operation::kMax>(&n_columns, 1);
   CHECK_EQ(n_columns, sketches_.size()) << "Number of columns differs across workers";
 
-  AllreduceCategories();
+  AllreduceCategories(info);
 
   auto& num_cuts = *p_num_cuts;
   CHECK_EQ(num_cuts.size(), 0);
@@ -292,10 +293,7 @@ void SketchContainerImpl<WQSketch>::AllReduce(
 
   // Prune the intermediate num cuts for synchronization.
   std::vector<bst_row_t> global_column_size(columns_size_);
-  if (!col_split_) {
-    collective::Allreduce<collective::Operation::kSum>(global_column_size.data(),
-                                                       global_column_size.size());
-  }
+  collective::GlobalSum(info, &global_column_size);
 
   ParallelFor(sketches_.size(), n_threads_, [&](size_t i) {
     int32_t intermediate_num_cuts = static_cast<int32_t>(
@@ -316,7 +314,7 @@ void SketchContainerImpl<WQSketch>::AllReduce(
   });
 
   auto world = collective::GetWorldSize();
-  if (world == 1 || col_split_) {
+  if (world == 1 || info.IsColumnSplit()) {
     monitor_.Stop(__func__);
     return;
   }
@@ -382,13 +380,13 @@ auto AddCategories(std::set<float> const &categories, HistogramCuts *cuts) {
 }
 
 template <typename WQSketch>
-void SketchContainerImpl<WQSketch>::MakeCuts(HistogramCuts* cuts) {
+void SketchContainerImpl<WQSketch>::MakeCuts(MetaInfo const &info, HistogramCuts *p_cuts) {
   monitor_.Start(__func__);
   std::vector<typename WQSketch::SummaryContainer> reduced;
   std::vector<int32_t> num_cuts;
-  this->AllReduce(&reduced, &num_cuts);
+  this->AllReduce(info, &reduced, &num_cuts);
 
-  cuts->min_vals_.HostVector().resize(sketches_.size(), 0.0f);
+  p_cuts->min_vals_.HostVector().resize(sketches_.size(), 0.0f);
   std::vector<typename WQSketch::SummaryContainer> final_summaries(reduced.size());
 
   ParallelFor(reduced.size(), n_threads_, Sched::Guided(), [&](size_t fidx) {
@@ -403,48 +401,48 @@ void SketchContainerImpl<WQSketch>::MakeCuts(HistogramCuts* cuts) {
       a.SetPrune(reduced[fidx], max_num_bins + 1);
       CHECK(a.data && reduced[fidx].data);
       const bst_float mval = a.data[0].value;
-      cuts->min_vals_.HostVector()[fidx] = mval - fabs(mval) - 1e-5f;
+      p_cuts->min_vals_.HostVector()[fidx] = mval - fabs(mval) - 1e-5f;
     } else {
       // Empty column.
       const float mval = 1e-5f;
-      cuts->min_vals_.HostVector()[fidx] = mval;
+      p_cuts->min_vals_.HostVector()[fidx] = mval;
     }
   });
 
   float max_cat{-1.f};
   for (size_t fid = 0; fid < reduced.size(); ++fid) {
     size_t max_num_bins = std::min(num_cuts[fid], max_bins_);
-    typename WQSketch::SummaryContainer const& a = final_summaries[fid];
+    typename WQSketch::SummaryContainer const &a = final_summaries[fid];
     if (IsCat(feature_types_, fid)) {
-      max_cat = std::max(max_cat, AddCategories(categories_.at(fid), cuts));
+      max_cat = std::max(max_cat, AddCategories(categories_.at(fid), p_cuts));
     } else {
-      AddCutPoint<WQSketch>(a, max_num_bins, cuts);
+      AddCutPoint<WQSketch>(a, max_num_bins, p_cuts);
       // push a value that is greater than anything
       const bst_float cpt =
-          (a.size > 0) ? a.data[a.size - 1].value : cuts->min_vals_.HostVector()[fid];
+          (a.size > 0) ? a.data[a.size - 1].value : p_cuts->min_vals_.HostVector()[fid];
       // this must be bigger than last value in a scale
       const bst_float last = cpt + (fabs(cpt) + 1e-5f);
-      cuts->cut_values_.HostVector().push_back(last);
+      p_cuts->cut_values_.HostVector().push_back(last);
     }
 
     // Ensure that every feature gets at least one quantile point
-    CHECK_LE(cuts->cut_values_.HostVector().size(), std::numeric_limits<uint32_t>::max());
-    auto cut_size = static_cast<uint32_t>(cuts->cut_values_.HostVector().size());
-    CHECK_GT(cut_size, cuts->cut_ptrs_.HostVector().back());
-    cuts->cut_ptrs_.HostVector().push_back(cut_size);
+    CHECK_LE(p_cuts->cut_values_.HostVector().size(), std::numeric_limits<uint32_t>::max());
+    auto cut_size = static_cast<uint32_t>(p_cuts->cut_values_.HostVector().size());
+    CHECK_GT(cut_size, p_cuts->cut_ptrs_.HostVector().back());
+    p_cuts->cut_ptrs_.HostVector().push_back(cut_size);
   }
 
-  cuts->SetCategorical(this->has_categorical_, max_cat);
+  p_cuts->SetCategorical(this->has_categorical_, max_cat);
   monitor_.Stop(__func__);
 }
 
 template class SketchContainerImpl<WQuantileSketch<float, float>>;
 template class SketchContainerImpl<WXQuantileSketch<float, float>>;
 
-HostSketchContainer::HostSketchContainer(int32_t max_bins, common::Span<FeatureType const> ft,
-                                         std::vector<size_t> columns_size, bool use_group,
-                                         bool col_split, int32_t n_threads)
-    : SketchContainerImpl{columns_size, max_bins, ft, use_group, col_split, n_threads} {
+HostSketchContainer::HostSketchContainer(Context const *ctx, bst_bin_t max_bins,
+                                         common::Span<FeatureType const> ft,
+                                         std::vector<size_t> columns_size, bool use_group)
+    : SketchContainerImpl{ctx, columns_size, max_bins, ft, use_group} {
   monitor_.Init(__func__);
   ParallelFor(sketches_.size(), n_threads_, Sched::Auto(), [&](auto i) {
     auto n_bins = std::min(static_cast<size_t>(max_bins_), columns_size_[i]);

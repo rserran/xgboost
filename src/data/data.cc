@@ -427,10 +427,13 @@ void CopyTensorInfoImpl(Context const& ctx, Json arr_interface, linalg::Tensor<T
     return;
   }
   p_out->Reshape(array.shape);
-  auto t = p_out->View(Context::kCpuId);
-  CHECK(t.CContiguous());
-  linalg::ElementWiseTransformHost(t, ctx.Threads(), [&](auto i, auto) {
-    return linalg::detail::Apply(TypedIndex<T, D>{array}, linalg::UnravelIndex<D>(i, t.Shape()));
+  auto t_out = p_out->View(Context::kCpuId);
+  CHECK(t_out.CContiguous());
+  auto const shape = t_out.Shape();
+  DispatchDType(array, Context::kCpuId, [&](auto&& in) {
+    linalg::ElementWiseTransformHost(t_out, ctx.Threads(), [&](auto i, auto) {
+      return std::apply(in, linalg::UnravelIndex<D>(i, shape));
+    });
   });
 }
 }  // namespace
@@ -774,6 +777,10 @@ bool MetaInfo::IsVerticalFederated() const {
   return collective::IsFederated() && IsColumnSplit();
 }
 
+bool MetaInfo::ShouldHaveLabels() const {
+  return !IsVerticalFederated() || collective::GetRank() == 0;
+}
+
 using DMatrixThreadLocal =
     dmlc::ThreadLocalStore<std::map<DMatrix const *, XGBAPIThreadLocalEntry>>;
 
@@ -812,8 +819,7 @@ DMatrix *TryLoadBinary(std::string fname, bool silent) {
   return nullptr;
 }
 
-DMatrix* DMatrix::Load(const std::string& uri, bool silent, DataSplitMode data_split_mode,
-                       const std::string& file_format) {
+DMatrix* DMatrix::Load(const std::string& uri, bool silent, DataSplitMode data_split_mode) {
   auto need_split = false;
   if (collective::IsFederated()) {
     LOG(CONSOLE) << "XGBoost federated mode detected, not splitting data among workers";
@@ -855,11 +861,9 @@ DMatrix* DMatrix::Load(const std::string& uri, bool silent, DataSplitMode data_s
   }
 
   // legacy handling of binary data loading
-  if (file_format == "auto") {
-    DMatrix* loaded = TryLoadBinary(fname, silent);
-    if (loaded) {
-      return loaded;
-    }
+  DMatrix* loaded = TryLoadBinary(fname, silent);
+  if (loaded) {
+    return loaded;
   }
 
   int partid = 0, npart = 1;
@@ -875,47 +879,24 @@ DMatrix* DMatrix::Load(const std::string& uri, bool silent, DataSplitMode data_s
     LOG(CONSOLE) << "Load part of data " << partid << " of " << npart << " parts";
   }
 
+  data::ValidateFileFormat(fname);
   DMatrix* dmat {nullptr};
-  try {
-    if (cache_file.empty()) {
-      std::unique_ptr<dmlc::Parser<uint32_t>> parser(
-          dmlc::Parser<uint32_t>::Create(fname.c_str(), partid, npart, file_format.c_str()));
-      data::FileAdapter adapter(parser.get());
-      dmat = DMatrix::Create(&adapter, std::numeric_limits<float>::quiet_NaN(), Context{}.Threads(),
-                             cache_file, data_split_mode);
-    } else {
-      data::FileIterator iter{fname, static_cast<uint32_t>(partid), static_cast<uint32_t>(npart),
-                              file_format};
-      dmat = new data::SparsePageDMatrix{&iter,
-                                         iter.Proxy(),
-                                         data::fileiter::Reset,
-                                         data::fileiter::Next,
-                                         std::numeric_limits<float>::quiet_NaN(),
-                                         1,
-                                         cache_file};
-    }
-  } catch (dmlc::Error& e) {
-    std::vector<std::string> splited = common::Split(fname, '#');
-    std::vector<std::string> args = common::Split(splited.front(), '?');
-    std::string format {file_format};
-    if (args.size() == 1 && file_format == "auto") {
-      auto extension = common::Split(args.front(), '.').back();
-      if (extension == "csv" || extension == "libsvm") {
-        format = extension;
-      }
-      if (format == extension) {
-        LOG(WARNING)
-            << "No format parameter is provided in input uri, but found file extension: "
-            << format << " .  "
-            << "Consider providing a uri parameter: filename?format=" << format;
-      } else {
-        LOG(WARNING)
-            << "No format parameter is provided in input uri.  "
-            << "Choosing default parser in dmlc-core.  "
-            << "Consider providing a uri parameter like: filename?format=csv";
-      }
-    }
-    LOG(FATAL) << "Encountered parser error:\n" << e.what();
+
+  if (cache_file.empty()) {
+    std::unique_ptr<dmlc::Parser<uint32_t>> parser(
+        dmlc::Parser<uint32_t>::Create(fname.c_str(), partid, npart, "auto"));
+    data::FileAdapter adapter(parser.get());
+    dmat = DMatrix::Create(&adapter, std::numeric_limits<float>::quiet_NaN(), Context{}.Threads(),
+                           cache_file, data_split_mode);
+  } else {
+    data::FileIterator iter{fname, static_cast<uint32_t>(partid), static_cast<uint32_t>(npart)};
+    dmat = new data::SparsePageDMatrix{&iter,
+                                       iter.Proxy(),
+                                       data::fileiter::Reset,
+                                       data::fileiter::Next,
+                                       std::numeric_limits<float>::quiet_NaN(),
+                                       1,
+                                       cache_file};
   }
 
   if (need_split && data_split_mode == DataSplitMode::kCol) {

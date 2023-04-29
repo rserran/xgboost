@@ -789,7 +789,6 @@ class SketchContainerImpl {
   std::vector<bst_row_t> columns_size_;
   int32_t max_bins_;
   bool use_group_ind_{false};
-  bool col_split_;
   int32_t n_threads_;
   bool has_categorical_{false};
   Monitor monitor_;
@@ -801,9 +800,8 @@ class SketchContainerImpl {
    * \param max_bins maximum number of bins for each feature.
    * \param use_group whether is assigned to group to data instance.
    */
-  SketchContainerImpl(std::vector<bst_row_t> columns_size, int32_t max_bins,
-                      common::Span<FeatureType const> feature_types, bool use_group, bool col_split,
-                      int32_t n_threads);
+  SketchContainerImpl(Context const *ctx, std::vector<bst_row_t> columns_size, int32_t max_bins,
+                      common::Span<FeatureType const> feature_types, bool use_group);
 
   static bool UseGroup(MetaInfo const &info) {
     size_t const num_groups =
@@ -829,7 +827,7 @@ class SketchContainerImpl {
                         std::vector<bst_row_t> *p_sketches_scan,
                         std::vector<typename WQSketch::Entry> *p_global_sketches);
   // Merge sketches from all workers.
-  void AllReduce(std::vector<typename WQSketch::SummaryContainer> *p_reduced,
+  void AllReduce(MetaInfo const& info, std::vector<typename WQSketch::SummaryContainer> *p_reduced,
                  std::vector<int32_t> *p_num_cuts);
 
   template <typename Batch, typename IsValid>
@@ -883,11 +881,11 @@ class SketchContainerImpl {
   /* \brief Push a CSR matrix. */
   void PushRowPage(SparsePage const &page, MetaInfo const &info, Span<float const> hessian = {});
 
-  void MakeCuts(HistogramCuts* cuts);
+  void MakeCuts(MetaInfo const& info, HistogramCuts* cuts);
 
  private:
   // Merge all categories from other workers.
-  void AllreduceCategories();
+  void AllreduceCategories(MetaInfo const& info);
 };
 
 class HostSketchContainer : public SketchContainerImpl<WQuantileSketch<float, float>> {
@@ -895,9 +893,8 @@ class HostSketchContainer : public SketchContainerImpl<WQuantileSketch<float, fl
   using WQSketch = WQuantileSketch<float, float>;
 
  public:
-  HostSketchContainer(int32_t max_bins, common::Span<FeatureType const> ft,
-                      std::vector<size_t> columns_size, bool use_group, bool col_split,
-                      int32_t n_threads);
+  HostSketchContainer(Context const *ctx, bst_bin_t max_bins, common::Span<FeatureType const> ft,
+                      std::vector<size_t> columns_size, bool use_group);
 
   template <typename Batch>
   void PushAdapterBatch(Batch const &batch, size_t base_rowid, MetaInfo const &info, float missing);
@@ -992,10 +989,10 @@ class SortedSketchContainer : public SketchContainerImpl<WXQuantileSketch<float,
   using Super = SketchContainerImpl<WXQuantileSketch<float, float>>;
 
  public:
-  explicit SortedSketchContainer(int32_t max_bins, common::Span<FeatureType const> ft,
-                                 std::vector<size_t> columns_size, bool use_group, bool col_split,
-                                 int32_t n_threads)
-      : SketchContainerImpl{columns_size, max_bins, ft, use_group, col_split, n_threads} {
+  explicit SortedSketchContainer(Context const *ctx, int32_t max_bins,
+                                 common::Span<FeatureType const> ft,
+                                 std::vector<size_t> columns_size, bool use_group)
+      : SketchContainerImpl{ctx, columns_size, max_bins, ft, use_group} {
     monitor_.Init(__func__);
     sketches_.resize(columns_size.size());
     size_t i = 0;
