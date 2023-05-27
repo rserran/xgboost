@@ -33,8 +33,9 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
-        <flink.version>1.17.0</flink.version>
+        <flink.version>1.17.1</flink.version>
         <spark.version>3.4.0</spark.version>
+        <spark.version.gpu>3.3.2</spark.version.gpu>
         <scala.version>2.12.17</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
         <hadoop.version>3.3.5</hadoop.version>
@@ -42,7 +43,7 @@
         <log.capi.invocation>OFF</log.capi.invocation>
         <use.cuda>OFF</use.cuda>
         <cudf.version>23.04.0</cudf.version>
-        <spark.rapids.version>23.04.0</spark.rapids.version>
+        <spark.rapids.version>23.04.1</spark.rapids.version>
         <cudf.classifier>cuda11</cudf.classifier>
     </properties>
     <repositories>
@@ -143,7 +144,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-source-plugin</artifactId>
-                        <version>3.2.1</version>
+                        <version>3.3.0</version>
                         <executions>
                             <execution>
                                 <id>attach-sources</id>
@@ -181,7 +182,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-assembly-plugin</artifactId>
-                        <version>3.5.0</version>
+                        <version>3.6.0</version>
                         <configuration>
                             <descriptorRefs>
                                 <descriptorRef>jar-with-dependencies</descriptorRef>
@@ -374,7 +375,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-checkstyle-plugin</artifactId>
-                <version>3.2.2</version>
+                <version>3.3.0</version>
                 <configuration>
                     <configLocation>checkstyle.xml</configLocation>
                     <failOnViolation>true</failOnViolation>
@@ -490,7 +491,7 @@
         <dependency>
             <groupId>org.scalatest</groupId>
             <artifactId>scalatest_${scala.binary.version}</artifactId>
-            <version>3.2.15</version>
+            <version>3.2.16</version>
             <scope>test</scope>
         </dependency>
         <dependency>
