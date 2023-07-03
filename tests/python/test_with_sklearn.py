@@ -1390,7 +1390,6 @@ def test_categorical():
     X, y = tm.make_categorical(n_samples=32, n_features=2, n_categories=3, onehot=False)
     ft = ["c"] * X.shape[1]
     reg = xgb.XGBRegressor(
-        tree_method="hist",
         feature_types=ft,
         max_cat_to_onehot=1,
         enable_categorical=True,
@@ -1409,30 +1408,13 @@ def test_categorical():
     onehot, y = tm.make_categorical(
         n_samples=32, n_features=2, n_categories=3, onehot=True
     )
-    reg = xgb.XGBRegressor(tree_method="hist")
+    reg = xgb.XGBRegressor()
     reg.fit(onehot, y, eval_set=[(onehot, y)])
     from_enc = reg.evals_result()["validation_0"]["rmse"]
     predt_enc = reg.predict(onehot)
 
     np.testing.assert_allclose(from_cat, from_enc)
     np.testing.assert_allclose(predt_cat, predt_enc)
-
-
-def test_prediction_config():
-    reg = xgb.XGBRegressor()
-    assert reg._can_use_inplace_predict() is True
-
-    reg.set_params(predictor="cpu_predictor")
-    assert reg._can_use_inplace_predict() is False
-
-    reg.set_params(predictor="auto")
-    assert reg._can_use_inplace_predict() is True
-
-    reg.set_params(predictor=None)
-    assert reg._can_use_inplace_predict() is True
-
-    reg.set_params(booster="gblinear")
-    assert reg._can_use_inplace_predict() is False
 
 
 def test_evaluation_metric():

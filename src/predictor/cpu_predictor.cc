@@ -467,7 +467,6 @@ class ColumnSplitHelper {
   void MaskOneTree(RegTree::FVec const &feat, std::size_t tree_id, std::size_t row_id) {
     auto const &tree = *model_.trees[tree_id];
     auto const &cats = tree.GetCategoriesMatrix();
-    auto const has_categorical = tree.HasCategoricalSplit();
     bst_node_t n_nodes = tree.GetNodes().size();
 
     for (bst_node_t nid = 0; nid < n_nodes; nid++) {
@@ -484,16 +483,10 @@ class ColumnSplitHelper {
       }
 
       auto const fvalue = feat.GetFvalue(split_index);
-      if (has_categorical && common::IsCat(cats.split_type, nid)) {
-        auto const node_categories =
-            cats.categories.subspan(cats.node_ptr[nid].beg, cats.node_ptr[nid].size);
-        if (!common::Decision(node_categories, fvalue)) {
-          decision_bits_.Set(bit_index);
-        }
-        continue;
-      }
-
-      if (fvalue >= node.SplitCond()) {
+      auto const decision = tree.HasCategoricalSplit()
+                                ? GetDecision<true>(node, nid, fvalue, cats)
+                                : GetDecision<false>(node, nid, fvalue, cats);
+      if (decision) {
         decision_bits_.Set(bit_index);
       }
     }
@@ -511,7 +504,7 @@ class ColumnSplitHelper {
     if (missing_bits_.Check(bit_index)) {
       return node.DefaultChild();
     } else {
-      return node.LeftChild() + decision_bits_.Check(bit_index);
+      return node.LeftChild() + !decision_bits_.Check(bit_index);
     }
   }
 
@@ -890,9 +883,8 @@ class CPUPredictor : public Predictor {
     for (const auto &batch : p_fmat->GetBatches<SparsePage>()) {
       auto page = batch.GetView();
       // parallel over local batch
-      const auto nsize = static_cast<bst_omp_uint>(batch.Size());
-      common::ParallelFor(nsize, n_threads, [&](bst_omp_uint i) {
-        auto row_idx = static_cast<size_t>(batch.base_rowid + i);
+      common::ParallelFor(batch.Size(), n_threads, [&](auto i) {
+        auto row_idx = batch.base_rowid + i;
         RegTree::FVec &feats = feat_vecs[omp_get_thread_num()];
         if (feats.Size() == 0) {
           feats.Init(num_feature);
