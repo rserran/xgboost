@@ -73,8 +73,10 @@ private[scala] case class XGBoostExecutionParams(
     xgbInputParams: XGBoostExecutionInputParams,
     earlyStoppingParams: XGBoostExecutionEarlyStoppingParams,
     cacheTrainingSet: Boolean,
-    treeMethod: Option[String],
-    isLocal: Boolean) {
+    device: Option[String],
+    isLocal: Boolean,
+    featureNames: Option[Array[String]],
+    featureTypes: Option[Array[String]]) {
 
   private var rawParamMap: Map[String, Any] = _
 
@@ -178,6 +180,10 @@ private[this] class XGBoostExecutionParamsFactory(rawParams: Map[String, Any], s
         " as 'hist', 'approx', 'gpu_hist', and 'auto'")
       treeMethod = Some(overridedParams("tree_method").asInstanceOf[String])
     }
+    val device: Option[String] = overridedParams.get("device") match {
+      case None => None
+      case Some(dev: String) => if (treeMethod == "gpu_hist") Some("cuda") else Some(dev)
+    }
     if (overridedParams.contains("train_test_ratio")) {
       logger.warn("train_test_ratio is deprecated since XGBoost 0.82, we recommend to explicitly" +
         " pass a training and multiple evaluation datasets by passing 'eval_sets' and " +
@@ -213,14 +219,24 @@ private[this] class XGBoostExecutionParamsFactory(rawParams: Map[String, Any], s
     val cacheTrainingSet = overridedParams.getOrElse("cache_training_set", false)
       .asInstanceOf[Boolean]
 
+    val featureNames = if (overridedParams.contains("feature_names")) {
+      Some(overridedParams("feature_names").asInstanceOf[Array[String]])
+    } else None
+    val featureTypes = if (overridedParams.contains("feature_types")){
+      Some(overridedParams("feature_types").asInstanceOf[Array[String]])
+    } else None
+
     val xgbExecParam = XGBoostExecutionParams(nWorkers, round, useExternalMemory, obj, eval,
       missing, allowNonZeroForMissing, trackerConf,
       checkpointParam,
       inputParams,
       xgbExecEarlyStoppingParams,
       cacheTrainingSet,
-      treeMethod,
-      isLocal)
+      device,
+      isLocal,
+      featureNames,
+      featureTypes
+    )
     xgbExecParam.setRawParamMap(overridedParams)
     xgbExecParam
   }
@@ -306,7 +322,7 @@ object XGBoost extends Serializable {
       val externalCheckpointParams = xgbExecutionParam.checkpointParam
 
       var params = xgbExecutionParam.toMap
-      if (xgbExecutionParam.treeMethod.exists(m => m == "gpu_hist")) {
+      if (xgbExecutionParam.device.exists(m => (m == "cuda" || m == "gpu"))) {
         val gpuId = if (xgbExecutionParam.isLocal) {
           // For local mode, force gpu id to primary device
           0
@@ -314,8 +330,9 @@ object XGBoost extends Serializable {
           getGPUAddrFromResources
         }
         logger.info("Leveraging gpu device " + gpuId + " to train")
-        params = params + ("gpu_id" -> gpuId)
+        params = params + ("device" -> s"cuda:$gpuId")
       }
+
       val booster = if (makeCheckpoint) {
         SXGBoost.trainAndSaveCheckpoint(
           watches.toMap("train"), params, numRounds,
@@ -531,6 +548,16 @@ private object Watches {
     if (trainMargin.isDefined) trainMatrix.setBaseMargin(trainMargin.get)
     if (testMargin.isDefined) testMatrix.setBaseMargin(testMargin.get)
 
+    if (xgbExecutionParams.featureNames.isDefined) {
+      trainMatrix.setFeatureNames(xgbExecutionParams.featureNames.get)
+      testMatrix.setFeatureNames(xgbExecutionParams.featureNames.get)
+    }
+
+    if (xgbExecutionParams.featureTypes.isDefined) {
+      trainMatrix.setFeatureTypes(xgbExecutionParams.featureTypes.get)
+      testMatrix.setFeatureTypes(xgbExecutionParams.featureTypes.get)
+    }
+
     new Watches(Array(trainMatrix, testMatrix), Array("train", "test"), cacheDirName)
   }
 
@@ -642,6 +669,15 @@ private object Watches {
     val testMargin = fromBaseMarginsToArray(testBaseMargins.result().iterator)
     if (trainMargin.isDefined) trainMatrix.setBaseMargin(trainMargin.get)
     if (testMargin.isDefined) testMatrix.setBaseMargin(testMargin.get)
+
+    if (xgbExecutionParams.featureNames.isDefined) {
+      trainMatrix.setFeatureNames(xgbExecutionParams.featureNames.get)
+      testMatrix.setFeatureNames(xgbExecutionParams.featureNames.get)
+    }
+    if (xgbExecutionParams.featureTypes.isDefined) {
+      trainMatrix.setFeatureTypes(xgbExecutionParams.featureTypes.get)
+      testMatrix.setFeatureTypes(xgbExecutionParams.featureTypes.get)
+    }
 
     new Watches(Array(trainMatrix, testMatrix), Array("train", "test"), cacheDirName)
   }

@@ -14,7 +14,11 @@ from xgboost.testing.params import (
     hist_multi_parameter_strategy,
     hist_parameter_strategy,
 )
-from xgboost.testing.updater import check_init_estimation, check_quantile_loss
+from xgboost.testing.updater import (
+    check_get_quantile_cut,
+    check_init_estimation,
+    check_quantile_loss,
+)
 
 
 def train_result(param, dmat, num_rounds):
@@ -23,7 +27,7 @@ def train_result(param, dmat, num_rounds):
         param,
         dmat,
         num_rounds,
-        [(dmat, "train")],
+        evals=[(dmat, "train")],
         verbose_eval=False,
         evals_result=result,
     )
@@ -165,13 +169,21 @@ class TestTreeMethod:
         hist_res = {}
         exact_res = {}
 
-        xgb.train(ag_param, ag_dtrain, 10,
-                  [(ag_dtrain, 'train'), (ag_dtest, 'test')],
-                  evals_result=hist_res)
+        xgb.train(
+            ag_param,
+            ag_dtrain,
+            10,
+            evals=[(ag_dtrain, "train"), (ag_dtest, "test")],
+            evals_result=hist_res
+        )
         ag_param["tree_method"] = "exact"
-        xgb.train(ag_param, ag_dtrain, 10,
-                  [(ag_dtrain, 'train'), (ag_dtest, 'test')],
-                  evals_result=exact_res)
+        xgb.train(
+            ag_param,
+            ag_dtrain,
+            10,
+            evals=[(ag_dtrain, "train"), (ag_dtest, "test")],
+            evals_result=exact_res
+        )
         assert hist_res['train']['auc'] == exact_res['train']['auc']
         assert hist_res['test']['auc'] == exact_res['test']['auc']
 
@@ -537,3 +549,8 @@ class TestTreeMethod:
     @pytest.mark.parametrize("weighted", [True, False])
     def test_quantile_loss(self, weighted: bool) -> None:
         check_quantile_loss("hist", weighted)
+
+    @pytest.mark.skipif(**tm.no_pandas())
+    @pytest.mark.parametrize("tree_method", ["hist"])
+    def test_get_quantile_cut(self, tree_method: str) -> None:
+        check_get_quantile_cut(tree_method)

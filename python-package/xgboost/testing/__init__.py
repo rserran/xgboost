@@ -265,6 +265,14 @@ def make_batches(
     return X, y, w
 
 
+def make_regression(
+    n_samples: int, n_features: int, use_cupy: bool
+) -> Tuple[ArrayLike, ArrayLike, ArrayLike]:
+    """Make a simple regression dataset."""
+    X, y, w = make_batches(n_samples, n_features, 1, use_cupy)
+    return X[0], y[0], w[0]
+
+
 def make_batches_sparse(
     n_samples_per_batch: int, n_features: int, n_batches: int, sparsity: float
 ) -> Tuple[List[sparse.csr_matrix], List[np.ndarray], List[np.ndarray]]:
@@ -713,24 +721,6 @@ def predictor_equal(lhs: xgb.DMatrix, rhs: xgb.DMatrix) -> bool:
 
 
 M = TypeVar("M", xgb.Booster, xgb.XGBModel)
-
-
-def set_ordinal(ordinal: int, booster: M) -> M:
-    """Temporary solution for setting the device ordinal until we move away from
-    `gpu_id`.
-
-    """
-    if ordinal < 0:
-        params = {"gpu_id": -1, "tree_method": "hist"}
-    else:
-        params = {"gpu_id": ordinal, "tree_method": "gpu_hist"}
-
-    if isinstance(booster, xgb.Booster):
-        booster.set_param(params)
-    elif isinstance(booster, xgb.XGBModel):
-        booster.set_params(**params)
-
-    return booster
 
 
 def eval_error_metric(predt: np.ndarray, dtrain: xgb.DMatrix) -> Tuple[str, np.float64]:

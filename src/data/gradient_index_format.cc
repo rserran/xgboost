@@ -80,7 +80,9 @@ class GHistIndexRawFormat : public SparsePageFormat<GHistIndexMatrix> {
     // - index buffer
     std::vector<std::uint8_t> data(page.index.begin(), page.index.end());
     bytes += fo->Write(static_cast<std::uint64_t>(data.size()));
-    bytes += fo->Write(data.data(), data.size());
+    if (!data.empty()) {
+      bytes += fo->Write(data.data(), data.size());
+    }
 
     // hit count
     bytes += common::WriteVec(fo, page.hit_count);

@@ -3,6 +3,7 @@
 """Core XGBoost Library."""
 import copy
 import ctypes
+import importlib.util
 import json
 import os
 import re
@@ -152,7 +153,11 @@ def _expect(expectations: Sequence[Type], got: Type) -> str:
 
 def _log_callback(msg: bytes) -> None:
     """Redirect logs from native library into Python console"""
-    print(py_str(msg))
+    smsg = py_str(msg)
+    if smsg.find("WARNING:") != -1:
+        warnings.warn(smsg, UserWarning)
+        return
+    print(smsg)
 
 
 def _get_log_callback_func() -> Callable:
@@ -271,6 +276,27 @@ def _check_call(ret: int) -> None:
         raise XGBoostError(py_str(_LIB.XGBGetLastError()))
 
 
+def _check_distributed_params(kwargs: Dict[str, Any]) -> None:
+    """Validate parameters in distributed environments."""
+    device = kwargs.get("device", None)
+    if device and not isinstance(device, str):
+        msg = "Invalid type for the `device` parameter"
+        msg += _expect((str,), type(device))
+        raise TypeError(msg)
+
+    if device and device.find(":") != -1:
+        raise ValueError(
+            "Distributed training doesn't support selecting device ordinal as GPUs are"
+            " managed by the distributed framework. use `device=cuda` or `device=gpu`"
+            " instead."
+        )
+
+    if kwargs.get("booster", None) == "gblinear":
+        raise NotImplementedError(
+            f"booster `{kwargs['booster']}` is not supported for distributed training."
+        )
+
+
 def build_info() -> dict:
     """Build information of XGBoost.  The returned value format is not stable. Also,
     please note that build time dependency is not the same as runtime dependency. For
@@ -379,6 +405,54 @@ def c_array(
     if isinstance(values, np.ndarray) and values.dtype.itemsize == ctypes.sizeof(ctype):
         return values.ctypes.data_as(ctypes.POINTER(ctype))
     return (ctype * len(values))(*values)
+
+
+def from_array_interface(interface: dict) -> NumpyOrCupy:
+    """Convert array interface to numpy or cupy array"""
+
+    class Array:  # pylint: disable=too-few-public-methods
+        """Wrapper type for communicating with numpy and cupy."""
+
+        _interface: Optional[dict] = None
+
+        @property
+        def __array_interface__(self) -> Optional[dict]:
+            return self._interface
+
+        @__array_interface__.setter
+        def __array_interface__(self, interface: dict) -> None:
+            self._interface = copy.copy(interface)
+            # converts some fields to tuple as required by numpy
+            self._interface["shape"] = tuple(self._interface["shape"])
+            self._interface["data"] = tuple(self._interface["data"])
+            if self._interface.get("strides", None) is not None:
+                self._interface["strides"] = tuple(self._interface["strides"])
+
+        @property
+        def __cuda_array_interface__(self) -> Optional[dict]:
+            return self.__array_interface__
+
+        @__cuda_array_interface__.setter
+        def __cuda_array_interface__(self, interface: dict) -> None:
+            self.__array_interface__ = interface
+
+    arr = Array()
+
+    if "stream" in interface:
+        # CUDA stream is presented, this is a __cuda_array_interface__.
+        spec = importlib.util.find_spec("cupy")
+        if spec is None:
+            raise ImportError("`cupy` is required for handling CUDA buffer.")
+
+        import cupy as cp  # pylint: disable=import-error
+
+        arr.__cuda_array_interface__ = interface
+        out = cp.array(arr, copy=True)
+    else:
+        arr.__array_interface__ = interface
+        out = np.array(arr, copy=True)
+
+    return out
 
 
 def _prediction_output(
@@ -1060,6 +1134,32 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
         )
         return ret
 
+    def get_quantile_cut(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Get quantile cuts for quantization."""
+        n_features = self.num_col()
+
+        c_sindptr = ctypes.c_char_p()
+        c_sdata = ctypes.c_char_p()
+        config = make_jcargs()
+        _check_call(
+            _LIB.XGDMatrixGetQuantileCut(
+                self.handle, config, ctypes.byref(c_sindptr), ctypes.byref(c_sdata)
+            )
+        )
+        assert c_sindptr.value is not None
+        assert c_sdata.value is not None
+
+        i_indptr = json.loads(c_sindptr.value)
+        indptr = from_array_interface(i_indptr)
+        assert indptr.size == n_features + 1
+        assert indptr.dtype == np.uint64
+
+        i_data = json.loads(c_sdata.value)
+        data = from_array_interface(i_data)
+        assert data.size == indptr[-1]
+        assert data.dtype == np.float32
+        return indptr, data
+
     def num_row(self) -> int:
         """Get the number of rows in the DMatrix."""
         ret = c_bst_ulong()
@@ -1318,13 +1418,13 @@ class _ProxyDMatrix(DMatrix):
 
 
 class QuantileDMatrix(DMatrix):
-    """A DMatrix variant that generates quantilized data directly from input for
-    ``hist`` and ``gpu_hist`` tree methods. This DMatrix is primarily designed to save
-    memory in training by avoiding intermediate storage. Set ``max_bin`` to control the
-    number of bins during quantisation, which should be consistent with the training
-    parameter ``max_bin``. When ``QuantileDMatrix`` is used for validation/test dataset,
-    ``ref`` should be another ``QuantileDMatrix``(or ``DMatrix``, but not recommended as
-    it defeats the purpose of saving memory) constructed from training dataset.  See
+    """A DMatrix variant that generates quantilized data directly from input for the
+    ``hist`` tree method. This DMatrix is primarily designed to save memory in training
+    by avoiding intermediate storage. Set ``max_bin`` to control the number of bins
+    during quantisation, which should be consistent with the training parameter
+    ``max_bin``. When ``QuantileDMatrix`` is used for validation/test dataset, ``ref``
+    should be another ``QuantileDMatrix``(or ``DMatrix``, but not recommended as it
+    defeats the purpose of saving memory) constructed from training dataset.  See
     :py:obj:`xgboost.DMatrix` for documents on meta info.
 
     .. note::
@@ -1372,7 +1472,7 @@ class QuantileDMatrix(DMatrix):
         enable_categorical: bool = False,
         data_split_mode: DataSplitMode = DataSplitMode.ROW,
     ) -> None:
-        self.max_bin: int = max_bin if max_bin is not None else 256
+        self.max_bin = max_bin
         self.missing = missing if missing is not None else np.nan
         self.nthread = nthread if nthread is not None else -1
         self._silent = silent  # unused, kept for compatibility
@@ -1544,7 +1644,7 @@ class Booster:
         )
         for d in cache:
             # Validate feature only after the feature names are saved into booster.
-            self._validate_dmatrix_features(d)
+            self._assign_dmatrix_features(d)
 
         if isinstance(model_file, Booster):
             assert self.handle is not None
@@ -1667,6 +1767,11 @@ class Booster:
         self.__dict__.update(state)
 
     def __getitem__(self, val: Union[int, tuple, slice]) -> "Booster":
+        """Get a slice of the tree-based model.
+
+        .. versionadded:: 1.3.0
+
+        """
         if isinstance(val, int):
             val = slice(val, val + 1)
         if isinstance(val, tuple):
@@ -1705,6 +1810,11 @@ class Booster:
         return sliced
 
     def __iter__(self) -> Generator["Booster", None, None]:
+        """Iterator method for getting individual trees.
+
+        .. versionadded:: 2.0.0
+
+        """
         for i in range(0, self.num_boosted_rounds()):
             yield self[i]
 
@@ -1915,7 +2025,7 @@ class Booster:
         """
         if not isinstance(dtrain, DMatrix):
             raise TypeError(f"invalid training matrix: {type(dtrain).__name__}")
-        self._validate_dmatrix_features(dtrain)
+        self._assign_dmatrix_features(dtrain)
 
         if fobj is None:
             _check_call(
@@ -1947,7 +2057,7 @@ class Booster:
             raise ValueError(f"grad / hess length mismatch: {len(grad)} / {len(hess)}")
         if not isinstance(dtrain, DMatrix):
             raise TypeError(f"invalid training matrix: {type(dtrain).__name__}")
-        self._validate_dmatrix_features(dtrain)
+        self._assign_dmatrix_features(dtrain)
 
         _check_call(
             _LIB.XGBoosterBoostOneIter(
@@ -1988,7 +2098,7 @@ class Booster:
                 raise TypeError(f"expected DMatrix, got {type(d[0]).__name__}")
             if not isinstance(d[1], str):
                 raise TypeError(f"expected string, got {type(d[1]).__name__}")
-            self._validate_dmatrix_features(d[0])
+            self._assign_dmatrix_features(d[0])
 
         dmats = c_array(ctypes.c_void_p, [d[0].handle for d in evals])
         evnames = c_array(ctypes.c_char_p, [c_str(d[1]) for d in evals])
@@ -2040,7 +2150,7 @@ class Booster:
         result: str
             Evaluation result string.
         """
-        self._validate_dmatrix_features(data)
+        self._assign_dmatrix_features(data)
         return self.eval_set([(data, name)], iteration)
 
     # pylint: disable=too-many-function-args
@@ -2139,7 +2249,8 @@ class Booster:
         if not isinstance(data, DMatrix):
             raise TypeError("Expecting data to be a DMatrix object, got: ", type(data))
         if validate_features:
-            self._validate_dmatrix_features(data)
+            fn = data.feature_names
+            self._validate_features(fn)
         args = {
             "type": 0,
             "training": training,
@@ -2202,10 +2313,10 @@ class Booster:
 
         .. code-block:: python
 
-            booster.set_param({"gpu_id": "0", "tree_method": "gpu_hist"})
+            booster.set_param({"device": "cuda:0"})
             booster.inplace_predict(cupy_array)
 
-            booster.set_param({"gpu_id": "-1", "tree_method": "hist"})
+            booster.set_param({"device": "cpu"})
             booster.inplace_predict(numpy_array)
 
         .. versionadded:: 1.1.0
@@ -2236,8 +2347,8 @@ class Booster:
         Returns
         -------
         prediction : numpy.ndarray/cupy.ndarray
-            The prediction result.  When input data is on GPU, prediction
-            result is stored in a cupy array.
+            The prediction result.  When input data is on GPU, prediction result is
+            stored in a cupy array.
 
         """
         preds = ctypes.POINTER(ctypes.c_float)()
@@ -2764,14 +2875,13 @@ class Booster:
         # pylint: disable=no-member
         return df.sort(["Tree", "Node"]).reset_index(drop=True)
 
-    def _validate_dmatrix_features(self, data: DMatrix) -> None:
+    def _assign_dmatrix_features(self, data: DMatrix) -> None:
         if data.num_row() == 0:
             return
 
         fn = data.feature_names
         ft = data.feature_types
-        # Be consistent with versions before 1.7, "validate" actually modifies the
-        # booster.
+
         if self.feature_names is None:
             self.feature_names = fn
         if self.feature_types is None:
