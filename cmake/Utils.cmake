@@ -90,8 +90,8 @@ function(format_gencode_flags flags out)
   endif()
   # Set up architecture flags
   if(NOT flags)
-    if (CUDA_VERSION VERSION_GREATER_EQUAL "11.1")
-      set(flags "50;60;70;80")
+    if (CUDA_VERSION VERSION_GREATER_EQUAL "11.8")
+      set(flags "50;60;70;80;90")
     elseif (CUDA_VERSION VERSION_GREATER_EQUAL "11.0")
       set(flags "50;60;70;80")
     elseif(CUDA_VERSION VERSION_GREATER_EQUAL "10.0")
@@ -127,6 +127,7 @@ endfunction(format_gencode_flags flags)
 # Set CUDA related flags to target.  Must be used after code `format_gencode_flags`.
 function(xgboost_set_cuda_flags target)
   target_compile_options(${target} PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--default-stream per-thread>
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda>
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
     $<$<COMPILE_LANGUAGE:CUDA>:${GEN_CODE}>
