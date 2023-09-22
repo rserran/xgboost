@@ -11,18 +11,16 @@
 
 #include "../../src/common/io.h"
 
-namespace xgboost {
-namespace federated {
-
-grpc::Status FederatedService::Allgather(grpc::ServerContext* context,
-                                         AllgatherRequest const* request, AllgatherReply* reply) {
+namespace xgboost::federated {
+grpc::Status FederatedService::Allgather(grpc::ServerContext*, AllgatherRequest const* request,
+                                         AllgatherReply* reply) {
   handler_.Allgather(request->send_buffer().data(), request->send_buffer().size(),
                      reply->mutable_receive_buffer(), request->sequence_number(), request->rank());
   return grpc::Status::OK;
 }
 
-grpc::Status FederatedService::Allreduce(grpc::ServerContext* context,
-                                         AllreduceRequest const* request, AllreduceReply* reply) {
+grpc::Status FederatedService::Allreduce(grpc::ServerContext*, AllreduceRequest const* request,
+                                         AllreduceReply* reply) {
   handler_.Allreduce(request->send_buffer().data(), request->send_buffer().size(),
                      reply->mutable_receive_buffer(), request->sequence_number(), request->rank(),
                      static_cast<xgboost::collective::DataType>(request->data_type()),
@@ -30,8 +28,8 @@ grpc::Status FederatedService::Allreduce(grpc::ServerContext* context,
   return grpc::Status::OK;
 }
 
-grpc::Status FederatedService::Broadcast(grpc::ServerContext* context,
-                                         BroadcastRequest const* request, BroadcastReply* reply) {
+grpc::Status FederatedService::Broadcast(grpc::ServerContext*, BroadcastRequest const* request,
+                                         BroadcastReply* reply) {
   handler_.Broadcast(request->send_buffer().data(), request->send_buffer().size(),
                      reply->mutable_receive_buffer(), request->sequence_number(), request->rank(),
                      request->root());
@@ -75,6 +73,4 @@ void RunInsecureServer(int port, int world_size) {
 
   server->Wait();
 }
-
-}  // namespace federated
-}  // namespace xgboost
+}  // namespace xgboost::federated

@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import warnings
+import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from enum import IntEnum, unique
@@ -51,6 +52,7 @@ from ._typing import (
     FeatureTypes,
     ModelIn,
     NumpyOrCupy,
+    TransformedData,
     c_bst_ulong,
 )
 from .compat import PANDAS_INSTALLED, DataFrame, py_str
@@ -233,8 +235,11 @@ Error message(s): {os_error_list}
 
     def parse(ver: str) -> Tuple[int, int, int]:
         """Avoid dependency on packaging (PEP 440)."""
-        # 2.0.0-dev or 2.0.0
+        # 2.0.0-dev, 2.0.0, or 2.0.0rc1
         major, minor, patch = ver.split("-")[0].split(".")
+        rc = patch.find("rc")
+        if rc != -1:
+            patch = patch[:rc]
         return int(major), int(minor), int(patch)
 
     libver = _lib_version(lib)
@@ -486,13 +491,21 @@ def _prediction_output(
 
 
 class DataIter(ABC):  # pylint: disable=too-many-instance-attributes
-    """The interface for user defined data iterator.
+    """The interface for user defined data iterator. The iterator facilitates
+    distributed training, :py:class:`QuantileDMatrix`, and external memory support using
+    :py:class:`DMatrix`. Most of time, users don't need to interact with this class
+    directly.
+
+    .. note::
+
+        The class caches some intermediate results using the `data` input (predictor
+        `X`) as key. Don't repeat the `X` for multiple batches with different meta data
+        (like `label`), make a copy if necessary.
 
     Parameters
     ----------
     cache_prefix :
-        Prefix to the cache files, only used in external memory.  It can be either an
-        URI or a file path.
+        Prefix to the cache files, only used in external memory.
     release_data :
         Whether the iterator should release the data during reset. Set it to True if the
         data transformation (converting data to np.float32 type) is expensive.
@@ -510,13 +523,13 @@ class DataIter(ABC):  # pylint: disable=too-many-instance-attributes
         self._allow_host = True
         self._release = release_data
         # Stage data in Python until reset or next is called to avoid data being free.
-        self._temporary_data: Optional[Tuple[Any, Any, Any, Any]] = None
-        self._input_id: int = 0
+        self._temporary_data: Optional[TransformedData] = None
+        self._data_ref: Optional[weakref.ReferenceType] = None
 
     def get_callbacks(
         self, allow_host: bool, enable_categorical: bool
     ) -> Tuple[Callable, Callable]:
-        """Get callback functions for iterating in C."""
+        """Get callback functions for iterating in C. This is an internal function."""
         assert hasattr(self, "cache_prefix"), "__init__ is not called."
         self._reset_callback = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(
             self._reset_wrapper
@@ -591,7 +604,19 @@ class DataIter(ABC):  # pylint: disable=too-many-instance-attributes
             from .data import _proxy_transform, dispatch_proxy_set_data
 
             # Reduce the amount of transformation that's needed for QuantileDMatrix.
-            if self._temporary_data is not None and id(data) == self._input_id:
+            #
+            # To construct the QDM, one needs 4 iterations on CPU, or 2 iterations on
+            # GPU. If the QDM has only one batch of input (most of the cases), we can
+            # avoid transforming the data repeatly.
+            try:
+                ref = weakref.ref(data)
+            except TypeError:
+                ref = None
+            if (
+                self._temporary_data is not None
+                and ref is not None
+                and ref is self._data_ref
+            ):
                 new, cat_codes, feature_names, feature_types = self._temporary_data
             else:
                 new, cat_codes, feature_names, feature_types = _proxy_transform(
@@ -608,7 +633,7 @@ class DataIter(ABC):  # pylint: disable=too-many-instance-attributes
                 feature_types=feature_types,
                 **kwargs,
             )
-            self._input_id = id(data)
+            self._data_ref = ref
 
         # pylint: disable=not-callable
         return self._handle_exception(lambda: self.next(input_data), 0)
@@ -1134,7 +1159,7 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
         testing purposes. If this is a quantized DMatrix then quantized values are
         returned instead of input values.
 
-            .. versionadded:: 1.7.0
+        .. versionadded:: 1.7.0
 
         """
         indptr = np.empty(self.num_row() + 1, dtype=np.uint64)
@@ -1155,7 +1180,11 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
         return ret
 
     def get_quantile_cut(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Get quantile cuts for quantization."""
+        """Get quantile cuts for quantization.
+
+        .. versionadded:: 2.0.0
+
+        """
         n_features = self.num_col()
 
         c_sindptr = ctypes.c_char_p()
@@ -2024,12 +2053,14 @@ class Booster:
         else:
             pred = self.predict(dtrain, output_margin=True, training=True)
             grad, hess = fobj(pred, dtrain)
-            self.boost(dtrain, grad, hess)
+            self.boost(dtrain, iteration=iteration, grad=grad, hess=hess)
 
-    def boost(self, dtrain: DMatrix, grad: np.ndarray, hess: np.ndarray) -> None:
-        """Boost the booster for one iteration, with customized gradient
-        statistics.  Like :py:func:`xgboost.Booster.update`, this
-        function should not be called directly by users.
+    def boost(
+        self, dtrain: DMatrix, iteration: int, grad: NumpyOrCupy, hess: NumpyOrCupy
+    ) -> None:
+        """Boost the booster for one iteration with customized gradient statistics.
+        Like :py:func:`xgboost.Booster.update`, this function should not be called
+        directly by users.
 
         Parameters
         ----------
@@ -2041,19 +2072,53 @@ class Booster:
             The second order of gradient.
 
         """
-        if len(grad) != len(hess):
-            raise ValueError(f"grad / hess length mismatch: {len(grad)} / {len(hess)}")
-        if not isinstance(dtrain, DMatrix):
-            raise TypeError(f"invalid training matrix: {type(dtrain).__name__}")
+        from .data import (
+            _array_interface,
+            _cuda_array_interface,
+            _ensure_np_dtype,
+            _is_cupy_array,
+        )
+
         self._assign_dmatrix_features(dtrain)
 
+        def is_flatten(array: NumpyOrCupy) -> bool:
+            return len(array.shape) == 1 or array.shape[1] == 1
+
+        def array_interface(array: NumpyOrCupy) -> bytes:
+            # Can we check for __array_interface__ instead of a specific type instead?
+            msg = (
+                "Expecting `np.ndarray` or `cupy.ndarray` for gradient and hessian."
+                f" Got: {type(array)}"
+            )
+            if not isinstance(array, np.ndarray) and not _is_cupy_array(array):
+                raise TypeError(msg)
+
+            n_samples = dtrain.num_row()
+            if array.shape[0] != n_samples and is_flatten(array):
+                warnings.warn(
+                    "Since 2.1.0, the shape of the gradient and hessian is required to"
+                    " be (n_samples, n_targets) or (n_samples, n_classes).",
+                    FutureWarning,
+                )
+                array = array.reshape(n_samples, array.size // n_samples)
+
+            if isinstance(array, np.ndarray):
+                array, _ = _ensure_np_dtype(array, array.dtype)
+                interface = _array_interface(array)
+            elif _is_cupy_array(array):
+                interface = _cuda_array_interface(array)
+            else:
+                raise TypeError(msg)
+
+            return interface
+
         _check_call(
-            _LIB.XGBoosterBoostOneIter(
+            _LIB.XGBoosterTrainOneIter(
                 self.handle,
                 dtrain.handle,
-                c_array(ctypes.c_float, grad),
-                c_array(ctypes.c_float, hess),
-                c_bst_ulong(len(grad)),
+                iteration,
+                array_interface(grad),
+                array_interface(hess),
             )
         )
 
@@ -2528,8 +2593,7 @@ class Booster:
         return ctypes2buffer(cptr, length.value)
 
     def load_model(self, fname: ModelIn) -> None:
-        """Load the model from a file or bytearray. Path to file can be local
-        or as an URI.
+        """Load the model from a file or a bytearray.
 
         The model is loaded from XGBoost format which is universal among the various
         XGBoost interfaces. Auxiliary attributes of the Python Booster object (such as

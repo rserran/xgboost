@@ -70,7 +70,7 @@ cb.print.evaluation <- function(period = 1, showsd = TRUE) {
         i == env$begin_iteration ||
         i == env$end_iteration) {
       stdev <- if (showsd) env$bst_evaluation_err else NULL
-      msg <- format.eval.string(i, env$bst_evaluation, stdev)
+      msg <- .format_eval_string(i, env$bst_evaluation, stdev)
       cat(msg, '\n')
     }
   }
@@ -380,7 +380,9 @@ cb.early.stop <- function(stopping_rounds, maximize = FALSE,
     if ((maximize && score > best_score) ||
         (!maximize && score < best_score)) {
 
-      best_msg <<- format.eval.string(i, env$bst_evaluation, env$bst_evaluation_err)
+      best_msg <<- .format_eval_string(
+        i, env$bst_evaluation, env$bst_evaluation_err
+      )
       best_score <<- score
       best_iteration <<- i
       best_ntreelimit <<- best_iteration * env$num_parallel_tree
@@ -511,7 +513,7 @@ cb.cv.predict <- function(save_models = FALSE) {
     if (save_models) {
       env$basket$models <- lapply(env$bst_folds, function(fd) {
         xgb.attr(fd$bst, 'niter') <- env$end_iteration - 1
-        xgb.Booster.complete(xgb.handleToBooster(fd$bst), saveraw = TRUE)
+        xgb.Booster.complete(xgb.handleToBooster(handle = fd$bst, raw = NULL), saveraw = TRUE)
       })
     }
   }
@@ -659,7 +661,7 @@ cb.gblinear.history <- function(sparse = FALSE) {
     } else { # xgb.cv:
       cf <- vector("list", length(env$bst_folds))
       for (i in seq_along(env$bst_folds)) {
-        dmp <- xgb.dump(xgb.handleToBooster(env$bst_folds[[i]]$bst))
+        dmp <- xgb.dump(xgb.handleToBooster(handle = env$bst_folds[[i]]$bst, raw = NULL))
         cf[[i]] <- as.numeric(grep('(booster|bias|weigh)', dmp, invert = TRUE, value = TRUE))
         if (sparse) cf[[i]] <- as(cf[[i]], "sparseVector")
       }
@@ -754,7 +756,7 @@ xgb.gblinear.history <- function(model, class_index = NULL) {
 #
 
 # Format the evaluation metric string
-format.eval.string <- function(iter, eval_res, eval_err = NULL) {
+.format_eval_string <- function(iter, eval_res, eval_err = NULL) {
   if (length(eval_res) == 0)
     stop('no evaluation results')
   enames <- names(eval_res)

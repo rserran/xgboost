@@ -477,7 +477,7 @@ class HistEvaluator {
       : ctx_{ctx},
         param_{param},
         column_sampler_{std::move(sampler)},
-        tree_evaluator_{*param, static_cast<bst_feature_t>(info.num_col_), Context::kCpuId},
+        tree_evaluator_{*param, static_cast<bst_feature_t>(info.num_col_), DeviceOrd::CPU()},
         is_col_split_{info.IsColumnSplit()} {
     interaction_constraints_.Configure(*param, info.num_col_);
     column_sampler_->Init(ctx, info.num_col_, info.feature_weights.HostVector(),
@@ -696,7 +696,7 @@ class HistMultiEvaluator {
     stats_ = linalg::Constant(ctx_, GradientPairPrecise{}, 1, n_targets);
     gain_.resize(1);
 
-    linalg::Vector<float> weight({n_targets}, ctx_->gpu_id);
+    linalg::Vector<float> weight({n_targets}, ctx_->Device());
     CalcWeight(*param_, root_sum, weight.HostView());
     auto root_gain = CalcGainGivenWeight(*param_, root_sum, weight.HostView());
     gain_.front() = root_gain;
@@ -774,7 +774,7 @@ void UpdatePredictionCacheImpl(Context const *ctx, RegTree const *p_last_tree,
                                std::vector<Partitioner> const &partitioner,
                                linalg::VectorView<float> out_preds) {
   auto const &tree = *p_last_tree;
-  CHECK_EQ(out_preds.DeviceIdx(), Context::kCpuId);
+  CHECK(out_preds.Device().IsCPU());
   size_t n_nodes = p_last_tree->GetNodes().size();
   for (auto &part : partitioner) {
     CHECK_EQ(part.Size(), n_nodes);
@@ -809,7 +809,7 @@ void UpdatePredictionCacheImpl(Context const *ctx, RegTree const *p_last_tree,
   auto n_nodes = mttree->Size();
   auto n_targets = tree.NumTargets();
   CHECK_EQ(out_preds.Shape(1), n_targets);
-  CHECK_EQ(out_preds.DeviceIdx(), Context::kCpuId);
+  CHECK(out_preds.Device().IsCPU());
 
   for (auto &part : partitioner) {
     CHECK_EQ(part.Size(), n_nodes);

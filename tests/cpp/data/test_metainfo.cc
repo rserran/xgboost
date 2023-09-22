@@ -12,6 +12,7 @@
 #include "../helpers.h"
 #include "xgboost/base.h"
 
+namespace xgboost {
 TEST(MetaInfo, GetSet) {
   xgboost::Context ctx;
   xgboost::MetaInfo info;
@@ -129,8 +130,8 @@ TEST(MetaInfo, SaveLoadBinary) {
     EXPECT_EQ(inforead.group_ptr_, info.group_ptr_);
     EXPECT_EQ(inforead.weights_.HostVector(), info.weights_.HostVector());
 
-    auto orig_margin = info.base_margin_.View(xgboost::Context::kCpuId);
-    auto read_margin = inforead.base_margin_.View(xgboost::Context::kCpuId);
+    auto orig_margin = info.base_margin_.View(xgboost::DeviceOrd::CPU());
+    auto read_margin = inforead.base_margin_.View(xgboost::DeviceOrd::CPU());
     EXPECT_TRUE(std::equal(orig_margin.Values().cbegin(), orig_margin.Values().cend(),
                            read_margin.Values().cbegin()));
 
@@ -236,9 +237,9 @@ TEST(MetaInfo, Validate) {
   info.num_nonzero_ = 12;
   info.num_col_ = 3;
   std::vector<xgboost::bst_group_t> groups (11);
-  xgboost::Context ctx;
+  Context ctx;
   info.SetInfo(ctx, "group", groups.data(), xgboost::DataType::kUInt32, 11);
-  EXPECT_THROW(info.Validate(0), dmlc::Error);
+  EXPECT_THROW(info.Validate(FstCU()), dmlc::Error);
 
   std::vector<float> labels(info.num_row_ + 1);
   EXPECT_THROW(
@@ -261,14 +262,14 @@ TEST(MetaInfo, Validate) {
   info.group_ptr_.clear();
   labels.resize(info.num_row_);
   info.SetInfo(ctx, "label", labels.data(), xgboost::DataType::kFloat32, info.num_row_);
-  info.labels.SetDevice(0);
-  EXPECT_THROW(info.Validate(1), dmlc::Error);
+  info.labels.SetDevice(FstCU());
+  EXPECT_THROW(info.Validate(DeviceOrd::CUDA(1)), dmlc::Error);
 
   xgboost::HostDeviceVector<xgboost::bst_group_t> d_groups{groups};
-  d_groups.SetDevice(0);
+  d_groups.SetDevice(FstCU());
   d_groups.DevicePointer();  // pull to device
-  std::string arr_interface_str{ArrayInterfaceStr(
-      xgboost::linalg::MakeVec(d_groups.ConstDevicePointer(), d_groups.Size(), 0))};
+  std::string arr_interface_str{ArrayInterfaceStr(xgboost::linalg::MakeVec(
+      d_groups.ConstDevicePointer(), d_groups.Size(), xgboost::DeviceOrd::CUDA(0)))};
   EXPECT_THROW(info.SetInfo(ctx, "group", xgboost::StringView{arr_interface_str}), dmlc::Error);
 #endif  // defined(XGBOOST_USE_CUDA)
 }
@@ -306,6 +307,5 @@ TEST(MetaInfo, HostExtend) {
   }
 }
 
-namespace xgboost {
-TEST(MetaInfo, CPUStridedData) { TestMetaInfoStridedData(Context::kCpuId); }
+TEST(MetaInfo, CPUStridedData) { TestMetaInfoStridedData(DeviceOrd::CPU()); }
 }  // namespace xgboost

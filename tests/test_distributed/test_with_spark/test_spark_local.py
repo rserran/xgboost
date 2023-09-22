@@ -456,7 +456,9 @@ def check_sub_dict_match(
             assert sub_dist[k] == whole_dict[k], f"check on {k} failed"
 
 
-def get_params_map(params_kv: dict, estimator: Type) -> dict:
+def get_params_map(
+    params_kv: dict, estimator: xgb.spark.core._SparkXGBEstimator
+) -> dict:
     return {getattr(estimator, k): v for k, v in params_kv.items()}
 
 
@@ -870,10 +872,10 @@ class TestPySparkLocal:
 
     def test_device_param(self, reg_data: RegData, clf_data: ClfData) -> None:
         clf = SparkXGBClassifier(device="cuda", tree_method="exact")
-        with pytest.raises(ValueError, match="not supported on GPU"):
+        with pytest.raises(ValueError, match="not supported for distributed"):
             clf.fit(clf_data.cls_df_train)
         regressor = SparkXGBRegressor(device="cuda", tree_method="exact")
-        with pytest.raises(ValueError, match="not supported on GPU"):
+        with pytest.raises(ValueError, match="not supported for distributed"):
             regressor.fit(reg_data.reg_df_train)
 
         reg = SparkXGBRegressor(device="cuda", tree_method="gpu_hist")
@@ -885,6 +887,34 @@ class TestPySparkLocal:
         clf._validate_params()
         clf = SparkXGBClassifier(device="cuda")
         clf._validate_params()
+
+    def test_gpu_transform(self, clf_data: ClfData) -> None:
+        """local mode"""
+        classifier = SparkXGBClassifier(device="cpu")
+        model: SparkXGBClassifierModel = classifier.fit(clf_data.cls_df_train)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = "file:" + tmpdir
+            model.write().overwrite().save(path)
+
+            # The model trained with CPU, transform defaults to cpu
+            assert not model._gpu_transform()
+
+            # without error
+            model.transform(clf_data.cls_df_test).collect()
+
+            model.set_device("cuda")
+            assert model._gpu_transform()
+
+            model_loaded = SparkXGBClassifierModel.load(path)
+
+            # The model trained with CPU, transform defaults to cpu
+            assert not model_loaded._gpu_transform()
+            # without error
+            model_loaded.transform(clf_data.cls_df_test).collect()
+
+            model_loaded.set_device("cuda")
+            assert model_loaded._gpu_transform()
 
 
 class XgboostLocalTest(SparkTestCase):
