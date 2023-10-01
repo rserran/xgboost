@@ -552,24 +552,6 @@ XGB_DLL int XGProxyDMatrixSetDataCSR(DMatrixHandle handle, char const *indptr,
 
 /** @} */  // End of Streaming
 
-XGB_DLL int XGImportArrowRecordBatch(DataIterHandle data_handle, void *ptr_array, void *ptr_schema);
-
-/*!
- * \brief Construct DMatrix from arrow using callbacks.  Arrow related C API is not stable
- *        and subject to change in the future.
- *
- * \param next   Callback function for fetching arrow records.
- * \param config JSON encoded configuration.  Required values are:
- *   - missing: Which value to represent missing value.
- *   - nbatch: Number of batches in arrow table.
- *   - nthread (optional): Number of threads used for initializing DMatrix.
- * \param out      The created DMatrix.
- *
- * \return 0 when success, -1 when failure happens
- */
-XGB_DLL int XGDMatrixCreateFromArrowCallback(XGDMatrixCallbackNext *next, char const *config,
-                                             DMatrixHandle *out);
-
 /*!
  * \brief create a new dmatrix from sliced content of existing matrix
  * \param handle instance of data matrix to be sliced
@@ -1277,15 +1259,6 @@ XGB_DLL int XGBoosterSaveModelToBuffer(BoosterHandle handle, char const *config,
                                        char const **out_dptr);
 
 /*!
- * \brief Save booster to a buffer with in binary format.
- *
- * \deprecated since 1.6.0
- * \see XGBoosterSaveModelToBuffer()
- */
-XGB_DLL int XGBoosterGetModelRaw(BoosterHandle handle, bst_ulong *out_len,
-                                 const char **out_dptr);
-
-/*!
  * \brief Memory snapshot based serialization method.  Saves everything states
  * into buffer.
  *
@@ -1307,24 +1280,6 @@ XGB_DLL int XGBoosterSerializeToBuffer(BoosterHandle handle, bst_ulong *out_len,
  */
 XGB_DLL int XGBoosterUnserializeFromBuffer(BoosterHandle handle,
                                            const void *buf, bst_ulong len);
-
-/*!
- * \brief Initialize the booster from rabit checkpoint.
- *  This is used in distributed training API.
- * \param handle handle
- * \param version The output version of the model.
- * \return 0 when success, -1 when failure happens
- */
-XGB_DLL int XGBoosterLoadRabitCheckpoint(BoosterHandle handle,
-                                         int* version);
-
-/*!
- * \brief Save the current checkpoint to rabit.
- * \param handle handle
- * \return 0 when success, -1 when failure happens
- */
-XGB_DLL int XGBoosterSaveRabitCheckpoint(BoosterHandle handle);
-
 
 /*!
  * \brief Save XGBoost's internal configuration into a JSON document.  Currently the

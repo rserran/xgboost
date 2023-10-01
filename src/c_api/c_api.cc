@@ -269,8 +269,8 @@ XGB_DLL int XGDMatrixCreateFromDataIter(
   if (cache_info != nullptr) {
     scache = cache_info;
   }
-  xgboost::data::IteratorAdapter<DataIterHandle, XGBCallbackDataIterNext,
-                                 XGBoostBatchCSR> adapter(data_handle, callback);
+  xgboost::data::IteratorAdapter<DataIterHandle, XGBCallbackDataIterNext, XGBoostBatchCSR> adapter(
+      data_handle, callback);
   xgboost_CHECK_C_ARG_PTR(out);
   *out = new std::shared_ptr<DMatrix> {
     DMatrix::Create(
@@ -532,33 +532,8 @@ XGB_DLL int XGDMatrixCreateFromDT(void** data, const char** feature_stypes,
   API_END();
 }
 
-XGB_DLL int XGImportArrowRecordBatch(DataIterHandle data_handle, void *ptr_array,
-                                     void *ptr_schema) {
-  API_BEGIN();
-  static_cast<data::RecordBatchesIterAdapter *>(data_handle)
-      ->SetData(static_cast<struct ArrowArray *>(ptr_array),
-                static_cast<struct ArrowSchema *>(ptr_schema));
-  API_END();
-}
-
-XGB_DLL int XGDMatrixCreateFromArrowCallback(XGDMatrixCallbackNext *next, char const *config,
-                                             DMatrixHandle *out) {
-  API_BEGIN();
-  xgboost_CHECK_C_ARG_PTR(config);
-  auto jconfig = Json::Load(StringView{config});
-  auto missing = GetMissing(jconfig);
-  auto n_batches = RequiredArg<Integer>(jconfig, "nbatch", __func__);
-  auto n_threads = OptionalArg<Integer, std::int64_t>(jconfig, "nthread", 0);
-  data::RecordBatchesIterAdapter adapter(next, n_batches);
-  xgboost_CHECK_C_ARG_PTR(out);
-  *out = new std::shared_ptr<DMatrix>(DMatrix::Create(&adapter, missing, n_threads));
-  API_END();
-}
-
-XGB_DLL int XGDMatrixSliceDMatrix(DMatrixHandle handle,
-                                  const int* idxset,
-                                  xgboost::bst_ulong len,
-                                  DMatrixHandle* out) {
+XGB_DLL int XGDMatrixSliceDMatrix(DMatrixHandle handle, const int *idxset, xgboost::bst_ulong len,
+                                  DMatrixHandle *out) {
   xgboost_CHECK_C_ARG_PTR(out);
   return XGDMatrixSliceDMatrixEx(handle, idxset, len, out, 0);
 }
@@ -1373,29 +1348,6 @@ XGB_DLL int XGBoosterSaveModelToBuffer(BoosterHandle handle, char const *json_co
   API_END();
 }
 
-XGB_DLL int XGBoosterGetModelRaw(BoosterHandle handle, xgboost::bst_ulong *out_len,
-                                 const char **out_dptr) {
-  API_BEGIN();
-  CHECK_HANDLE();
-
-  auto *learner = static_cast<Learner*>(handle);
-  std::string& raw_str = learner->GetThreadLocal().ret_str;
-  raw_str.resize(0);
-
-  common::MemoryBufferStream fo(&raw_str);
-  LOG(WARNING) << error::DeprecatedFunc(__func__, "1.6.0", "XGBoosterSaveModelToBuffer");
-
-  learner->Configure();
-  learner->SaveModel(&fo);
-
-  xgboost_CHECK_C_ARG_PTR(out_dptr);
-  xgboost_CHECK_C_ARG_PTR(out_len);
-
-  *out_dptr = dmlc::BeginPtr(raw_str);
-  *out_len = static_cast<xgboost::bst_ulong>(raw_str.length());
-  API_END();
-}
-
 // The following two functions are `Load` and `Save` for memory based
 // serialization methods. E.g. Python pickle.
 XGB_DLL int XGBoosterSerializeToBuffer(BoosterHandle handle, xgboost::bst_ulong *out_len,
@@ -1430,36 +1382,13 @@ XGB_DLL int XGBoosterUnserializeFromBuffer(BoosterHandle handle,
   API_END();
 }
 
-XGB_DLL int XGBoosterLoadRabitCheckpoint(BoosterHandle handle,
-                                         int* version) {
-  API_BEGIN();
-  CHECK_HANDLE();
-  auto* bst = static_cast<Learner*>(handle);
-  xgboost_CHECK_C_ARG_PTR(version);
-  *version = rabit::LoadCheckPoint();
-  if (*version != 0) {
-    bst->Configure();
-  }
-  API_END();
-}
-
-XGB_DLL int XGBoosterSaveRabitCheckpoint(BoosterHandle handle) {
-  API_BEGIN();
-  CHECK_HANDLE();
-  auto *learner = static_cast<Learner *>(handle);
-  learner->Configure();
-  rabit::CheckPoint();
-  API_END();
-}
-
-XGB_DLL int XGBoosterSlice(BoosterHandle handle, int begin_layer,
-                           int end_layer, int step,
+XGB_DLL int XGBoosterSlice(BoosterHandle handle, int begin_layer, int end_layer, int step,
                            BoosterHandle *out) {
   API_BEGIN();
   CHECK_HANDLE();
   xgboost_CHECK_C_ARG_PTR(out);
 
-  auto* learner = static_cast<Learner*>(handle);
+  auto *learner = static_cast<Learner *>(handle);
   bool out_of_bound = false;
   auto p_out = learner->Slice(begin_layer, end_layer, step, &out_of_bound);
   if (out_of_bound) {
