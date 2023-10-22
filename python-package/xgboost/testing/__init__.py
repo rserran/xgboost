@@ -8,8 +8,10 @@ import importlib.util
 import multiprocessing
 import os
 import platform
+import queue
 import socket
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from io import StringIO
@@ -34,6 +36,7 @@ import pytest
 from scipy import sparse
 
 import xgboost as xgb
+from xgboost import RabitTracker
 from xgboost.core import ArrayLike
 from xgboost.sklearn import SklObjective
 from xgboost.testing.data import (
@@ -938,3 +941,44 @@ def load_agaricus(path: str) -> Tuple[xgb.DMatrix, xgb.DMatrix]:
 
 def project_root(path: str) -> str:
     return normpath(os.path.join(demo_dir(path), os.path.pardir))
+
+
+def run_with_rabit(
+    world_size: int, test_fn: Callable[..., Any], *args: Any, **kwargs: Any
+) -> None:
+    exception_queue: queue.Queue = queue.Queue()
+
+    def run_worker(rabit_env: Dict[str, Union[str, int]]) -> None:
+        try:
+            with xgb.collective.CommunicatorContext(**rabit_env):
+                test_fn(*args, **kwargs)
+        except Exception as e:  # pylint: disable=broad-except
+            exception_queue.put(e)
+
+    tracker = RabitTracker(host_ip="127.0.0.1", n_workers=world_size)
+    tracker.start(world_size)
+
+    workers = []
+    for _ in range(world_size):
+        worker = threading.Thread(target=run_worker, args=(tracker.worker_envs(),))
+        workers.append(worker)
+        worker.start()
+    for worker in workers:
+        worker.join()
+        assert exception_queue.empty(), f"Worker failed: {exception_queue.get()}"
+
+    tracker.join()
+
+
+def column_split_feature_names(
+    feature_names: List[Union[str, int]], world_size: int
+) -> List[str]:
+    """Get the global list of feature names from the local feature names."""
+    return [
+        f"{rank}.{feature}" for rank in range(world_size) for feature in feature_names
+    ]
+
+
+def is_windows() -> bool:
+    """Check if the current platform is Windows."""
+    return platform.system() == "Windows"
