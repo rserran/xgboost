@@ -12,7 +12,7 @@ from sklearn.utils.estimator_checks import parametrize_with_checks
 
 import xgboost as xgb
 from xgboost import testing as tm
-from xgboost.testing.ranking import run_ranking_qid_df
+from xgboost.testing.ranking import run_ranking_categorical, run_ranking_qid_df
 from xgboost.testing.shared import get_feature_weights, validate_data_initialization
 from xgboost.testing.updater import get_basescore
 
@@ -171,6 +171,11 @@ def test_ranking():
     pred_orig = xgb_model_orig.predict(test_data)
 
     np.testing.assert_almost_equal(pred, pred_orig)
+
+
+@pytest.mark.skipif(**tm.no_pandas())
+def test_ranking_categorical() -> None:
+    run_ranking_categorical(device="cpu")
 
 
 def test_ranking_metric() -> None:
@@ -699,6 +704,10 @@ def test_sklearn_random_state():
     assert clf.get_xgb_params()['random_state'] == 401
 
     random_state = np.random.RandomState(seed=403)
+    clf = xgb.XGBClassifier(random_state=random_state)
+    assert isinstance(clf.get_xgb_params()['random_state'], int)
+
+    random_state = np.random.default_rng(seed=404)
     clf = xgb.XGBClassifier(random_state=random_state)
     assert isinstance(clf.get_xgb_params()['random_state'], int)
 

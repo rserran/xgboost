@@ -1,16 +1,17 @@
 /**
  * Copyright 2022-2023, XGBoost contributors
  */
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <string>  // for string
 #include <thread>  // for thread
 
 #include "../../../../plugin/federated/federated_comm.h"
-#include "../../collective/net_test.h"  // for SocketTest
-#include "../../helpers.h"              // for ExpectThrow
-#include "test_worker.h"                // for TestFederated
-#include "xgboost/json.h"               // for Json
+#include "../../collective/test_worker.h"  // for SocketTest
+#include "../../helpers.h"                 // for ExpectThrow
+#include "test_worker.h"                   // for TestFederated
+#include "xgboost/json.h"                  // for Json
 
 namespace xgboost::collective {
 namespace {
@@ -19,12 +20,14 @@ class FederatedCommTest : public SocketTest {};
 
 TEST_F(FederatedCommTest, ThrowOnWorldSizeTooSmall) {
   auto construct = [] { FederatedComm comm{"localhost", 0, 0, 0}; };
-  ExpectThrow<dmlc::Error>("Invalid world size.", construct);
+  ASSERT_THAT(construct,
+              ::testing::ThrowsMessage<dmlc::Error>(::testing::HasSubstr("Invalid world size")));
 }
 
 TEST_F(FederatedCommTest, ThrowOnRankTooSmall) {
   auto construct = [] { FederatedComm comm{"localhost", 0, 1, -1}; };
-  ExpectThrow<dmlc::Error>("Invalid worker rank.", construct);
+  ASSERT_THAT(construct,
+              ::testing::ThrowsMessage<dmlc::Error>(::testing::HasSubstr("Invalid worker rank.")));
 }
 
 TEST_F(FederatedCommTest, ThrowOnRankTooBig) {
@@ -38,7 +41,7 @@ TEST_F(FederatedCommTest, ThrowOnWorldSizeNotInteger) {
     config["federated_server_address"] = std::string("localhost:0");
     config["federated_world_size"] = std::string("1");
     config["federated_rank"] = Integer(0);
-    FederatedComm comm(config);
+    FederatedComm comm{DefaultRetry(), std::chrono::seconds{DefaultTimeoutSec()}, "", config};
   };
   ExpectThrow<dmlc::Error>("got: `String`", construct);
 }
@@ -49,7 +52,7 @@ TEST_F(FederatedCommTest, ThrowOnRankNotInteger) {
     config["federated_server_address"] = std::string("localhost:0");
     config["federated_world_size"] = 1;
     config["federated_rank"] = std::string("0");
-    FederatedComm comm(config);
+    FederatedComm comm(DefaultRetry(), std::chrono::seconds{DefaultTimeoutSec()}, "", config);
   };
   ExpectThrow<dmlc::Error>("got: `String`", construct);
 }
@@ -59,7 +62,7 @@ TEST_F(FederatedCommTest, GetWorldSizeAndRank) {
   config["federated_world_size"] = 6;
   config["federated_rank"] = 3;
   config["federated_server_address"] = String{"localhost:0"};
-  FederatedComm comm{config};
+  FederatedComm comm{DefaultRetry(), std::chrono::seconds{DefaultTimeoutSec()}, "", config};
   EXPECT_EQ(comm.World(), 6);
   EXPECT_EQ(comm.Rank(), 3);
 }
@@ -71,14 +74,9 @@ TEST_F(FederatedCommTest, IsDistributed) {
 
 TEST_F(FederatedCommTest, InsecureTracker) {
   std::int32_t n_workers = std::min(std::thread::hardware_concurrency(), 3u);
-  TestFederated(n_workers, [=](std::int32_t port, std::int32_t rank) {
-    Json config{Object{}};
-    config["federated_world_size"] = n_workers;
-    config["federated_rank"] = rank;
-    config["federated_server_address"] = "0.0.0.0:" + std::to_string(port);
-    FederatedComm comm{config};
-    ASSERT_EQ(comm.Rank(), rank);
-    ASSERT_EQ(comm.World(), n_workers);
+  TestFederated(n_workers, [=](std::shared_ptr<FederatedComm> comm, std::int32_t rank) {
+    ASSERT_EQ(comm->Rank(), rank);
+    ASSERT_EQ(comm->World(), n_workers);
   });
 }
 }  // namespace xgboost::collective
