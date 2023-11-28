@@ -19,25 +19,6 @@ Coll* Coll::MakeCUDAVar() { return new NCCLColl{}; }
 
 NCCLColl::~NCCLColl() = default;
 namespace {
-Result GetNCCLResult(ncclResult_t code) {
-  if (code == ncclSuccess) {
-    return Success();
-  }
-
-  std::stringstream ss;
-  ss << "NCCL failure: " << ncclGetErrorString(code) << ".";
-  if (code == ncclUnhandledCudaError) {
-    // nccl usually preserves the last error so we can get more details.
-    auto err = cudaPeekAtLastError();
-    ss << "  CUDA error: " << thrust::system_error(err, thrust::cuda_category()).what() << "\n";
-  } else if (code == ncclSystemError) {
-    ss << "  This might be caused by a network configuration issue. Please consider specifying "
-          "the network interface for NCCL via environment variables listed in its reference: "
-          "`https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html`.\n";
-  }
-  return Fail(ss.str());
-}
-
 auto GetNCCLType(ArrayInterfaceHandler::Type type) {
   auto fatal = [] {
     LOG(FATAL) << "Invalid type for NCCL operation.";
@@ -94,11 +75,12 @@ void RunBitwiseAllreduce(dh::CUDAStreamView stream, common::Span<std::int8_t> ou
                                       common::Span<std::int8_t> data, Op op) {
   dh::device_vector<std::int8_t> buffer(data.size() * pcomm->World());
   auto* device_buffer = buffer.data().get();
+  auto stub = pcomm->Stub();
 
   // First gather data from all the workers.
   CHECK(handle);
-  auto rc = GetNCCLResult(
-      ncclAllGather(data.data(), device_buffer, data.size(), ncclInt8, handle, pcomm->Stream()));
+  auto rc =
+      stub->Allgather(data.data(), device_buffer, data.size(), ncclInt8, handle, pcomm->Stream());
   if (!rc.OK()) {
     return rc;
   }
@@ -149,6 +131,8 @@ ncclRedOp_t GetNCCLRedOp(Op const& op) {
   }
   auto nccl = dynamic_cast<NCCLComm const*>(&comm);
   CHECK(nccl);
+  auto stub = nccl->Stub();
+
   return Success() << [&] {
     if (IsBitwiseOp(op)) {
       return BitwiseAllReduce(nccl, nccl->Handle(), data, op);
@@ -156,9 +140,8 @@ ncclRedOp_t GetNCCLRedOp(Op const& op) {
       return DispatchDType(type, [=](auto t) {
         using T = decltype(t);
         auto rdata = common::RestoreType<T>(data);
-        auto rc = ncclAllReduce(data.data(), data.data(), rdata.size(), GetNCCLType(type),
-                                GetNCCLRedOp(op), nccl->Handle(), nccl->Stream());
-        return GetNCCLResult(rc);
+        return stub->Allreduce(data.data(), data.data(), rdata.size(), GetNCCLType(type),
+                               GetNCCLRedOp(op), nccl->Handle(), nccl->Stream());
       });
     }
   } << [&] { return nccl->Block(); };
@@ -171,9 +154,11 @@ ncclRedOp_t GetNCCLRedOp(Op const& op) {
   }
   auto nccl = dynamic_cast<NCCLComm const*>(&comm);
   CHECK(nccl);
+  auto stub = nccl->Stub();
+
   return Success() << [&] {
-    return GetNCCLResult(ncclBroadcast(data.data(), data.data(), data.size_bytes(), ncclInt8, root,
-                                       nccl->Handle(), nccl->Stream()));
+    return stub->Broadcast(data.data(), data.data(), data.size_bytes(), ncclInt8, root,
+                           nccl->Handle(), nccl->Stream());
   } << [&] { return nccl->Block(); };
 }
 
@@ -184,10 +169,12 @@ ncclRedOp_t GetNCCLRedOp(Op const& op) {
   }
   auto nccl = dynamic_cast<NCCLComm const*>(&comm);
   CHECK(nccl);
+  auto stub = nccl->Stub();
+
   auto send = data.subspan(comm.Rank() * size, size);
   return Success() << [&] {
-    return GetNCCLResult(
-        ncclAllGather(send.data(), data.data(), size, ncclInt8, nccl->Handle(), nccl->Stream()));
+    return stub->Allgather(send.data(), data.data(), size, ncclInt8, nccl->Handle(),
+                           nccl->Stream());
   } << [&] { return nccl->Block(); };
 }
 
@@ -199,19 +186,20 @@ namespace cuda_impl {
  */
 Result BroadcastAllgatherV(NCCLComm const* comm, common::Span<std::int8_t const> data,
                            common::Span<std::int64_t const> sizes, common::Span<std::int8_t> recv) {
-  return Success() << [] { return GetNCCLResult(ncclGroupStart()); } << [&] {
+  auto stub = comm->Stub();
+  return Success() << [&stub] { return stub->GroupStart(); } << [&] {
     std::size_t offset = 0;
     for (std::int32_t r = 0; r < comm->World(); ++r) {
       auto as_bytes = sizes[r];
-      auto rc = ncclBroadcast(data.data(), recv.subspan(offset, as_bytes).data(), as_bytes,
-                              ncclInt8, r, comm->Handle(), dh::DefaultStream());
-      if (rc != ncclSuccess) {
-        return GetNCCLResult(rc);
+      auto rc = stub->Broadcast(data.data(), recv.subspan(offset, as_bytes).data(), as_bytes,
+                                ncclInt8, r, comm->Handle(), dh::DefaultStream());
+      if (!rc.OK()) {
+        return rc;
       }
       offset += as_bytes;
     }
     return Success();
-  } << [] { return GetNCCLResult(ncclGroupEnd()); };
+  } << [&] { return stub->GroupEnd(); };
 }
 }  // namespace cuda_impl
 
@@ -224,10 +212,11 @@ Result BroadcastAllgatherV(NCCLComm const* comm, common::Span<std::int8_t const>
   if (!comm.IsDistributed()) {
     return Success();
   }
+  auto stub = nccl->Stub();
 
   switch (algo) {
     case AllgatherVAlgo::kRing: {
-      return Success() << [] { return GetNCCLResult(ncclGroupStart()); } << [&] {
+      return Success() << [&] { return stub->GroupStart(); } << [&] {
         // get worker offset
         detail::AllgatherVOffset(sizes, recv_segments);
         // copy data
@@ -237,8 +226,8 @@ Result BroadcastAllgatherV(NCCLComm const* comm, common::Span<std::int8_t const>
                                         cudaMemcpyDeviceToDevice, nccl->Stream()));
         }
         return detail::RingAllgatherV(comm, sizes, recv_segments, recv);
-      } << [] {
-        return GetNCCLResult(ncclGroupEnd());
+      } << [&] {
+        return stub->GroupEnd();
       } << [&] { return nccl->Block(); };
     }
     case AllgatherVAlgo::kBcast: {
