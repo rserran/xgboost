@@ -56,7 +56,7 @@ test_that("parameter validation works", {
   y <- d[, "x1"] + d[, "x2"]^2 +
     ifelse(d[, "x3"] > .5, d[, "x3"]^2, 2^d[, "x3"]) +
     rnorm(10)
-  dtrain <- xgb.DMatrix(data = d, info = list(label = y), nthread = n_threads)
+  dtrain <- xgb.DMatrix(data = d, label = y, nthread = n_threads)
 
   correct <- function() {
     params <- list(
@@ -124,7 +124,7 @@ test_that("dart prediction works", {
   expect_false(all(matrix(pred_by_xgboost_0, byrow = TRUE) == matrix(pred_by_xgboost_2, byrow = TRUE)))
 
   set.seed(1994)
-  dtrain <- xgb.DMatrix(data = d, info = list(label = y), nthread = n_threads)
+  dtrain <- xgb.DMatrix(data = d, label = y, nthread = n_threads)
   booster_by_train <- xgb.train(
     params = list(
       booster = "dart",
@@ -186,7 +186,7 @@ test_that("train and predict softprob", {
     x3 = rnorm(100)
   )
   y <- sample.int(10, 100, replace = TRUE) - 1
-  dtrain <- xgb.DMatrix(data = d, info = list(label = y), nthread = n_threads)
+  dtrain <- xgb.DMatrix(data = d, label = y, nthread = n_threads)
   booster <- xgb.train(
     params = list(tree_method = "hist", nthread = n_threads),
     data = dtrain, nrounds = 4, num_class = 10,
@@ -564,4 +564,107 @@ test_that("'predict' accepts CSR data", {
   p_spv <- predict(bst, x_spv)
   expect_equal(p_csc, p_csr)
   expect_equal(p_csc, p_spv)
+})
+
+test_that("Quantile regression accepts multiple quantiles", {
+  data(mtcars)
+  y <- mtcars[, 1]
+  x <- as.matrix(mtcars[, -1])
+  dm <- xgb.DMatrix(data = x, label = y)
+  model <- xgb.train(
+    data = dm,
+    params = list(
+      objective = "reg:quantileerror",
+      tree_method = "exact",
+      quantile_alpha = c(0.05, 0.5, 0.95),
+      nthread = n_threads
+    ),
+    nrounds = 15
+  )
+  pred <- predict(model, x, reshape = TRUE)
+
+  expect_equal(dim(pred)[1], nrow(x))
+  expect_equal(dim(pred)[2], 3)
+  expect_true(all(pred[, 1] <= pred[, 3]))
+
+  cors <- cor(y, pred)
+  expect_true(cors[2] > cors[1])
+  expect_true(cors[2] > cors[3])
+  expect_true(cors[2] > 0.85)
+})
+
+test_that("Can use multi-output labels with built-in objectives", {
+  data("mtcars")
+  y <- mtcars$mpg
+  x <- as.matrix(mtcars[, -1])
+  y_mirrored <- cbind(y, -y)
+  dm <- xgb.DMatrix(x, label = y_mirrored, nthread = n_threads)
+  model <- xgb.train(
+    params = list(
+      tree_method = "hist",
+      multi_strategy = "multi_output_tree",
+      objective = "reg:squarederror",
+      nthread = n_threads
+    ),
+    data = dm,
+    nrounds = 5
+  )
+  pred <- predict(model, x, reshape = TRUE)
+  expect_equal(pred[, 1], -pred[, 2])
+  expect_true(cor(y, pred[, 1]) > 0.9)
+  expect_true(cor(y, pred[, 2]) < -0.9)
+})
+
+test_that("Can use multi-output labels with custom objectives", {
+  data("mtcars")
+  y <- mtcars$mpg
+  x <- as.matrix(mtcars[, -1])
+  y_mirrored <- cbind(y, -y)
+  dm <- xgb.DMatrix(x, label = y_mirrored, nthread = n_threads)
+  model <- xgb.train(
+    params = list(
+      tree_method = "hist",
+      multi_strategy = "multi_output_tree",
+      base_score = 0,
+      objective = function(pred, dtrain) {
+        y <- getinfo(dtrain, "label")
+        grad <- pred - y
+        hess <- rep(1, nrow(grad) * ncol(grad))
+        hess <- matrix(hess, nrow = nrow(grad))
+        return(list(grad = grad, hess = hess))
+      },
+      nthread = n_threads
+    ),
+    data = dm,
+    nrounds = 5
+  )
+  pred <- predict(model, x, reshape = TRUE)
+  expect_equal(pred[, 1], -pred[, 2])
+  expect_true(cor(y, pred[, 1]) > 0.9)
+  expect_true(cor(y, pred[, 2]) < -0.9)
+})
+
+test_that("Can use ranking objectives with either 'qid' or 'group'", {
+  set.seed(123)
+  x <- matrix(rnorm(100 * 10), nrow = 100)
+  y <- sample(2, size = 100, replace = TRUE) - 1
+  qid <- c(rep(1, 20), rep(2, 20), rep(3, 60))
+  gr <- c(20, 20, 60)
+
+  dmat_qid <- xgb.DMatrix(x, label = y, qid = qid)
+  dmat_gr <- xgb.DMatrix(x, label = y, group = gr)
+
+  params <- list(tree_method = "hist",
+                 lambdarank_num_pair_per_sample = 8,
+                 objective = "rank:ndcg",
+                 lambdarank_pair_method = "topk",
+                 nthread = n_threads)
+  set.seed(123)
+  model_qid <- xgb.train(params, dmat_qid, nrounds = 5)
+  set.seed(123)
+  model_gr <- xgb.train(params, dmat_gr, nrounds = 5)
+
+  pred_qid <- predict(model_qid, x)
+  pred_gr <- predict(model_gr, x)
+  expect_equal(pred_qid, pred_gr)
 })

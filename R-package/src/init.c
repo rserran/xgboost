@@ -39,7 +39,9 @@ extern SEXP XGDMatrixCreateFromCSC_R(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP XGDMatrixCreateFromCSR_R(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP XGDMatrixCreateFromFile_R(SEXP, SEXP);
 extern SEXP XGDMatrixCreateFromMat_R(SEXP, SEXP, SEXP);
-extern SEXP XGDMatrixGetInfo_R(SEXP, SEXP);
+extern SEXP XGDMatrixGetFloatInfo_R(SEXP, SEXP);
+extern SEXP XGDMatrixGetUIntInfo_R(SEXP, SEXP);
+extern SEXP XGDMatrixCreateFromDF_R(SEXP, SEXP, SEXP);
 extern SEXP XGDMatrixGetStrFeatureInfo_R(SEXP, SEXP);
 extern SEXP XGDMatrixNumCol_R(SEXP);
 extern SEXP XGDMatrixNumRow_R(SEXP);
@@ -52,7 +54,7 @@ extern SEXP XGBGetGlobalConfig_R(void);
 extern SEXP XGBoosterFeatureScore_R(SEXP, SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
-  {"XGBoosterBoostOneIter_R",     (DL_FUNC) &XGBoosterTrainOneIter_R,     5},
+  {"XGBoosterTrainOneIter_R",     (DL_FUNC) &XGBoosterTrainOneIter_R,     5},
   {"XGBoosterCreate_R",           (DL_FUNC) &XGBoosterCreate_R,           1},
   {"XGBoosterCreateInEmptyObj_R", (DL_FUNC) &XGBoosterCreateInEmptyObj_R, 2},
   {"XGBoosterDumpModel_R",        (DL_FUNC) &XGBoosterDumpModel_R,        4},
@@ -76,7 +78,9 @@ static const R_CallMethodDef CallEntries[] = {
   {"XGDMatrixCreateFromCSR_R",    (DL_FUNC) &XGDMatrixCreateFromCSR_R,    6},
   {"XGDMatrixCreateFromFile_R",   (DL_FUNC) &XGDMatrixCreateFromFile_R,   2},
   {"XGDMatrixCreateFromMat_R",    (DL_FUNC) &XGDMatrixCreateFromMat_R,    3},
-  {"XGDMatrixGetInfo_R",          (DL_FUNC) &XGDMatrixGetInfo_R,          2},
+  {"XGDMatrixGetFloatInfo_R",     (DL_FUNC) &XGDMatrixGetFloatInfo_R,     2},
+  {"XGDMatrixGetUIntInfo_R",      (DL_FUNC) &XGDMatrixGetUIntInfo_R,      2},
+  {"XGDMatrixCreateFromDF_R",     (DL_FUNC) &XGDMatrixCreateFromDF_R,     3},
   {"XGDMatrixGetStrFeatureInfo_R", (DL_FUNC) &XGDMatrixGetStrFeatureInfo_R, 2},
   {"XGDMatrixNumCol_R",           (DL_FUNC) &XGDMatrixNumCol_R,           1},
   {"XGDMatrixNumRow_R",           (DL_FUNC) &XGDMatrixNumRow_R,           1},

@@ -194,7 +194,7 @@ xgb.Booster.complete <- function(object, saveraw = TRUE) {
 #' @param strict_shape  Default is \code{FALSE}. When it's set to \code{TRUE}, output
 #'        type and shape of prediction are invariant to model type.
 #'
-#' @param ... Parameters passed to \code{predict.xgb.Booster}
+#' @param ... Not used.
 #'
 #' @details
 #'
@@ -697,7 +697,13 @@ xgb.config <- function(object) {
     stop("parameter names cannot be empty strings")
   }
   names(p) <- gsub(".", "_", names(p), fixed = TRUE)
-  p <- lapply(p, function(x) as.character(x)[1])
+  p <- lapply(p, function(x) {
+    if (is.vector(x) && length(x) == 1) {
+      return(as.character(x)[1])
+    } else {
+      return(jsonlite::toJSON(x, auto_unbox = TRUE))
+    }
+  })
   handle <- xgb.get.handle(object)
   for (i in seq_along(p)) {
     .Call(XGBoosterSetParam_R, handle, names(p[i]), p[[i]])
