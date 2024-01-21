@@ -263,6 +263,16 @@ XGB_DLL SEXP XGCheckNullPtr_R(SEXP handle) {
   return Rf_ScalarLogical(R_ExternalPtrAddr(handle) == nullptr);
 }
 
+XGB_DLL SEXP XGSetArrayDimInplace_R(SEXP arr, SEXP dims) {
+  Rf_setAttrib(arr, R_DimSymbol, dims);
+  return R_NilValue;
+}
+
+XGB_DLL SEXP XGSetArrayDimNamesInplace_R(SEXP arr, SEXP dim_names) {
+  Rf_setAttrib(arr, R_DimNamesSymbol, dim_names);
+  return R_NilValue;
+}
+
 namespace {
 void _DMatrixFinalizer(SEXP ext) {
   R_API_BEGIN();
@@ -1278,4 +1288,19 @@ XGB_DLL SEXP XGBoosterFeatureScore_R(SEXP handle, SEXP json_config) {
   UNPROTECT(4);
 
   return r_out;
+}
+
+XGB_DLL SEXP XGBoosterSlice_R(SEXP handle, SEXP begin_layer, SEXP end_layer, SEXP step) {
+  SEXP out = Rf_protect(XGBMakeEmptyAltrep());
+  R_API_BEGIN();
+  BoosterHandle handle_out = nullptr;
+  CHECK_CALL(XGBoosterSlice(R_ExternalPtrAddr(handle),
+                            Rf_asInteger(begin_layer),
+                            Rf_asInteger(end_layer),
+                            Rf_asInteger(step),
+                            &handle_out));
+  XGBAltrepSetPointer(out, handle_out);
+  R_API_END();
+  Rf_unprotect(1);
+  return out;
 }
