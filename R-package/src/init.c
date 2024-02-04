@@ -46,7 +46,7 @@ extern SEXP XGSetArrayDimInplace_R(SEXP, SEXP);
 extern SEXP XGSetArrayDimNamesInplace_R(SEXP, SEXP);
 extern SEXP XGDMatrixCreateFromCSC_R(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP XGDMatrixCreateFromCSR_R(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP XGDMatrixCreateFromFile_R(SEXP, SEXP);
+extern SEXP XGDMatrixCreateFromURI_R(SEXP, SEXP, SEXP);
 extern SEXP XGDMatrixCreateFromMat_R(SEXP, SEXP, SEXP);
 extern SEXP XGDMatrixGetFloatInfo_R(SEXP, SEXP);
 extern SEXP XGDMatrixGetUIntInfo_R(SEXP, SEXP);
@@ -54,6 +54,14 @@ extern SEXP XGDMatrixCreateFromDF_R(SEXP, SEXP, SEXP);
 extern SEXP XGDMatrixGetStrFeatureInfo_R(SEXP, SEXP);
 extern SEXP XGDMatrixNumCol_R(SEXP);
 extern SEXP XGDMatrixNumRow_R(SEXP);
+extern SEXP XGProxyDMatrixCreate_R();
+extern SEXP XGProxyDMatrixSetDataDense_R(SEXP, SEXP);
+extern SEXP XGProxyDMatrixSetDataCSR_R(SEXP, SEXP);
+extern SEXP XGProxyDMatrixSetDataColumnar_R(SEXP, SEXP);
+extern SEXP XGDMatrixCreateFromCallback_R(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP XGQuantileDMatrixCreateFromCallback_R(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP XGDMatrixFree_R(SEXP);
+extern SEXP XGGetRNAIntAsDouble();
 extern SEXP XGDMatrixGetQuantileCut_R(SEXP);
 extern SEXP XGDMatrixNumNonMissing_R(SEXP);
 extern SEXP XGDMatrixGetDataAsCSR_R(SEXP);
@@ -97,7 +105,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"XGSetArrayDimNamesInplace_R", (DL_FUNC) &XGSetArrayDimNamesInplace_R, 2},
   {"XGDMatrixCreateFromCSC_R",    (DL_FUNC) &XGDMatrixCreateFromCSC_R,    6},
   {"XGDMatrixCreateFromCSR_R",    (DL_FUNC) &XGDMatrixCreateFromCSR_R,    6},
-  {"XGDMatrixCreateFromFile_R",   (DL_FUNC) &XGDMatrixCreateFromFile_R,   2},
+  {"XGDMatrixCreateFromURI_R",    (DL_FUNC) &XGDMatrixCreateFromURI_R,    3},
   {"XGDMatrixCreateFromMat_R",    (DL_FUNC) &XGDMatrixCreateFromMat_R,    3},
   {"XGDMatrixGetFloatInfo_R",     (DL_FUNC) &XGDMatrixGetFloatInfo_R,     2},
   {"XGDMatrixGetUIntInfo_R",      (DL_FUNC) &XGDMatrixGetUIntInfo_R,      2},
@@ -105,6 +113,14 @@ static const R_CallMethodDef CallEntries[] = {
   {"XGDMatrixGetStrFeatureInfo_R", (DL_FUNC) &XGDMatrixGetStrFeatureInfo_R, 2},
   {"XGDMatrixNumCol_R",           (DL_FUNC) &XGDMatrixNumCol_R,           1},
   {"XGDMatrixNumRow_R",           (DL_FUNC) &XGDMatrixNumRow_R,           1},
+  {"XGProxyDMatrixCreate_R",      (DL_FUNC) &XGProxyDMatrixCreate_R,      0},
+  {"XGProxyDMatrixSetDataDense_R", (DL_FUNC) &XGProxyDMatrixSetDataDense_R, 2},
+  {"XGProxyDMatrixSetDataCSR_R",  (DL_FUNC) &XGProxyDMatrixSetDataCSR_R,  2},
+  {"XGProxyDMatrixSetDataColumnar_R", (DL_FUNC) &XGProxyDMatrixSetDataColumnar_R, 2},
+  {"XGDMatrixCreateFromCallback_R", (DL_FUNC) &XGDMatrixCreateFromCallback_R, 7},
+  {"XGQuantileDMatrixCreateFromCallback_R", (DL_FUNC) &XGQuantileDMatrixCreateFromCallback_R, 8},
+  {"XGDMatrixFree_R",             (DL_FUNC) &XGDMatrixFree_R,             1},
+  {"XGGetRNAIntAsDouble",         (DL_FUNC) &XGGetRNAIntAsDouble,         0},
   {"XGDMatrixGetQuantileCut_R",   (DL_FUNC) &XGDMatrixGetQuantileCut_R,   1},
   {"XGDMatrixNumNonMissing_R",    (DL_FUNC) &XGDMatrixNumNonMissing_R,    1},
   {"XGDMatrixGetDataAsCSR_R",     (DL_FUNC) &XGDMatrixGetDataAsCSR_R,     1},
