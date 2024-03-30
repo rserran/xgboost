@@ -1,5 +1,5 @@
 /**
- * Copyright 2023, XGBoost Contributors
+ * Copyright 2023-2024, XGBoost Contributors
  */
 #include "comm.h"
 
@@ -9,8 +9,9 @@
 #include <memory>     // for shared_ptr
 #include <string>     // for string
 #include <utility>    // for move, forward
-
-#include "../common/common.h"           // for AssertGPUSupport
+#if !defined(XGBOOST_USE_NCCL)
+#include "../common/common.h"           // for AssertNCCLSupport
+#endif                                  // !defined(XGBOOST_USE_NCCL)
 #include "allgather.h"                  // for RingAllgather
 #include "protocol.h"                   // for kMagic
 #include "xgboost/base.h"               // for XGBOOST_STRICT_R_MODE
@@ -21,11 +22,7 @@
 namespace xgboost::collective {
 Comm::Comm(std::string const& host, std::int32_t port, std::chrono::seconds timeout,
            std::int32_t retry, std::string task_id)
-    : timeout_{timeout},
-      retry_{retry},
-      tracker_{host, port, -1},
-      task_id_{std::move(task_id)},
-      loop_{std::shared_ptr<Loop>{new Loop{timeout}}} {}
+    : timeout_{timeout}, retry_{retry}, tracker_{host, port, -1}, task_id_{std::move(task_id)} {}
 
 Result ConnectTrackerImpl(proto::PeerInfo info, std::chrono::seconds timeout, std::int32_t retry,
                           std::string const& task_id, TCPSocket* out, std::int32_t rank,
@@ -75,9 +72,11 @@ Result ConnectTrackerImpl(proto::PeerInfo info, std::chrono::seconds timeout, st
   } << [&] {
     return next->NonBlocking(true);
   } << [&] {
-    SockAddrV4 addr;
+    SockAddress addr;
     return listener->Accept(prev.get(), &addr);
-  } << [&] { return prev->NonBlocking(true); };
+  } << [&] {
+    return prev->NonBlocking(true);
+  };
   if (!rc.OK()) {
     return rc;
   }
@@ -157,10 +156,13 @@ Result ConnectTrackerImpl(proto::PeerInfo info, std::chrono::seconds timeout, st
   }
 
   for (std::int32_t r = 0; r < comm.Rank(); ++r) {
-    SockAddrV4 addr;
     auto peer = std::shared_ptr<TCPSocket>(TCPSocket::CreatePtr(comm.Domain()));
-    rc = std::move(rc) << [&] { return listener->Accept(peer.get(), &addr); }
-                       << [&] { return peer->RecvTimeout(timeout); };
+    rc = std::move(rc) << [&] {
+      SockAddress addr;
+      return listener->Accept(peer.get(), &addr);
+    } << [&] {
+      return peer->RecvTimeout(timeout);
+    };
     if (!rc.OK()) {
       return rc;
     }
@@ -186,8 +188,11 @@ RabitComm::RabitComm(std::string const& host, std::int32_t port, std::chrono::se
                      std::int32_t retry, std::string task_id, StringView nccl_path)
     : HostComm{std::move(host), port, timeout, retry, std::move(task_id)},
       nccl_path_{std::move(nccl_path)} {
+  loop_.reset(new Loop{std::chrono::seconds{timeout_}});  // NOLINT
   auto rc = this->Bootstrap(timeout_, retry_, task_id_);
-  CHECK(rc.OK()) << rc.Report();
+  if (!rc.OK()) {
+    SafeColl(Fail("Failed to bootstrap the communication group.", std::move(rc)));
+  }
 }
 
 #if !defined(XGBOOST_USE_NCCL)
@@ -250,7 +255,6 @@ Comm* RabitComm::MakeCUDAVar(Context const*, std::shared_ptr<Coll>) const {
   auto jnext = Json::Load(StringView{snext});
 
   proto::PeerInfo ninfo{jnext};
-
   // get the rank of this worker
   this->rank_ = BootstrapPrev(ninfo.rank, world);
   this->tracker_.rank = rank_;
@@ -258,7 +262,7 @@ Comm* RabitComm::MakeCUDAVar(Context const*, std::shared_ptr<Coll>) const {
   std::vector<std::shared_ptr<TCPSocket>> workers;
   rc = ConnectWorkers(*this, &listener, lport, ninfo, timeout, retry, &workers);
   if (!rc.OK()) {
-    return rc;
+    return Fail("Failed to connect to other workers.", std::move(rc));
   }
 
   CHECK(this->channels_.empty());
@@ -286,6 +290,10 @@ RabitComm::~RabitComm() noexcept(false) {
 }
 
 [[nodiscard]] Result RabitComm::Shutdown() {
+  if (!this->IsDistributed()) {
+    return Success();
+  }
+
   TCPSocket tracker;
   return Success() << [&] {
     return ConnectTrackerImpl(tracker_, timeout_, retry_, task_id_, &tracker, Rank(), World());
@@ -299,6 +307,11 @@ RabitComm::~RabitComm() noexcept(false) {
     if (n_bytes != scmd.size()) {
       return Fail("Faled to send cmd.");
     }
+
+    this->ResetState();
+    return Success();
+  } << [&] {
+    this->channels_.clear();
     return Success();
   };
 }
