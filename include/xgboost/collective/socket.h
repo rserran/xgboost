@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2022-2023, XGBoost Contributors
+ * Copyright (c) 2022-2024, XGBoost Contributors
  */
 #pragma once
 
@@ -12,7 +12,6 @@
 #include <cstddef>       // std::size_t
 #include <cstdint>       // std::int32_t, std::uint16_t
 #include <cstring>       // memset
-#include <limits>        // std::numeric_limits
 #include <string>        // std::string
 #include <system_error>  // std::error_code, std::system_category
 #include <utility>       // std::swap
@@ -123,6 +122,21 @@ inline std::int32_t CloseSocket(SocketT fd) {
 #else
   return close(fd);
 #endif
+}
+
+inline std::int32_t ShutdownSocket(SocketT fd) {
+#if defined(_WIN32)
+  auto rc = shutdown(fd, SD_BOTH);
+  if (rc != 0 && LastError() == WSANOTINITIALISED) {
+    return 0;
+  }
+#else
+  auto rc = shutdown(fd, SHUT_RDWR);
+  if (rc != 0 && LastError() == ENOTCONN) {
+    return 0;
+  }
+#endif
+  return rc;
 }
 
 inline bool ErrorWouldBlock(std::int32_t errsv) noexcept(true) {
@@ -468,19 +482,30 @@ class TCPSocket {
       *addr = SockAddress{SockAddrV6{caddr}};
       *out = TCPSocket{newfd};
     }
+    // On MacOS, this is automatically set to async socket if the parent socket is async
+    // We make sure all socket are blocking by default.
+    //
+    // On Windows, a closed socket is returned during shutdown. We guard against it when
+    // setting non-blocking.
+    if (!out->IsClosed()) {
+      return out->NonBlocking(false);
+    }
     return Success();
   }
 
   ~TCPSocket() {
     if (!IsClosed()) {
-      Close();
+      auto rc = this->Close();
+      if (!rc.OK()) {
+        LOG(WARNING) << rc.Report();
+      }
     }
   }
 
   TCPSocket(TCPSocket const &that) = delete;
   TCPSocket(TCPSocket &&that) noexcept(true) { std::swap(this->handle_, that.handle_); }
   TCPSocket &operator=(TCPSocket const &that) = delete;
-  TCPSocket &operator=(TCPSocket &&that) {
+  TCPSocket &operator=(TCPSocket &&that) noexcept(true) {
     std::swap(this->handle_, that.handle_);
     return *this;
   }
@@ -489,36 +514,49 @@ class TCPSocket {
    */
   [[nodiscard]] HandleT const &Handle() const { return handle_; }
   /**
-   * \brief Listen to incoming requests. Should be called after bind.
+   * @brief Listen to incoming requests. Should be called after bind.
    */
-  void Listen(std::int32_t backlog = 16) { xgboost_CHECK_SYS_CALL(listen(handle_, backlog), 0); }
+  [[nodiscard]] Result Listen(std::int32_t backlog = 16) {
+    if (listen(handle_, backlog) != 0) {
+      return system::FailWithCode("Failed to listen.");
+    }
+    return Success();
+  }
   /**
-   * \brief Bind socket to INADDR_ANY, return the port selected by the OS.
+   * @brief Bind socket to INADDR_ANY, return the port selected by the OS.
    */
-  [[nodiscard]] in_port_t BindHost() {
+  [[nodiscard]] Result BindHost(std::int32_t* p_out) {
+    // Use int32 instead of in_port_t for consistency. We take port as parameter from
+    // users using other languages, the port is usually stored and passed around as int.
     if (Domain() == SockDomain::kV6) {
       auto addr = SockAddrV6::InaddrAny();
       auto handle = reinterpret_cast<sockaddr const *>(&addr.Handle());
-      xgboost_CHECK_SYS_CALL(
-          bind(handle_, handle, sizeof(std::remove_reference_t<decltype(addr.Handle())>)), 0);
+      if (bind(handle_, handle, sizeof(std::remove_reference_t<decltype(addr.Handle())>)) != 0) {
+        return system::FailWithCode("bind failed.");
+      }
 
       sockaddr_in6 res_addr;
       socklen_t addrlen = sizeof(res_addr);
-      xgboost_CHECK_SYS_CALL(
-          getsockname(handle_, reinterpret_cast<sockaddr *>(&res_addr), &addrlen), 0);
-      return ntohs(res_addr.sin6_port);
+      if (getsockname(handle_, reinterpret_cast<sockaddr *>(&res_addr), &addrlen) != 0) {
+        return system::FailWithCode("getsockname failed.");
+      }
+      *p_out = ntohs(res_addr.sin6_port);
     } else {
       auto addr = SockAddrV4::InaddrAny();
       auto handle = reinterpret_cast<sockaddr const *>(&addr.Handle());
-      xgboost_CHECK_SYS_CALL(
-          bind(handle_, handle, sizeof(std::remove_reference_t<decltype(addr.Handle())>)), 0);
+      if (bind(handle_, handle, sizeof(std::remove_reference_t<decltype(addr.Handle())>)) != 0) {
+        return system::FailWithCode("bind failed.");
+      }
 
       sockaddr_in res_addr;
       socklen_t addrlen = sizeof(res_addr);
-      xgboost_CHECK_SYS_CALL(
-          getsockname(handle_, reinterpret_cast<sockaddr *>(&res_addr), &addrlen), 0);
-      return ntohs(res_addr.sin_port);
+      if (getsockname(handle_, reinterpret_cast<sockaddr *>(&res_addr), &addrlen) != 0) {
+        return system::FailWithCode("getsockname failed.");
+      }
+      *p_out = ntohs(res_addr.sin_port);
     }
+
+    return Success();
   }
 
   [[nodiscard]] auto Port() const {
@@ -631,26 +669,49 @@ class TCPSocket {
    */
   std::size_t Send(StringView str);
   /**
-   * \brief Receive string, format is matched with the Python socket wrapper in RABIT.
+   * @brief Receive string, format is matched with the Python socket wrapper in RABIT.
    */
-  std::size_t Recv(std::string *p_str);
+  [[nodiscard]] Result Recv(std::string *p_str);
   /**
-   * \brief Close the socket, called automatically in destructor if the socket is not closed.
+   * @brief Close the socket, called automatically in destructor if the socket is not closed.
    */
-  void Close() {
+  [[nodiscard]] Result Close() {
     if (InvalidSocket() != handle_) {
-#if defined(_WIN32)
       auto rc = system::CloseSocket(handle_);
+#if defined(_WIN32)
       // it's possible that we close TCP sockets after finalizing WSA due to detached thread.
       if (rc != 0 && system::LastError() != WSANOTINITIALISED) {
-        system::ThrowAtError("close", rc);
+        return system::FailWithCode("Failed to close the socket.");
       }
 #else
-      xgboost_CHECK_SYS_CALL(system::CloseSocket(handle_), 0);
+      if (rc != 0) {
+        return system::FailWithCode("Failed to close the socket.");
+      }
 #endif
       handle_ = InvalidSocket();
     }
+    return Success();
   }
+  /**
+   * @brief Call shutdown on the socket.
+   */
+  [[nodiscard]] Result Shutdown() {
+    if (this->IsClosed()) {
+      return Success();
+    }
+    auto rc = system::ShutdownSocket(this->Handle());
+#if defined(_WIN32)
+    // Windows cannot shutdown a socket if it's not connected.
+    if (rc == -1 && system::LastError() == WSAENOTCONN) {
+      return Success();
+    }
+#endif
+    if (rc != 0) {
+      return system::FailWithCode("Failed to shutdown socket.");
+    }
+    return Success();
+  }
+
   /**
    * \brief Create a TCP socket on specified domain.
    */

@@ -11,7 +11,7 @@ from xgboost import dask as dxgb
 from xgboost.dask import DaskDMatrix
 
 
-def main(client):
+def main(client: Client) -> None:
     # generate some random data for demonstration
     m = 100000
     n = 100
@@ -40,7 +40,7 @@ def main(client):
     # you can pass output directly into `predict` too.
     prediction = dxgb.predict(client, bst, dtrain)
     print("Evaluation history:", history)
-    return prediction
+    print("Error:", da.sqrt((prediction - y) ** 2).mean().compute())
 
 
 if __name__ == "__main__":
