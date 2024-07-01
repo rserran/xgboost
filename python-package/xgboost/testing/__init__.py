@@ -195,28 +195,23 @@ def skip_win() -> PytestSkip:
     return {"reason": "Unsupported platform.", "condition": is_windows()}
 
 
-def skip_s390x() -> PytestSkip:
-    condition = platform.machine() == "s390x"
-    reason = "Known to fail on s390x"
-    return {"condition": condition, "reason": reason}
-
-
 class IteratorForTest(xgb.core.DataIter):
     """Iterator for testing streaming DMatrix. (external memory, quantile)"""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         X: Sequence,
         y: Sequence,
         w: Optional[Sequence],
         cache: Optional[str],
+        on_host: bool = False,
     ) -> None:
         assert len(X) == len(y)
         self.X = X
         self.y = y
         self.w = w
         self.it = 0
-        super().__init__(cache_prefix=cache)
+        super().__init__(cache_prefix=cache, on_host=on_host)
 
     def next(self, input_data: Callable) -> int:
         if self.it == len(self.X):
@@ -373,7 +368,11 @@ class TestDataset:
                 weight.append(w)
 
         it = IteratorForTest(
-            predictor, response, weight if weight else None, cache="cache"
+            predictor,
+            response,
+            weight if weight else None,
+            cache="cache",
+            on_host=False,
         )
         return xgb.DMatrix(it)
 
@@ -523,7 +522,6 @@ def make_sparse_regression(
 
     """
     if not hasattr(np.random, "default_rng"):
-        # old version of numpy on s390x
         rng = np.random.RandomState(1994)
         X = sparse.random(
             m=n_samples,

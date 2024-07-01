@@ -7,7 +7,6 @@ import json
 import os
 import re
 import sys
-import uuid
 import warnings
 import weakref
 from abc import ABC, abstractmethod
@@ -504,18 +503,29 @@ class DataIter(ABC):  # pylint: disable=too-many-instance-attributes
     ----------
     cache_prefix :
         Prefix to the cache files, only used in external memory.
+
     release_data :
         Whether the iterator should release the data during iteration. Set it to True if
         the data transformation (converting data to np.float32 type) is memory
         intensive. Otherwise, if the transformation is computation intensive then we can
         keep the cache.
 
+    on_host :
+        Whether the data should be cached on host memory instead of harddrive when using
+        GPU with external memory. If set to true, then the "external memory" would
+        simply be CPU (host) memory. This is still working in progress, not ready for
+        test yet.
+
     """
 
     def __init__(
-        self, cache_prefix: Optional[str] = None, release_data: bool = True
+        self,
+        cache_prefix: Optional[str] = None,
+        release_data: bool = True,
+        on_host: bool = False,
     ) -> None:
         self.cache_prefix = cache_prefix
+        self.on_host = on_host
 
         self._handle = _ProxyDMatrix()
         self._exception: Optional[Exception] = None
@@ -906,12 +916,12 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
 
     def _init_from_iter(self, iterator: DataIter, enable_categorical: bool) -> None:
         it = iterator
-        args = {
-            "missing": self.missing,
-            "nthread": self.nthread,
-            "cache_prefix": it.cache_prefix if it.cache_prefix else "",
-        }
-        args_cstr = from_pystr_to_cstr(json.dumps(args))
+        args = make_jcargs(
+            missing=self.missing,
+            nthread=self.nthread,
+            cache_prefix=it.cache_prefix if it.cache_prefix else "",
+            on_host=it.on_host,
+        )
         handle = ctypes.c_void_p()
         reset_callback, next_callback = it.get_callbacks(enable_categorical)
         ret = _LIB.XGDMatrixCreateFromCallback(
@@ -919,7 +929,7 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
             it.proxy.handle,
             reset_callback,
             next_callback,
-            args_cstr,
+            args,
             ctypes.byref(handle),
         )
         it.reraise()
@@ -1634,20 +1644,6 @@ class QuantileDMatrix(DMatrix):
         # delay check_call to throw intermediate exception first
         _check_call(ret)
         self.handle = handle
-
-
-class DeviceQuantileDMatrix(QuantileDMatrix):
-    """Use `QuantileDMatrix` instead.
-
-    .. deprecated:: 1.7.0
-
-    .. versionadded:: 1.1.0
-
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        warnings.warn("Please use `QuantileDMatrix` instead.", FutureWarning)
-        super().__init__(*args, **kwargs)
 
 
 Objective = Callable[[np.ndarray, DMatrix], Tuple[np.ndarray, np.ndarray]]
@@ -2651,7 +2647,7 @@ class Booster:
         Parameters
         ----------
         raw_format :
-            Format of output buffer. Can be `json`, `ubj` or `deprecated`.
+            Format of output buffer. Can be `json` or `ubj`.
 
         Returns
         -------
@@ -3144,9 +3140,3 @@ class Booster:
                 UserWarning,
             )
         return nph_stacked
-
-    def __dask_tokenize__(self) -> uuid.UUID:
-        # TODO: Implement proper tokenization to avoid unnecessary re-computation in
-        # Dask. However, default tokenzation causes problems after
-        # https://github.com/dask/dask/pull/10883
-        return uuid.uuid4()

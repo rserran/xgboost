@@ -711,20 +711,6 @@ class DaskQuantileDMatrix(DaskDMatrix):
         return args
 
 
-class DaskDeviceQuantileDMatrix(DaskQuantileDMatrix):
-    """Use `DaskQuantileDMatrix` instead.
-
-    .. deprecated:: 1.7.0
-
-    .. versionadded:: 1.2.0
-
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        warnings.warn("Please use `DaskQuantileDMatrix` instead.", FutureWarning)
-        super().__init__(*args, **kwargs)
-
-
 def _create_quantile_dmatrix(
     feature_names: Optional[FeatureNames],
     feature_types: Optional[Union[Any, List[Any]]],
@@ -1237,10 +1223,12 @@ def _infer_predict_output(
 async def _get_model_future(
     client: "distributed.Client", model: Union[Booster, Dict, "distributed.Future"]
 ) -> "distributed.Future":
+    # See https://github.com/dask/dask/issues/11179#issuecomment-2168094529 for
+    # the use of hash.
     if isinstance(model, Booster):
-        booster = await client.scatter(model, broadcast=True)
+        booster = await client.scatter(model, broadcast=True, hash=False)
     elif isinstance(model, dict):
-        booster = await client.scatter(model["booster"], broadcast=True)
+        booster = await client.scatter(model["booster"], broadcast=True, hash=False)
     elif isinstance(model, distributed.Future):
         booster = model
         t = booster.type
