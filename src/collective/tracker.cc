@@ -111,12 +111,14 @@ RabitTracker::WorkerProxy::WorkerProxy(std::int32_t world, TCPSocket sock, SockA
 }
 
 RabitTracker::RabitTracker(Json const& config) : Tracker{config} {
-  std::string self;
   auto rc = Success() << [&] {
-    return collective::GetHostAddress(&self);
+    host_.clear();
+    host_ = OptionalArg<String>(config, "host", std::string{});
+    if (host_.empty()) {
+      return collective::GetHostAddress(&host_);
+    }
+    return Success();
   } << [&] {
-    host_ = OptionalArg<String>(config, "host", self);
-
     auto addr = MakeSockAddress(xgboost::StringView{host_}, 0);
     listener_ = TCPSocket::Create(addr.IsV4() ? SockDomain::kV4 : SockDomain::kV6);
     return listener_.Bind(host_, &this->port_);
@@ -414,7 +416,7 @@ Result RabitTracker::Bootstrap(std::vector<WorkerProxy>* p_workers) {
       addresses.emplace_back(SockAddrV6{*ipv6});
     }
   }
-  // If not v4 address is found, we try v6
+  // If no v4 address is found, we try v6
   for (auto const& addr : addresses) {
     if (addr.IsV6()) {
       auto ip = addr.V6().Addr();
