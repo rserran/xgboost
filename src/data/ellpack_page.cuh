@@ -60,20 +60,26 @@ struct EllpackDeviceAccessor {
       min_fvalue = cuts->min_vals_.ConstHostSpan();
     }
   }
-  // Get a matrix element, uses binary search for look up Return NaN if missing
-  // Given a row index and a feature index, returns the corresponding cut value
-  [[nodiscard]] __device__ int32_t GetBinIndex(size_t ridx, size_t fidx) const {
-    ridx -= base_rowid;
+  /**
+   * @brief Given a row index and a feature index, returns the corresponding cut value.
+   *
+   * Uses binary search for look up. Returns NaN if missing.
+   *
+   * @tparam global_ridx Whether the row index is global to all ellpack batches or it's
+   *                     local to the current batch.
+   */
+  template <bool global_ridx = true>
+  [[nodiscard]] __device__ bst_bin_t GetBinIndex(size_t ridx, size_t fidx) const {
+    if (global_ridx) {
+      ridx -= base_rowid;
+    }
     auto row_begin = row_stride * ridx;
     auto row_end = row_begin + row_stride;
-    auto gidx = -1;
+    bst_bin_t gidx = -1;
     if (is_dense) {
       gidx = gidx_iter[row_begin + fidx];
     } else {
-      gidx = common::BinarySearchBin(row_begin,
-                                     row_end,
-                                     gidx_iter,
-                                     feature_segments[fidx],
+      gidx = common::BinarySearchBin(row_begin, row_end, gidx_iter, feature_segments[fidx],
                                      feature_segments[fidx + 1]);
     }
     return gidx;
@@ -203,6 +209,7 @@ class EllpackPageImpl {
   [[nodiscard]] std::shared_ptr<common::HistogramCuts const> CutsShared() const { return cuts_; }
   void SetCuts(std::shared_ptr<common::HistogramCuts const> cuts) { cuts_ = cuts; }
 
+  [[nodiscard]] bool IsDense() const { return is_dense; }
   /** @return Estimation of memory cost of this page. */
   static size_t MemCostBytes(size_t num_rows, size_t row_stride, const common::HistogramCuts&cuts) ;
 
