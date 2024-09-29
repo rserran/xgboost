@@ -18,10 +18,11 @@ package ml.dmlc.xgboost4j.scala.spark
 
 import java.io.File
 import java.util.Arrays
+
 import scala.collection.mutable.ArrayBuffer
 
-import org.apache.spark.ml.linalg.{DenseVector, SparseVector, Vectors}
 import org.apache.spark.SparkException
+import org.apache.spark.ml.linalg.{DenseVector, SparseVector, Vectors}
 import org.json4s.{DefaultFormats, Formats}
 import org.json4s.jackson.parseJson
 import org.scalatest.funsuite.AnyFunSuite
@@ -66,6 +67,48 @@ class XGBoostEstimatorSuite extends AnyFunSuite with PerTest with TmpFolderPerSu
     assert(model.getAlpha === 0.97)
     assert(model.getLeafPredictionCol === "leaf")
     assert(model.getContribPredictionCol === "contrib")
+  }
+
+  test("camel case parameters") {
+    val xgbParams: Map[String, Any] = Map(
+      "max_depth" -> 5,
+      "featuresCol" -> "abc",
+      "num_workers" -> 2,
+      "numRound" -> 11
+    )
+    val estimator = new XGBoostClassifier(xgbParams)
+    assert(estimator.getFeaturesCol === "abc")
+    assert(estimator.getNumWorkers === 2)
+    assert(estimator.getNumRound === 11)
+    assert(estimator.getMaxDepth === 5)
+
+    val xgbParams1: Map[String, Any] = Map(
+      "maxDepth" -> 5,
+      "features_col" -> "abc",
+      "numWorkers" -> 2,
+      "num_round" -> 11
+    )
+    val estimator1 = new XGBoostClassifier(xgbParams1)
+    assert(estimator1.getFeaturesCol === "abc")
+    assert(estimator1.getNumWorkers === 2)
+    assert(estimator1.getNumRound === 11)
+    assert(estimator1.getMaxDepth === 5)
+  }
+
+  test("get xgboost parameters") {
+    val params: Map[String, Any] = Map(
+      "max_depth" -> 5,
+      "featuresCol" -> "abc",
+      "label" -> "class",
+      "num_workers" -> 2,
+      "tree_method" -> "hist",
+      "numRound" -> 11,
+      "not_exist_parameters" -> "hello"
+    )
+    val estimator = new XGBoostClassifier(params)
+    val xgbParams = estimator.getXGBoostParams
+    assert(xgbParams.size === 2)
+    assert(xgbParams.contains("max_depth") && xgbParams.contains("tree_method"))
   }
 
   test("nthread") {
