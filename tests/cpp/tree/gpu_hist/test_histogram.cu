@@ -104,7 +104,6 @@ void TestBuildHist(bool use_shared_memory_histograms) {
   auto ctx = MakeCUDACtx(0);
 
   auto page = BuildEllpackPage(&ctx, kNRows, kNCols);
-  BatchParam batch_param{};
 
   xgboost::SimpleLCG gen;
   xgboost::SimpleRealUniformDistribution<bst_float> dist(0.0f, 1.0f);
@@ -220,8 +219,9 @@ void TestDeterministicHistogram(bool is_dense, std::size_t shm_size, bool force_
 
       dh::device_vector<GradientPairInt64> baseline(num_bins);
       DeviceHistogramBuilder builder;
+      // Single group must use global memory.
       builder.Reset(&ctx, HistMakerTrainParam::CudaDefaultNodes(),
-                    single_group.DeviceAccessor(ctx.Device()), num_bins, force_global);
+                    single_group.DeviceAccessor(ctx.Device()), num_bins, /*force_global=*/true);
       builder.BuildHistogram(ctx.CUDACtx(), page->GetDeviceAccessor(&ctx),
                              single_group.DeviceAccessor(ctx.Device()), gpair.DeviceSpan(), ridx,
                              dh::ToSpan(baseline), quantiser);
@@ -237,10 +237,14 @@ void TestDeterministicHistogram(bool is_dense, std::size_t shm_size, bool force_
     }
   }
 }
+
 class TestGPUDeterministic : public ::testing::TestWithParam<std::tuple<bool, std::size_t, bool>> {
  protected:
   void Run() {
     auto [is_dense, shm_size, force_global] = this->GetParam();
+    if (shm_size > dh::MaxSharedMemoryOptin(0) && !force_global) {
+      force_global = true;  // We will have to skip this test to avoid false check in the builder.
+    }
     TestDeterministicHistogram(is_dense, shm_size, force_global);
   }
 };
@@ -443,7 +447,6 @@ class HistogramExternalMemoryTest : public ::testing::TestWithParam<std::tuple<f
         auto impl = page.Impl();
         if (k == 0) {
           // Initialization
-          auto d_matrix = impl->GetDeviceAccessor(&ctx);
           fg = std::make_unique<FeatureGroups>(impl->Cuts());
           auto init = GradientPairInt64{0, 0};
           multi_hist = decltype(multi_hist)(impl->Cuts().TotalBins(), init);

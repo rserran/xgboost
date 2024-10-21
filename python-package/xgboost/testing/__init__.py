@@ -49,6 +49,8 @@ from xgboost.testing.data import (
     memory,
 )
 
+from .._typing import PathLike
+
 hypothesis = pytest.importorskip("hypothesis")
 
 # pylint:disable=wrong-import-position,wrong-import-order
@@ -227,17 +229,22 @@ class IteratorForTest(xgb.core.DataIter):
         *,
         cache: Optional[str],
         on_host: bool = False,
+        min_cache_page_bytes: Optional[int] = None,
     ) -> None:
         assert len(X) == len(y)
         self.X = X
         self.y = y
         self.w = w
         self.it = 0
-        super().__init__(cache_prefix=cache, on_host=on_host)
+        super().__init__(
+            cache_prefix=cache,
+            on_host=on_host,
+            min_cache_page_bytes=min_cache_page_bytes,
+        )
 
-    def next(self, input_data: Callable) -> int:
+    def next(self, input_data: Callable) -> bool:
         if self.it == len(self.X):
-            return 0
+            return False
 
         with pytest.raises(TypeError, match="Keyword argument"):
             input_data(self.X[self.it], self.y[self.it], None)
@@ -250,7 +257,7 @@ class IteratorForTest(xgb.core.DataIter):
         )
         gc.collect()  # clear up the copy, see if XGBoost access freed memory.
         self.it += 1
-        return 1
+        return True
 
     def reset(self) -> None:
         self.it = 0
@@ -741,7 +748,7 @@ class DirectoryExcursion:
 
     """
 
-    def __init__(self, path: Union[os.PathLike, str], cleanup: bool = False):
+    def __init__(self, path: PathLike, cleanup: bool = False):
         self.path = path
         self.curdir = os.path.normpath(os.path.abspath(os.path.curdir))
         self.cleanup = cleanup

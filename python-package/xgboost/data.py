@@ -5,17 +5,7 @@ import ctypes
 import json
 import os
 import warnings
-from typing import (
-    Any,
-    Callable,
-    List,
-    Optional,
-    Sequence,
-    Tuple,
-    TypeGuard,
-    Union,
-    cast,
-)
+from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeGuard, cast
 
 import numpy as np
 
@@ -27,6 +17,7 @@ from ._typing import (
     FloatCompatible,
     NumpyDType,
     PandasDType,
+    PathLike,
     TransformedData,
     c_bst_ulong,
 )
@@ -1078,12 +1069,12 @@ def _from_dlpack(
     return _from_cupy_array(data, missing, nthread, feature_names, feature_types)
 
 
-def _is_uri(data: DataType) -> TypeGuard[Union[str, os.PathLike]]:
+def _is_uri(data: DataType) -> TypeGuard[PathLike]:
     return isinstance(data, (str, os.PathLike))
 
 
 def _from_uri(
-    data: Union[str, os.PathLike],
+    data: PathLike,
     missing: Optional[FloatCompatible],
     feature_names: Optional[FeatureNames],
     feature_types: Optional[FeatureTypes],
@@ -1472,12 +1463,12 @@ class SingleBatchInternalIter(DataIter):  # pylint: disable=R0902
         # might use memory.
         super().__init__(release_data=False)
 
-    def next(self, input_data: Callable) -> int:
+    def next(self, input_data: Callable) -> bool:
         if self.it == 1:
-            return 0
+            return False
         self.it += 1
         input_data(**self.kwargs)
-        return 1
+        return True
 
     def reset(self) -> None:
         self.it = 0

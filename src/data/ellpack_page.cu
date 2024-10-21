@@ -31,7 +31,7 @@ EllpackPage::EllpackPage() : impl_{new EllpackPageImpl{}} {}
 EllpackPage::EllpackPage(Context const* ctx, DMatrix* dmat, const BatchParam& param)
     : impl_{new EllpackPageImpl{ctx, dmat, param}} {}
 
-EllpackPage::~EllpackPage() = default;
+EllpackPage::~EllpackPage() noexcept(false) = default;
 
 EllpackPage::EllpackPage(EllpackPage&& that) { std::swap(impl_, that.impl_); }
 
@@ -127,7 +127,6 @@ __global__ void CompressBinEllpackKernel(
   wr.AtomicWriteSymbol(buffer, bin, (irow + base_row) * row_stride + cpr_fidx);
 }
 
-namespace {
 // Calculate the number of symbols for the compressed ellpack. Similar to what the CPU
 // implementation does, we compress the dense data by subtracting the bin values with the
 // starting bin of its feature if it's dense. In addition, we treat the data as dense if
@@ -176,7 +175,6 @@ namespace {
     return {row_stride, n_symbols};
   }
 }
-}  // namespace
 
 // Construct an ELLPACK matrix with the given number of empty rows.
 EllpackPageImpl::EllpackPageImpl(Context const* ctx,
@@ -311,7 +309,7 @@ void CopyDataToEllpack(Context const* ctx, const AdapterBatchT& batch,
                        common::Span<FeatureType const> feature_types, EllpackPageImpl* dst,
                        float missing) {
   data::IsValidFunctor is_valid(missing);
-  bool valid = data::NoInfInData(batch, is_valid);
+  bool valid = data::NoInfInData(ctx, batch, is_valid);
   CHECK(valid) << error::InfInData();
 
   auto cnt = thrust::make_counting_iterator(0llu);
@@ -370,9 +368,9 @@ void WriteNullValues(Context const* ctx, EllpackPageImpl* dst,
 
 template <typename AdapterBatch>
 EllpackPageImpl::EllpackPageImpl(Context const* ctx, AdapterBatch batch, float missing,
-                                 bool is_dense, common::Span<size_t const> row_counts,
-                                 common::Span<FeatureType const> feature_types, size_t row_stride,
-                                 bst_idx_t n_rows,
+                                 bool is_dense, common::Span<bst_idx_t const> row_counts,
+                                 common::Span<FeatureType const> feature_types,
+                                 bst_idx_t row_stride, bst_idx_t n_rows,
                                  std::shared_ptr<common::HistogramCuts const> cuts)
     : EllpackPageImpl{ctx, cuts, is_dense, row_stride, n_rows} {
   curt::SetDevice(ctx->Ordinal());
@@ -385,11 +383,12 @@ EllpackPageImpl::EllpackPageImpl(Context const* ctx, AdapterBatch batch, float m
   }
 }
 
-#define ELLPACK_BATCH_SPECIALIZE(__BATCH_T)                                                      \
-  template EllpackPageImpl::EllpackPageImpl(                                                     \
-      Context const* ctx, __BATCH_T batch, float missing, bool is_dense,                         \
-      common::Span<size_t const> row_counts_span, common::Span<FeatureType const> feature_types, \
-      size_t row_stride, size_t n_rows, std::shared_ptr<common::HistogramCuts const> cuts);
+#define ELLPACK_BATCH_SPECIALIZE(__BATCH_T)                                                  \
+  template EllpackPageImpl::EllpackPageImpl(                                                 \
+      Context const* ctx, __BATCH_T batch, float missing, bool is_dense,                     \
+      common::Span<bst_idx_t const> row_counts_span,                                         \
+      common::Span<FeatureType const> feature_types, bst_idx_t row_stride, bst_idx_t n_rows, \
+      std::shared_ptr<common::HistogramCuts const> cuts);
 
 ELLPACK_BATCH_SPECIALIZE(data::CudfAdapterBatch)
 ELLPACK_BATCH_SPECIALIZE(data::CupyAdapterBatch)
@@ -486,7 +485,14 @@ EllpackPageImpl::EllpackPageImpl(Context const* ctx, GHistIndexMatrix const& pag
 
 EllpackPageImpl::~EllpackPageImpl() noexcept(false) {
   // Sync the stream to make sure all running CUDA kernels finish before deallocation.
-  dh::DefaultStream().Sync();
+  auto status = dh::DefaultStream().Sync(false);
+  if (status != cudaSuccess) {
+    auto str = cudaGetErrorString(status);
+    // For external-memory, throwing here can trigger a series of calls to
+    // `std::terminate` by various destructors. For now, we just log the error.
+    LOG(WARNING) << "Ran into CUDA error:" << str << "\nXGBoost is likely to abort.";
+  }
+  dh::safe_cuda(status);
 }
 
 // A functor that copies the data from one EllpackPage to another.
@@ -503,7 +509,7 @@ struct CopyPage {
         src_iterator_d{src->gidx_buffer.data(), src->NumSymbols()},
         offset{offset} {}
 
-  __device__ void operator()(size_t element_id) {
+  __device__ void operator()(std::size_t element_id) {
     cbw.AtomicWriteSymbol(dst_data_d, src_iterator_d[element_id], element_id + offset);
   }
 };
@@ -511,17 +517,15 @@ struct CopyPage {
 // Copy the data from the given EllpackPage to the current page.
 bst_idx_t EllpackPageImpl::Copy(Context const* ctx, EllpackPageImpl const* page, bst_idx_t offset) {
   monitor_.Start(__func__);
-  bst_idx_t num_elements = page->n_rows * page->info.row_stride;
+  bst_idx_t n_elements = page->n_rows * page->info.row_stride;
+  CHECK_NE(this, page);
   CHECK_EQ(this->info.row_stride, page->info.row_stride);
-  CHECK_EQ(NumSymbols(), page->NumSymbols());
-  CHECK_GE(this->n_rows * this->info.row_stride, offset + num_elements);
-  if (page == this) {
-    LOG(FATAL) << "Concatenating the same Ellpack.";
-    return this->n_rows * this->info.row_stride;
-  }
-  dh::LaunchN(num_elements, ctx->CUDACtx()->Stream(), CopyPage{this, page, offset});
+  CHECK_EQ(this->NumSymbols(), page->NumSymbols());
+  CHECK_GE(this->n_rows * this->info.row_stride, offset + n_elements);
+  thrust::for_each_n(ctx->CUDACtx()->CTP(), thrust::make_counting_iterator(0ul), n_elements,
+                     CopyPage{this, page, offset});
   monitor_.Stop(__func__);
-  return num_elements;
+  return n_elements;
 }
 
 // A functor that compacts the rows from one EllpackPage into another.
@@ -608,7 +612,7 @@ void EllpackPageImpl::CreateHistIndices(Context const* ctx, const SparsePage& ro
 
   // bin and compress entries in batches of rows
   size_t gpu_batch_nrows =
-      std::min(dh::TotalMemory(ctx->Ordinal()) / (16 * this->info.row_stride * sizeof(Entry)),
+      std::min(curt::TotalMemory() / (16 * this->info.row_stride * sizeof(Entry)),
                static_cast<size_t>(row_batch.Size()));
 
   size_t gpu_nbatches = common::DivRoundUp(row_batch.Size(), gpu_batch_nrows);

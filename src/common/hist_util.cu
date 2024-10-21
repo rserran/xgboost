@@ -86,8 +86,9 @@ bst_idx_t SketchBatchNumElements(bst_idx_t sketch_batch_num_elements, SketchShap
                                  size_t num_cuts, bool has_weight, std::size_t container_bytes) {
   auto constexpr kIntMax = static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
 #if defined(XGBOOST_USE_RMM) && XGBOOST_USE_RMM == 1
+  (void)device;
   // Device available memory is not accurate when rmm is used.
-  double total_mem = dh::TotalMemory(device) - container_bytes;
+  double total_mem = curt::TotalMemory() - container_bytes;
   double total_f32 = total_mem / sizeof(float);
   double n_max_used_f32 = std::max(total_f32 / 16.0, 1.0);  // a quarter
   if (shape.nnz > shape.Size()) {
@@ -180,10 +181,9 @@ void RemoveDuplicatedCategories(Context const* ctx, MetaInfo const& info,
   sorted_entries.resize(n_uniques);
 
   // Renew the column scan and cut scan based on categorical data.
-  auto d_old_column_sizes_scan = dh::ToSpan(column_sizes_scan);
   dh::caching_device_vector<SketchContainer::OffsetT> new_cuts_size(info.num_col_ + 1);
   CHECK_EQ(new_column_scan.size(), new_cuts_size.size());
-  dh::LaunchN(new_column_scan.size(),
+  dh::LaunchN(new_column_scan.size(), ctx->CUDACtx()->Stream(),
               [=, d_new_cuts_size = dh::ToSpan(new_cuts_size),
                d_old_column_sizes_scan = dh::ToSpan(column_sizes_scan),
                d_new_columns_ptr = dh::ToSpan(new_column_scan)] __device__(size_t idx) {
@@ -277,7 +277,6 @@ void ProcessWeightedBatch(Context const* ctx, const SparsePage& page, MetaInfo c
                                             HostDeviceVector<float>* p_out_weight) {
   if (hessian.empty()) {
     if (info.IsRanking() && !info.weights_.Empty()) {
-      common::Span<float const> group_weight = info.weights_.ConstDeviceSpan();
       dh::device_vector<bst_group_t> group_ptr(info.group_ptr_);
       auto d_group_ptr = dh::ToSpan(group_ptr);
       CHECK_GE(d_group_ptr.size(), 2) << "Must have at least 1 group for ranking.";

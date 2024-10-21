@@ -167,7 +167,6 @@ void CopyGradient(Context const* ctx, linalg::Matrix<GradientPair> const* in_gpa
     GPUCopyGradient(ctx, in_gpair, group_id, out_gpair);
   } else {
     auto const& in = *in_gpair;
-    auto target_gpair = in.Slice(linalg::All(), group_id);
     auto h_tmp = out_gpair->HostView();
     auto h_in = in.HostView().Slice(linalg::All(), group_id);
     CHECK_EQ(h_tmp.Size(), h_in.Size());
@@ -749,7 +748,7 @@ class Dart : public GBTree {
     auto n_groups = model_.learner_model_param->num_output_group;
 
     PredictionCacheEntry predts;  // temporary storage for prediction
-    if (ctx_->IsCUDA()) {
+    if (!ctx_->IsCPU()) {
       predts.predictions.SetDevice(ctx_->Device());
     }
     predts.predictions.Resize(p_fmat->Info().num_row_ * n_groups, 0);
