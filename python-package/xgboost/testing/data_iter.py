@@ -6,7 +6,8 @@ import numpy as np
 
 from xgboost import testing as tm
 
-from ..core import DataIter, ExtMemQuantileDMatrix, QuantileDMatrix
+from ..compat import import_cupy
+from ..core import DataIter, DMatrix, ExtMemQuantileDMatrix, QuantileDMatrix
 
 
 def run_mixed_sparsity(device: str) -> None:
@@ -21,7 +22,7 @@ def run_mixed_sparsity(device: str) -> None:
     y = [y_0, y_1, y_2]
 
     if device.startswith("cuda"):
-        import cupy as cp  # pylint: disable=import-error
+        cp = import_cupy()
 
         X = [cp.array(batch) for batch in X]
 
@@ -58,8 +59,8 @@ def check_invalid_cat_batches(device: str) -> None:
                 cat_ratio=1.0 if self._it == 0 else 0.5,
             )
             if device == "cuda":
-                import cudf  # pylint: disable=import-error
-                import cupy  # pylint: disable=import-error
+                import cudf
+                import cupy
 
                 X = cudf.DataFrame(X)
                 y = cupy.array(y)
@@ -76,6 +77,24 @@ def check_invalid_cat_batches(device: str) -> None:
 
     with pytest.raises(ValueError, match="Inconsistent feature types between batches"):
         ExtMemQuantileDMatrix(it, enable_categorical=True)
+
+
+def check_uneven_sizes(device: str) -> None:
+    """Tests for having irregular data shapes."""
+    batches = [
+        tm.make_regression(n_samples, 16, use_cupy=device == "cuda")
+        for n_samples in [512, 256, 1024]
+    ]
+    unzip = list(zip(*batches))
+    it = tm.IteratorForTest(unzip[0], unzip[1], None, cache="cache", on_host=True)
+
+    Xy = DMatrix(it)
+    assert Xy.num_col() == 16
+    assert Xy.num_row() == sum(x.shape[0] for x in unzip[0])
+
+    Xy = ExtMemQuantileDMatrix(it)
+    assert Xy.num_col() == 16
+    assert Xy.num_row() == sum(x.shape[0] for x in unzip[0])
 
 
 class CatIter(DataIter):  # pylint: disable=too-many-instance-attributes
@@ -135,8 +154,8 @@ class CatIter(DataIter):  # pylint: disable=too-many-instance-attributes
 
         X, y = self.xs[self._it], self.ys[self._it]
         if self.device == "cuda":
-            import cudf  # pylint: disable=import-error
-            import cupy  # pylint: disable=import-error
+            import cudf
+            import cupy
 
             X = cudf.DataFrame(X)
             y = cupy.array(y)

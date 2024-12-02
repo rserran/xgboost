@@ -8,9 +8,6 @@ fi
 set -e
 set -x
 
-# Initialize local Maven repository
-./tests/ci_build/initialize_maven.sh
-
 rm -rf build/
 cd jvm-packages
 
@@ -25,7 +22,7 @@ mvn --no-transfer-progress javadoc:javadoc -DskipTests
 
 # Package JVM docs in a tarball
 mkdir -p tmp/scaladocs
-cp -rv xgboost4j/target/site/apidocs/ ./tmp/javadocs/
+cp -rv xgboost4j/target/reports/apidocs/ ./tmp/javadocs/
 cp -rv xgboost4j/target/site/scaladocs/ ./tmp/scaladocs/xgboost4j/
 cp -rv xgboost4j-spark/target/site/scaladocs/ ./tmp/scaladocs/xgboost4j-spark/
 cp -rv xgboost4j-flink/target/site/scaladocs/ ./tmp/scaladocs/xgboost4j-flink/

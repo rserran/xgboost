@@ -14,13 +14,14 @@ authors = [
     { name = "Hyunsu Cho", email = "chohyu01@cs.washington.edu" },
     { name = "Jiaming Yuan", email = "jm.yuan@outlook.com" }
 ]
-version = "2.2.0-dev"
+version = "3.0.0-dev"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Development Status :: 5 - Production/Stable",
     "Operating System :: OS Independent",
+    "Typing :: Typed",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -59,10 +60,10 @@ follow_imports = "silent"
 ignore = ["tests"]
 extension-pkg-whitelist = ["numpy"]
 disable = [
+    "import-error",
     "attribute-defined-outside-init",
     "import-outside-toplevel",
     "too-many-nested-blocks",
-    "unexpected-special-method-signature",
     "unsubscriptable-object",
     "useless-object-inheritance"
 ]
