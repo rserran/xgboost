@@ -20,20 +20,20 @@ xgb.Booster <- function(params, cachelist, modelfile) {
       .Call(XGBoosterLoadModel_R, xgb.get.handle(bst), enc2utf8(modelfile[1]))
       niter <- xgb.get.num.boosted.rounds(bst)
       if (length(params) > 0) {
-        xgb.parameters(bst) <- params
+        xgb.model.parameters(bst) <- params
       }
       return(list(bst = bst, niter = niter))
     } else if (is.raw(modelfile)) {
       ## A memory buffer
       bst <- xgb.load.raw(modelfile)
       niter <- xgb.get.num.boosted.rounds(bst)
-      xgb.parameters(bst) <- params
+      xgb.model.parameters(bst) <- params
       return(list(bst = bst, niter = niter))
     } else if (inherits(modelfile, "xgb.Booster")) {
       ## A booster object
       bst <- .Call(XGDuplicate_R, modelfile)
       niter <- xgb.get.num.boosted.rounds(bst)
-      xgb.parameters(bst) <- params
+      xgb.model.parameters(bst) <- params
       return(list(bst = bst, niter = niter))
     } else {
       stop("modelfile must be either character filename, or raw booster dump, or xgb.Booster object")
@@ -42,7 +42,7 @@ xgb.Booster <- function(params, cachelist, modelfile) {
   ## Create new model
   bst <- .Call(XGBoosterCreate_R, cachelist)
   if (length(params) > 0) {
-    xgb.parameters(bst) <- params
+    xgb.model.parameters(bst) <- params
   }
   return(list(bst = bst, niter = 0L))
 }
@@ -126,6 +126,8 @@ xgb.get.handle <- function(object) {
 #'   of the iterations (rounds) otherwise.
 #'
 #'   If passing "all", will use all of the rounds regardless of whether the model had early stopping or not.
+#'
+#'   Not applicable to `gblinear` booster.
 #' @param strict_shape Whether to always return an array with the same dimensions for the given prediction mode
 #'   regardless of the model type - meaning that, for example, both a multi-class and a binary classification
 #'   model would generate output arrays with the same number of dimensions, with the 'class' dimension having
@@ -144,7 +146,13 @@ xgb.get.handle <- function(object) {
 #'
 #'   If passing `TRUE`, then the result will have dimensions in reverse order - for example, rows
 #'   will be the last dimensions instead of the first dimension.
-#' @param base_margin Base margin used for boosting from existing model.
+#' @param base_margin Base margin used for boosting from existing model (raw score that gets added to
+#'   all observations independently of the trees in the model).
+#'
+#'   If supplied, should be either a vector with length equal to the number of rows in `newdata`
+#'   (for objectives which produces a single score per observation), or a matrix with number of
+#'   rows matching to the number rows in `newdata` and number of columns matching to the number
+#'   of scores estimated by the model (e.g. number of classes for multi-class classification).
 #'
 #'   Note that, if `newdata` is an `xgb.DMatrix` object, this argument will
 #'   be ignored as it needs to be added to the DMatrix instead (e.g. by passing it as
@@ -188,7 +196,7 @@ xgb.get.handle <- function(object) {
 #' of the most important features first. See below about the format of the returned results.
 #'
 #' The `predict()` method uses as many threads as defined in `xgb.Booster` object (all by default).
-#' If you want to change their number, assign a new number to `nthread` using [xgb.parameters<-()].
+#' If you want to change their number, assign a new number to `nthread` using [xgb.model.parameters<-()].
 #' Note that converting a matrix to [xgb.DMatrix()] uses multiple threads too.
 #'
 #' @return
@@ -206,6 +214,9 @@ xgb.get.handle <- function(object) {
 #' For multi-class / multi-target, they will be arranged so that columns in the output will have
 #' the leafs from one group followed by leafs of the other group (e.g. order will be `group1:feat1`,
 #' `group1:feat2`, ..., `group2:feat1`, `group2:feat2`, ...).
+#'
+#' If there is more than one parallel tree (e.g. random forests), the parallel trees will be the
+#' last grouping in the resulting order, which will still be 2D.
 #' \item For `predcontrib`: when not multi-class / multi-target, a matrix with dimensions
 #' `[nrows, nfeats+1]`. The last "+ 1" column corresponds to the baseline value.
 #'
@@ -222,7 +233,7 @@ xgb.get.handle <- function(object) {
 #' For multi-class and multi-target, will be a 4D array with dimensions `[nrows, ngroups, nfeats+1, nfeats+1]`
 #' }
 #'
-#' If passing `strict_shape=FALSE`, the result is always an array:
+#' If passing `strict_shape=TRUE`, the result is always a matrix (if 2D) or array (if 3D or higher):
 #' - For normal predictions, the dimension is `[nrows, ngroups]`.
 #' - For `predcontrib=TRUE`, the dimension is `[nrows, ngroups, nfeats+1]`.
 #' - For `predinteraction=TRUE`, the dimension is `[nrows, ngroups, nfeats+1, nfeats+1]`.
@@ -253,11 +264,13 @@ xgb.get.handle <- function(object) {
 #'
 #' bst <- xgb.train(
 #'   data = xgb.DMatrix(train$data, label = train$label),
-#'   max_depth = 2,
-#'   eta = 0.5,
-#'   nthread = nthread,
 #'   nrounds = 5,
-#'   objective = "binary:logistic"
+#'   params = xgb.params(
+#'     max_depth = 2,
+#'     eta = 0.5,
+#'     nthread = nthread,
+#'     objective = "binary:logistic"
+#'   )
 #' )
 #'
 #' # use all trees by default
@@ -296,13 +309,15 @@ xgb.get.handle <- function(object) {
 #'
 #' bst <- xgb.train(
 #'   data = xgb.DMatrix(as.matrix(iris[, -5]), label = lb),
-#'   max_depth = 4,
-#'   eta = 0.5,
-#'   nthread = 2,
 #'   nrounds = 10,
-#'   subsample = 0.5,
-#'   objective = "multi:softprob",
-#'   num_class = num_class
+#'   params = xgb.params(
+#'     max_depth = 4,
+#'     eta = 0.5,
+#'     nthread = 2,
+#'     subsample = 0.5,
+#'     objective = "multi:softprob",
+#'     num_class = num_class
+#'   )
 #' )
 #'
 #' # predict for softmax returns num_class probability numbers per case:
@@ -318,13 +333,15 @@ xgb.get.handle <- function(object) {
 #'
 #' bst <- xgb.train(
 #'   data = xgb.DMatrix(as.matrix(iris[, -5]), label = lb),
-#'   max_depth = 4,
-#'   eta = 0.5,
-#'   nthread = 2,
 #'   nrounds = 10,
-#'   subsample = 0.5,
-#'   objective = "multi:softmax",
-#'   num_class = num_class
+#'   params = xgb.params(
+#'     max_depth = 4,
+#'     eta = 0.5,
+#'     nthread = 2,
+#'     subsample = 0.5,
+#'     objective = "multi:softmax",
+#'     num_class = num_class
+#'   )
 #' )
 #'
 #' pred <- predict(bst, as.matrix(iris[, -5]))
@@ -620,7 +637,7 @@ validate.features <- function(bst, newdata) {
 #' and its serialization is handled externally.
 #' Also, setting an attribute that has the same name as one of XGBoost's parameters wouldn't
 #' change the value of that parameter for a model.
-#' Use [xgb.parameters<-()] to set or change model parameters.
+#' Use [xgb.model.parameters<-()] to set or change model parameters.
 #'
 #' The `xgb.attributes<-` setter either updates the existing or adds one or several attributes,
 #' but it doesn't delete the other existing attributes.
@@ -651,11 +668,13 @@ validate.features <- function(bst, newdata) {
 #'
 #' bst <- xgb.train(
 #'   data = xgb.DMatrix(train$data, label = train$label),
-#'   max_depth = 2,
-#'   eta = 1,
-#'   nthread = 2,
 #'   nrounds = 2,
-#'   objective = "binary:logistic"
+#'   params = xgb.params(
+#'     max_depth = 2,
+#'     eta = 1,
+#'     nthread = 2,
+#'     objective = "binary:logistic"
+#'   )
 #' )
 #'
 #' xgb.attr(bst, "my_attribute") <- "my attribute value"
@@ -757,11 +776,13 @@ xgb.attributes <- function(object) {
 #'
 #' bst <- xgb.train(
 #'   data = xgb.DMatrix(train$data, label = train$label),
-#'   max_depth = 2,
-#'   eta = 1,
-#'   nthread = nthread,
 #'   nrounds = 2,
-#'   objective = "binary:logistic"
+#'   params = xgb.params(
+#'     max_depth = 2,
+#'     eta = 1,
+#'     nthread = nthread,
+#'     objective = "binary:logistic"
+#'   )
 #' )
 #'
 #' config <- xgb.config(bst)
@@ -810,18 +831,20 @@ xgb.config <- function(object) {
 #'
 #' bst <- xgb.train(
 #'   data = xgb.DMatrix(train$data, label = train$label),
-#'   max_depth = 2,
-#'   eta = 1,
-#'   nthread = 2,
 #'   nrounds = 2,
-#'   objective = "binary:logistic"
+#'   params = xgb.params(
+#'     max_depth = 2,
+#'     eta = 1,
+#'     nthread = 2,
+#'     objective = "binary:logistic"
+#'   )
 #' )
 #'
-#' xgb.parameters(bst) <- list(eta = 0.1)
+#' xgb.model.parameters(bst) <- list(eta = 0.1)
 #'
-#' @rdname xgb.parameters
+#' @rdname xgb.model.parameters
 #' @export
-`xgb.parameters<-` <- function(object, value) {
+`xgb.model.parameters<-` <- function(object, value) {
   if (length(value) == 0) return(object)
   p <- as.list(value)
   if (is.null(names(p)) || any(nchar(names(p)) == 0)) {
@@ -886,7 +909,7 @@ setinfo.xgb.Booster <- function(object, name, info) {
 #' @param model,x A fitted `xgb.Booster` model.
 #' @return The number of rounds saved in the model as an integer.
 #' @details Note that setting booster parameters related to training
-#' continuation / updates through [xgb.parameters<-()] will reset the
+#' continuation / updates through [xgb.model.parameters<-()] will reset the
 #' number of rounds to zero.
 #' @export
 #' @rdname xgb.get.num.boosted.rounds
@@ -925,7 +948,7 @@ length.xgb.Booster <- function(x) {
 #' x <- as.matrix(mtcars[, -1])
 #'
 #' dm <- xgb.DMatrix(x, label = y, nthread = 1)
-#' model <- xgb.train(data = dm, params = list(nthread = 1), nrounds = 5)
+#' model <- xgb.train(data = dm, params = xgb.params(nthread = 1), nrounds = 5)
 #' model_slice <- xgb.slice.Booster(model, 1, 3)
 #' # Prediction for first three rounds
 #' predict(model, x, predleaf = TRUE)[, 1:3]
@@ -1069,7 +1092,7 @@ xgb.best_iteration <- function(bst) {
 #' x <- as.matrix(mtcars[, -1])
 #'
 #' dm <- xgb.DMatrix(data = x, label = y, nthread = 1)
-#' params <- list(booster = "gblinear", nthread = 1)
+#' params <- xgb.params(booster = "gblinear", nthread = 1)
 #' model <- xgb.train(data = dm, params = params, nrounds = 2)
 #' coef(model)
 #' @export
@@ -1152,8 +1175,8 @@ coef.xgb.Booster <- function(object, ...) {
 #'
 #' model <- xgb.train(
 #'   data = dm,
-#'   params = list(nthread = 1),
-#'   nround = 3
+#'   params = xgb.params(nthread = 1),
+#'   nrounds = 3
 #' )
 #'
 #' # Set an arbitrary attribute kept at the C level
@@ -1214,9 +1237,9 @@ xgb.copy.Booster <- function(model) {
 #' x <- as.matrix(mtcars[, -1])
 #'
 #' model <- xgb.train(
-#'   params = list(nthread = 1),
+#'   params = xgb.params(nthread = 1),
 #'   data = xgb.DMatrix(x, label = y, nthread = 1),
-#'   nround = 3
+#'   nrounds = 3
 #' )
 #'
 #' model_shallow_copy <- model
@@ -1255,11 +1278,13 @@ xgb.is.same.Booster <- function(obj1, obj2) {
 #'
 #' bst <- xgb.train(
 #'   data = xgb.DMatrix(train$data, label = train$label),
-#'   max_depth = 2,
-#'   eta = 1,
-#'   nthread = 2,
 #'   nrounds = 2,
-#'   objective = "binary:logistic"
+#'   params = xgb.params(
+#'     max_depth = 2,
+#'     eta = 1,
+#'     nthread = 2,
+#'     objective = "binary:logistic"
+#'   )
 #' )
 #'
 #' attr(bst, "myattr") <- "memo"

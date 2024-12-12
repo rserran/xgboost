@@ -16,7 +16,7 @@
 #' @param target_class Only relevant for multiclass models. The default (`NULL`)
 #'   averages the SHAP values over all classes. Pass a (0-based) class index
 #'   to show only SHAP values of that class.
-#' @param approxcontrib Passed to `predict()` when `shap_contrib = NULL`.
+#' @param approxcontrib Passed to [predict.xgb.Booster()] when `shap_contrib = NULL`.
 #' @param subsample Fraction of data points randomly picked for plotting.
 #'   The default (`NULL`) will use up to 100k data points.
 #' @param n_col Number of columns in a grid of plots.
@@ -84,12 +84,14 @@
 #' bst <- xgb.train(
 #'   data = xgb.DMatrix(agaricus.train$data, agaricus.train$label),
 #'   nrounds = nrounds,
-#'   eta = 0.1,
-#'   max_depth = 3,
-#'   subsample = 0.5,
-#'   objective = "binary:logistic",
-#'   nthread = nthread,
-#'   verbose = 0
+#'   verbose = 0,
+#'   params = xgb.params(
+#'     eta = 0.1,
+#'     max_depth = 3,
+#'     subsample = 0.5,
+#'     objective = "binary:logistic",
+#'     nthread = nthread
+#'   )
 #' )
 #'
 #' xgb.plot.shap(agaricus.test$data, model = bst, features = "odor=none")
@@ -109,13 +111,15 @@
 #' mbst <- xgb.train(
 #'   data = xgb.DMatrix(x, label = as.numeric(iris$Species) - 1),
 #'   nrounds = nrounds,
-#'   max_depth = 2,
-#'   eta = 0.3,
-#'   subsample = 0.5,
-#'   nthread = nthread,
-#'   objective = "multi:softprob",
-#'   num_class = nclass,
-#'   verbose = 0
+#'   verbose = 0,
+#'   params = xgb.params(
+#'     max_depth = 2,
+#'     eta = 0.3,
+#'     subsample = 0.5,
+#'     nthread = nthread,
+#'     objective = "multi:softprob",
+#'     num_class = nclass
+#'   )
 #' )
 #' trees0 <- seq(from = 0, by = nclass, length.out = nrounds)
 #' col <- rgb(0, 0, 1, 0.5)
@@ -353,7 +357,7 @@ xgb.shap.data <- function(data, shap_contrib = NULL, features = NULL, top_n = 1,
   }
 
   if (is.null(shap_contrib)) {
-    shap_contrib <- predict(
+    shap_contrib <- predict.xgb.Booster(
       model,
       newdata = data,
       predcontrib = TRUE,

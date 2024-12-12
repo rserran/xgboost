@@ -22,6 +22,10 @@ prescreen.parameters <- function(params) {
 
 prescreen.objective <- function(objective) {
   if (!is.null(objective)) {
+    if (!is.character(objective) || length(objective) != 1L || is.na(objective)) {
+      stop("'objective' must be a single character/string variable.")
+    }
+
     if (objective %in% .OBJECTIVES_NON_DEFAULT_MODE()) {
       stop(
         "Objectives with non-default prediction mode (",
@@ -30,8 +34,8 @@ prescreen.objective <- function(objective) {
       )
     }
 
-    if (!is.character(objective) || length(objective) != 1L || is.na(objective)) {
-      stop("'objective' must be a single character/string variable.")
+    if (objective %in% .RANKING_OBJECTIVES()) {
+      stop("Ranking objectives are not supported in 'xgboost()'. Try 'xgb.train()'.")
     }
   }
 }
@@ -501,7 +505,7 @@ check.nthreads <- function(nthreads) {
   return(as.integer(nthreads))
 }
 
-check.can.use.qdm <- function(x, params) {
+check.can.use.qdm <- function(x, params, eval_set) {
   if ("booster" %in% names(params)) {
     if (params$booster == "gblinear") {
       return(FALSE)
@@ -511,6 +515,9 @@ check.can.use.qdm <- function(x, params) {
     if (params$tree_method %in% c("exact", "approx")) {
       return(FALSE)
     }
+  }
+  if (NROW(eval_set)) {
+    return(FALSE)
   }
   return(TRUE)
 }
@@ -717,6 +724,129 @@ process.x.and.col.args <- function(
   return(lst_args)
 }
 
+process.eval.set <- function(eval_set, lst_args) {
+  if (!NROW(eval_set)) {
+    return(NULL)
+  }
+  nrows <- nrow(lst_args$dmatrix_args$data)
+  is_classif <- hasName(lst_args$metadata, "y_levels")
+  processed_y <- lst_args$dmatrix_args$label
+  eval_set <- as.vector(eval_set)
+  if (length(eval_set) == 1L) {
+
+    eval_set <- as.numeric(eval_set)
+    if (is.na(eval_set) || eval_set < 0 || eval_set >= 1) {
+      stop("'eval_set' as a fraction must be a number between zero and one (non-inclusive).")
+    }
+    if (eval_set == 0) {
+      return(NULL)
+    }
+    nrow_eval <- as.integer(round(nrows * eval_set, 0))
+    if (nrow_eval < 1) {
+      warning(
+        "Desired 'eval_set' fraction amounts to zero observations.",
+        " Will not create evaluation set."
+      )
+      return(NULL)
+    }
+    nrow_train <- nrows - nrow_eval
+    if (nrow_train < 2L) {
+      stop("Desired 'eval_set' fraction would leave less than 2 observations for training data.")
+    }
+    if (is_classif && nrow_train < length(lst_args$metadata$y_levels)) {
+      stop("Desired 'eval_set' fraction would not leave enough samples for each class of 'y'.")
+    }
+
+    seed <- lst_args$params$seed
+    if (!is.null(seed)) {
+      set.seed(seed)
+    }
+
+    idx_shuffled <- sample(nrows, nrows, replace = FALSE)
+    idx_eval <- idx_shuffled[seq(1L, nrow_eval)]
+    idx_train <- idx_shuffled[seq(nrow_eval + 1L, nrows)]
+    # Here we want the training set to include all of the classes of 'y' for classification
+    # objectives. If that condition doesn't hold with the random sample, then it forcibly
+    # makes a new random selection in such a way that the condition would always hold, by
+    # first sampling one random example of 'y' for training and then choosing the evaluation
+    # set from the remaining rows. The procedure here is quite inefficient, but there aren't
+    # enough random-related functions in base R to be able to construct an efficient version.
+    if (is_classif && length(unique(processed_y[idx_train])) < length(lst_args$metadata$y_levels)) {
+      # These are defined in order to avoid NOTEs from CRAN checks
+      # when using non-standard data.table evaluation with column names.
+      idx <- NULL
+      y <- NULL
+      ranked_idx <- NULL
+      chosen <- NULL
+
+      dt <- data.table::data.table(y = processed_y, idx = seq(1L, nrows))[
+        , .(
+            ranked_idx = seq(1L, .N),
+            chosen = rep(sample(.N, 1L), .N),
+            idx
+          )
+        , by = y
+      ]
+      min_idx_train <- dt[ranked_idx == chosen, idx]
+      rem_idx <- dt[ranked_idx != chosen, idx]
+      if (length(rem_idx) == nrow_eval) {
+        idx_train <- min_idx_train
+        idx_eval <- rem_idx
+      } else {
+        rem_idx <- rem_idx[sample(length(rem_idx), length(rem_idx), replace = FALSE)]
+        idx_eval <- rem_idx[seq(1L, nrow_eval)]
+        idx_train <- c(min_idx_train, rem_idx[seq(nrow_eval + 1L, length(rem_idx))])
+      }
+    }
+
+  } else {
+
+    if (any(eval_set != floor(eval_set))) {
+      stop("'eval_set' as indices must contain only integers.")
+    }
+    eval_set <- as.integer(eval_set)
+    idx_min <- min(eval_set)
+    if (is.na(idx_min) || idx_min < 1L) {
+      stop("'eval_set' contains invalid indices.")
+    }
+    idx_max <- max(eval_set)
+    if (is.na(idx_max) || idx_max > nrows) {
+      stop("'eval_set' contains row indices beyond the size of the input data.")
+    }
+    idx_train <- seq(1L, nrows)[-eval_set]
+    if (is_classif && length(unique(processed_y[idx_train])) < length(lst_args$metadata$y_levels)) {
+      warning("'eval_set' indices will leave some classes of 'y' outside of the training data.")
+    }
+    idx_eval <- eval_set
+
+  }
+
+  # Note: slicing is done in the constructed DMatrix object instead of in the
+  # original input, because objects from 'Matrix' might change class after
+  # being sliced (e.g. 'dgRMatrix' turns into 'dgCMatrix').
+  return(list(idx_train = idx_train, idx_eval = idx_eval))
+}
+
+check.early.stopping.rounds <- function(early_stopping_rounds, eval_set) {
+  if (is.null(early_stopping_rounds)) {
+    return(NULL)
+  }
+  if (is.null(eval_set)) {
+    stop("'early_stopping_rounds' requires passing 'eval_set'.")
+  }
+  if (NROW(early_stopping_rounds) != 1L) {
+    stop("'early_stopping_rounds' must be NULL or an integer greater than zero.")
+  }
+  early_stopping_rounds <- as.integer(early_stopping_rounds)
+  if (is.na(early_stopping_rounds) || early_stopping_rounds <= 0L) {
+    stop(
+      "'early_stopping_rounds' must be NULL or an integer greater than zero. Got: ",
+      early_stopping_rounds
+    )
+  }
+  return(early_stopping_rounds)
+}
+
 #' Fit XGBoost Model
 #'
 #' @export
@@ -778,7 +908,7 @@ process.x.and.col.args <- function(
 #' @param objective Optimization objective to minimize based on the supplied data, to be passed
 #'   by name as a string / character (e.g. `reg:absoluteerror`). See the
 #'   [Learning Task Parameters](https://xgboost.readthedocs.io/en/stable/parameter.html#learning-task-parameters)
-#'   page for more detailed information on allowed values.
+#'   page and the [xgb.params()] documentation for more detailed information on allowed values.
 #'
 #'   If `NULL` (the default), will be automatically determined from `y` according to the following
 #'   logic:
@@ -808,6 +938,35 @@ process.x.and.col.args <- function(
 #'   2 (info), and 3 (debug).
 #' @param monitor_training Whether to monitor objective optimization progress on the input data.
 #' Note that same 'x' and 'y' data are used for both model fitting and evaluation.
+#' @param eval_set Subset of the data to use as evaluation set. Can be passed as:
+#' - A vector of row indices (base-1 numeration) indicating the observations that are to be designed
+#'   as evaluation data.
+#' - A number between zero and one indicating a random fraction of the input data to use as
+#'   evaluation data. Note that the selection will be done uniformly at random, regardless of
+#'   argument `weights`.
+#'
+#' If passed, this subset of the data will be excluded from the training procedure, and the
+#' evaluation metric(s) supplied under `eval_metric` will be calculated on this dataset after each
+#' boosting iteration (pass `verbosity>0` to have these metrics printed during training). If
+#' `eval_metric` is not passed, a default metric will be selected according to `objective`.
+#'
+#' If passing a fraction, in classification problems, the evaluation set will be chosen in such a
+#' way that at least one observation of each class will be kept in the training data.
+#'
+#' For more elaborate evaluation variants (e.g. custom metrics, multiple evaluation sets, etc.),
+#' one might want to use [xgb.train()] instead.
+#' @param early_stopping_rounds Number of boosting rounds after which training will be stopped
+#' if there is no improvement in performance (as measured by the last metric passed under
+#' `eval_metric`, or by the default metric for the objective if `eval_metric` is not passed) on the
+#' evaluation data from `eval_set`. Must pass `eval_set` in order to use this functionality.
+#'
+#' If `NULL`, early stopping will not be used.
+#' @param print_every_n When passing `verbosity>0` and either `monitor_training=TRUE` or `eval_set`,
+#' evaluation logs (metrics calculated on the training and/or evaluation data) will be printed every
+#' nth iteration according to the value passed here. The first and last iteration are always
+#' included regardless of this 'n'.
+#'
+#' Only has an effect when passing `verbosity>0`.
 #' @param nthreads Number of parallel threads to use. If passing zero, will use all CPU threads.
 #' @param seed Seed to use for random number generation. If passing `NULL`, will draw a random
 #'   number using R's PRNG system to use as seed.
@@ -893,8 +1052,11 @@ xgboost <- function(
   objective = NULL,
   nrounds = 100L,
   weights = NULL,
-  verbosity = 0L,
+  verbosity = if (is.null(eval_set)) 0L else 1L,
   monitor_training = verbosity > 0,
+  eval_set = NULL,
+  early_stopping_rounds = NULL,
+  print_every_n = 1L,
   nthreads = parallel::detectCores(),
   seed = 0L,
   monotone_constraints = NULL,
@@ -907,7 +1069,7 @@ xgboost <- function(
   params <- list(...)
   params <- prescreen.parameters(params)
   prescreen.objective(objective)
-  use_qdm <- check.can.use.qdm(x, params)
+  use_qdm <- check.can.use.qdm(x, params, eval_set)
   lst_args <- process.y.margin.and.objective(y, base_margin, objective, params)
   lst_args <- process.row.weights(weights, lst_args)
   lst_args <- process.x.and.col.args(
@@ -918,8 +1080,9 @@ xgboost <- function(
     lst_args,
     use_qdm
   )
+  eval_set <- process.eval.set(eval_set, lst_args)
 
-  if (use_qdm && "max_bin" %in% names(params)) {
+  if (use_qdm && hasName(params, "max_bin")) {
     lst_args$dmatrix_args$max_bin <- params$max_bin
   }
 
@@ -929,18 +1092,27 @@ xgboost <- function(
   lst_args$params$seed <- seed
 
   params <- c(lst_args$params, params)
+  params$verbosity <- verbosity
 
   fn_dm <- if (use_qdm) xgb.QuantileDMatrix else xgb.DMatrix
   dm <- do.call(fn_dm, lst_args$dmatrix_args)
+  if (!is.null(eval_set)) {
+    dm_eval <- xgb.slice.DMatrix(dm, eval_set$idx_eval)
+    dm <- xgb.slice.DMatrix(dm, eval_set$idx_train)
+  }
   evals <- list()
   if (monitor_training) {
     evals <- list(train = dm)
+  }
+  if (!is.null(eval_set)) {
+    evals <- c(evals, list(eval = dm_eval))
   }
   model <- xgb.train(
     params = params,
     data = dm,
     nrounds = nrounds,
     verbose = verbosity,
+    print_every_n = print_every_n,
     evals = evals
   )
   attributes(model)$metadata <- lst_args$metadata
@@ -949,6 +1121,243 @@ xgboost <- function(
   return(model)
 }
 
+#' @title Compute predictions from XGBoost model on new data
+#' @description Predict values on data based on XGBoost model.
+#' @param object An XGBoost model object of class `xgboost`, as produced by function [xgboost()].
+#'
+#' Note that there is also a lower-level [predict.xgb.Booster()] method for models of class
+#' `xgb.Booster` as produced by [xgb.train()], which can also be used for `xgboost` class models as
+#' an alternative that performs fewer validations and post-processings.
+#' @param newdata Data on which to compute predictions from the model passed in `object`. Supported
+#' input classes are:
+#' - Data Frames (class `data.frame` from base R and subclasses like `data.table`).
+#' - Matrices (class `matrix` from base R).
+#' - Sparse matrices from package `Matrix`, either as class `dgRMatrix` (CSR) or `dgCMatrix` (CSC).
+#' - Sparse vectors from package `Matrix`, which will be interpreted as containing a single
+#'   observation.
+#'
+#' In the case of data frames, if there are any categorical features, they should be of class
+#' `factor` and should have the same levels as the `factor` columns of the data from which the model
+#' was constructed.
+#'
+#' If there are named columns and the model was fitted to data with named columns, they will be
+#' matched by name by default (see `validate_features`).
+#' @param type Type of prediction to make. Supported options are:
+#' - `"response"`: will output model predictions on the scale of the response variable (e.g.
+#'  probabilities of belonging to the last class in the case of binary classification). Result will
+#'  be either a numeric vector with length matching to rows in `newdata`, or a numeric matrix with
+#'  shape `[nrows(newdata), nscores]` (for objectives that produce more than one score per
+#'  observation such as multi-class classification or multi-quantile regression).
+#' - `"raw"`: will output the unprocessed boosting scores (e.g. log-odds in the case of objective
+#'   `binary:logistic`). Same output shape and type as for `"response"`.
+#' - `"class"`: will output the class with the highest predicted probability, returned as a `factor`
+#'   (only applicable to classification objectives) with length matching to rows in `newdata`.
+#' - `"leaf"`: will output the terminal node indices of each observation across each tree, as an
+#'   integer matrix of shape `[nrows(newdata), ntrees]`, or as an integer array with an extra one or
+#'   two dimensions, up to `[nrows(newdata), ntrees, nscores, n_parallel_trees]` for models that
+#'   produce more than one score per tree and/or which have more than one parallel tree (e.g.
+#'   random forests).
+#'
+#'   Only applicable to tree-based boosters (not `gblinear`).
+#' - `"contrib"`: will produce per-feature contribution estimates towards the model score for a
+#'   given observation, based on SHAP values. The contribution values are on the scale of
+#'   untransformed margin (e.g., for binary classification, the values are log-odds deviations from
+#'   the baseline).
+#'
+#'   Output will be a numeric matrix with shape `[nrows, nfeatures+1]`, with the intercept being the
+#'   last feature, or a numeric array with shape `[nrows, nscores, nfeatures+1]` if the model
+#'   produces more than one score per observation.
+#' - `"interaction"`: similar to `"contrib"`, but computing SHAP values of contributions of
+#'   interaction of each pair of features. Note that this operation might be rather expensive in
+#'   terms of compute and memory.
+#'
+#'   Since it quadratically depends on the number of features, it is recommended to perform
+#'   selection of the most important features first.
+#'
+#'   Output will be a numeric array of shape `[nrows, nfeatures+1, nfeatures+1]`, or shape
+#'   `[nrows, nscores, nfeatures+1, nfeatures+1]` (for objectives that produce more than one score
+#'   per observation).
+#' @param base_margin Base margin used for boosting from existing model (raw score that gets added to
+#' all observations independently of the trees in the model).
+#'
+#' If supplied, should be either a vector with length equal to the number of rows in `newdata`
+#' (for objectives which produces a single score per observation), or a matrix with number of
+#' rows matching to the number rows in `newdata` and number of columns matching to the number
+#' of scores estimated by the model (e.g. number of classes for multi-class classification).
+#' @param iteration_range Sequence of rounds/iterations from the model to use for prediction, specified by passing
+#' a two-dimensional vector with the start and end numbers in the sequence (same format as R's `seq` - i.e.
+#' base-1 indexing, and inclusive of both ends).
+#'
+#' For example, passing `c(1,20)` will predict using the first twenty iterations, while passing `c(1,1)` will
+#' predict using only the first one.
+#'
+#' If passing `NULL`, will either stop at the best iteration if the model used early stopping, or use all
+#' of the iterations (rounds) otherwise.
+#'
+#' If passing "all", will use all of the rounds regardless of whether the model had early stopping or not.
+#'
+#' Not applicable to `gblinear` booster.
+#' @param validate_features Validate that the feature names in the data match to the feature names
+#' in the column, and reorder them in the data otherwise.
+#'
+#' If passing `FALSE`, it is assumed that the feature names and types are the same,
+#' and come in the same order as in the training data.
+#'
+#' Be aware that this only applies to column names and not to factor levels in categorical columns.
+#'
+#' Note that this check might add some sizable latency to the predictions, so it's
+#' recommended to disable it for performance-sensitive applications.
+#' @param ... Not used.
+#' @return Either a numeric vector (for 1D outputs), numeric matrix (for 2D outputs), numeric array
+#' (for 3D and higher), or `factor` (for class predictions). See documentation for parameter `type`
+#' for details about what the output type and shape will be.
+#' @method predict xgboost
+#' @export
+#' @examples
+#' data("ToothGrowth")
+#' y <- ToothGrowth$supp
+#' x <- ToothGrowth[, -2L]
+#' model <- xgboost(x, y, nthreads = 1L, nrounds = 3L, max_depth = 2L)
+#' pred_prob <- predict(model, x[1:5, ], type = "response")
+#' pred_raw <- predict(model, x[1:5, ], type = "raw")
+#' pred_class <- predict(model, x[1:5, ], type = "class")
+#'
+#' # Relationships between these
+#' manual_probs <- 1 / (1 + exp(-pred_raw))
+#' manual_class <- ifelse(manual_probs < 0.5, levels(y)[1], levels(y)[2])
+#'
+#' # They should match up to numerical precision
+#' round(pred_prob, 6) == round(manual_probs, 6)
+#' pred_class == manual_class
+predict.xgboost <- function(
+  object,
+  newdata,
+  type = "response",
+  base_margin = NULL,
+  iteration_range = NULL,
+  validate_features = TRUE,
+  ...
+) {
+  if (inherits(newdata, "xgb.DMatrix")) {
+    stop(
+      "Predictions on 'xgb.DMatrix' objects are not supported with 'xgboost' class.",
+      " Try 'xgb.train' or 'predict.xgb.Booster'."
+    )
+  }
+
+  outputmargin <- FALSE
+  predleaf <- FALSE
+  predcontrib <- FALSE
+  predinteraction <- FALSE
+  pred_class <- FALSE
+  strict_shape <- FALSE
+  allowed_types <- c(
+    "response",
+    "raw",
+    "class",
+    "leaf",
+    "contrib",
+    "interaction"
+  )
+  type <- head(type, 1L)
+  if (!is.character(type) || !(type %in% allowed_types)) {
+    stop("'type' must be one of: ", paste(allowed_types, collapse = ", "))
+  }
+
+  if (type != "response")  {
+    switch(
+      type,
+      "raw" = {
+        outputmargin <- TRUE
+      }, "class" = {
+        if (is.null(attributes(object)$metadata$y_levels)) {
+          stop("Prediction type 'class' is only for classification objectives.")
+        }
+        pred_class <- TRUE
+        outputmargin <- TRUE
+      }, "leaf" = {
+        predleaf <- TRUE
+        strict_shape <- TRUE # required for 3D and 4D outputs
+      }, "contrib" = {
+        predcontrib <- TRUE
+      }, "interaction" = {
+        predinteraction <- TRUE
+      }
+    )
+  }
+  out <- predict.xgb.Booster(
+    object,
+    newdata,
+    outputmargin = outputmargin,
+    predleaf = predleaf,
+    predcontrib = predcontrib,
+    predinteraction = predinteraction,
+    iterationrange = iteration_range,
+    strict_shape = strict_shape,
+    validate_features = validate_features,
+    base_margin = base_margin
+  )
+
+  if (strict_shape) {
+    # Should only end up here for leaf predictions
+    out_dims <- dim(out)
+    dims_remove <- integer()
+    if (out_dims[3L] == 1L) {
+      dims_remove <- c(dims_remove, -3L)
+    }
+    if (length(out_dims) >= 4L && out_dims[4L] == 1L) {
+      dims_remove <- c(dims_remove, -4L)
+    }
+    if (length(dims_remove)) {
+      new_dimnames <- dimnames(out)[dims_remove]
+      dim(out) <- out_dims[dims_remove]
+      dimnames(out) <- new_dimnames
+    }
+  }
+
+  if (pred_class) {
+
+    if (is.null(dim(out))) {
+      out <- as.integer(out >= 0) + 1L
+    } else {
+      out <- max.col(out, ties.method = "first")
+    }
+    attr_out <- attributes(out)
+    attr_out$class <- "factor"
+    attr_out$levels <- attributes(object)$metadata$y_levels
+    attributes(out) <- attr_out
+
+  } else if (NCOL(out) > 1L || (strict_shape && length(dim(out)) >= 3L)) {
+
+    names_use <- NULL
+    if (NROW(attributes(object)$metadata$y_levels) > 2L) {
+      names_use <- attributes(object)$metadata$y_levels
+    } else if (NROW(attributes(object)$metadata$y_names)) {
+      names_use <- attributes(object)$metadata$y_names
+    } else if (NROW(attributes(object)$params$quantile_alpha) > 1L) {
+      names_use <- paste0("q", attributes(object)$params$quantile_alpha)
+      if (anyDuplicated(names_use)) {
+        warning("Cannot add quantile names to output due to clashes in their character conversions")
+        names_use <- NULL
+      }
+    }
+    if (NROW(names_use)) {
+      dimnames_out <- dimnames(out)
+      dim_with_names <- if (type == "leaf") 3L else 2L
+      dimnames_out[[dim_with_names]] <- names_use
+      .Call(XGSetArrayDimNamesInplace_R, out, dimnames_out)
+    }
+
+  }
+
+  return(out)
+}
+
+#' @title Print info from XGBoost model
+#' @description Prints basic properties of an XGBoost model object.
+#' @param x An XGBoost model object of class `xgboost`, as produced by function [xgboost()].
+#' @param ... Not used.
+#' @return Same object `x`, after printing its info.
 #' @method print xgboost
 #' @export
 print.xgboost <- function(x, ...) {

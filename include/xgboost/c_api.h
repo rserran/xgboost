@@ -254,22 +254,6 @@ XGB_DLL int XGDMatrixCreateFromMat_omp(const float *data,  // NOLINT
                                        bst_ulong nrow, bst_ulong ncol,
                                        float missing, DMatrixHandle *out,
                                        int nthread);
-/*!
- * \brief create matrix content from python data table
- * \param data pointer to pointer to column data
- * \param feature_stypes pointer to strings
- * \param nrow number of rows
- * \param ncol number columns
- * \param out created dmatrix
- * \param nthread number of threads (up to maximum cores available, if <=0 use all cores)
- * \return 0 when success, -1 when failure happens
- */
-XGB_DLL int XGDMatrixCreateFromDT(void** data,
-                                  const char ** feature_stypes,
-                                  bst_ulong nrow,
-                                  bst_ulong ncol,
-                                  DMatrixHandle* out,
-                                  int nthread);
 
 /*!
  * \brief Create DMatrix from CUDA columnar format. (cuDF)
@@ -876,30 +860,47 @@ XGB_DLL int XGDMatrixGetQuantileCut(DMatrixHandle const handle, char const *conf
  * @defgroup Booster Booster
  *
  * @brief The `Booster` class is the gradient-boosted model for XGBoost.
+ *
+ * During training, the booster object has many caches for improved performance. In
+ * addition to gradient and prediction, it also includes runtime buffers like leaf
+ * partitions. These buffers persist with the Booster object until either XGBoosterReset()
+ * is called or the booster is deleted by the XGBoosterFree().
+ *
  * @{
  */
 
-/*!
- * \brief create xgboost learner
- * \param dmats matrices that are set to be cached
- * \param len length of dmats
- * \param out handle to the result booster
- * \return 0 when success, -1 when failure happens
+/**
+ * @brief Create a XGBoost learner (booster)
+ *
+ * @param dmats matrices that are set to be cached by the booster.
+ * @param len length of dmats
+ * @param out handle to the result booster
+ *
+ * @return 0 when success, -1 when failure happens
  */
 XGB_DLL int XGBoosterCreate(const DMatrixHandle dmats[], bst_ulong len, BoosterHandle *out);
 /**
  * @example c-api-demo.c
  */
 
-/*!
- * \brief free obj in handle
- * \param handle handle to be freed
- * \return 0 when success, -1 when failure happens
+/**
+ * @brief Delete the booster.
+ *
+ * @param handle The handle to be freed.
+ *
+ * @return 0 when success, -1 when failure happens
  */
 XGB_DLL int XGBoosterFree(BoosterHandle handle);
 /**
  * @example c-api-demo.c inference.c external_memory.c
  */
+
+/**
+ * @brief Reset the booster object to release data caches used for training.
+ *
+ * @since 3.0.0
+ */
+XGB_DLL int XGBoosterReset(BoosterHandle handle);
 
 /*!
  * \brief Slice a model using boosting index. The slice m:n indicates taking all trees

@@ -54,7 +54,7 @@ Only used when \code{features = NULL}.}
 averages the SHAP values over all classes. Pass a (0-based) class index
 to show only SHAP values of that class.}
 
-\item{approxcontrib}{Passed to \code{predict()} when \code{shap_contrib = NULL}.}
+\item{approxcontrib}{Passed to \code{\link[=predict.xgb.Booster]{predict.xgb.Booster()}} when \code{shap_contrib = NULL}.}
 
 \item{subsample}{Fraction of data points randomly picked for plotting.
 The default (\code{NULL}) will use up to 100k data points.}
@@ -137,12 +137,14 @@ nrounds <- 20
 bst <- xgb.train(
   data = xgb.DMatrix(agaricus.train$data, agaricus.train$label),
   nrounds = nrounds,
-  eta = 0.1,
-  max_depth = 3,
-  subsample = 0.5,
-  objective = "binary:logistic",
-  nthread = nthread,
-  verbose = 0
+  verbose = 0,
+  params = xgb.params(
+    eta = 0.1,
+    max_depth = 3,
+    subsample = 0.5,
+    objective = "binary:logistic",
+    nthread = nthread
+  )
 )
 
 xgb.plot.shap(agaricus.test$data, model = bst, features = "odor=none")
@@ -162,13 +164,15 @@ is.na(x[sample(nrow(x) * 4, 30)]) <- TRUE # introduce some missing values
 mbst <- xgb.train(
   data = xgb.DMatrix(x, label = as.numeric(iris$Species) - 1),
   nrounds = nrounds,
-  max_depth = 2,
-  eta = 0.3,
-  subsample = 0.5,
-  nthread = nthread,
-  objective = "multi:softprob",
-  num_class = nclass,
-  verbose = 0
+  verbose = 0,
+  params = xgb.params(
+    max_depth = 2,
+    eta = 0.3,
+    subsample = 0.5,
+    nthread = nthread,
+    objective = "multi:softprob",
+    num_class = nclass
+  )
 )
 trees0 <- seq(from = 0, by = nclass, length.out = nrounds)
 col <- rgb(0, 0, 1, 0.5)
