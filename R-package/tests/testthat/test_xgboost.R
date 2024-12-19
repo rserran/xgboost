@@ -595,7 +595,7 @@ test_that("Whole function works", {
     monotone_constraints = list(age = -1),
     nthreads = 1L,
     nrounds = 5L,
-    eta = 3
+    learning_rate = 3
   )
   expect_equal(
     attributes(model)$params$objective,
@@ -613,7 +613,7 @@ test_that("Whole function works", {
     "interaction_constraints" %in% names(attributes(model)$params)
   )
   expect_equal(
-    attributes(model)$params$eta,
+    attributes(model)$params$learning_rate,
     3
   )
   txt <- capture.output({
@@ -1012,4 +1012,21 @@ test_that("'eval_set' as fraction works", {
   expect_equal(nrow(evaluation_log), 4L)
   expect_true(hasName(evaluation_log, "eval_mlogloss"))
   expect_equal(length(attributes(model)$metadata$y_levels), 3L)
+})
+
+test_that("Linear booster importance uses class names", {
+  y <- iris$Species
+  x <- iris[, -5L]
+  model <- xgboost(
+    x,
+    y,
+    nthreads = 1L,
+    nrounds = 4L,
+    verbosity = 0L,
+    booster = "gblinear",
+    learning_rate = 0.2
+  )
+  imp <- xgb.importance(model)
+  expect_true(is.factor(imp$Class))
+  expect_equal(levels(imp$Class), levels(y))
 })
