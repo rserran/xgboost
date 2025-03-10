@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2023, XGBoost Contributors
+ * Copyright 2015-2025, XGBoost Contributors
  * \file simple_dmatrix.h
  * \brief In-memory version of DMatrix.
  * \author Tianqi Chen
