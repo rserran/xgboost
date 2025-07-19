@@ -187,11 +187,6 @@ class GBTree : public GradientBooster {
 
   [[nodiscard]] GBTreeTrainParam const& GetTrainParam() const { return tparam_; }
 
-  void Load(dmlc::Stream* fi) override { model_.Load(fi); }
-  void Save(dmlc::Stream* fo) const override {
-    model_.Save(fo);
-  }
-
   void LoadConfig(Json const& in) override;
   void SaveConfig(Json* p_out) const override;
 
@@ -285,6 +280,8 @@ class GBTree : public GradientBooster {
       }
     }
   }
+
+  [[nodiscard]] CatContainer const* Cats() const override { return this->model_.Cats(); }
 
   void PredictLeaf(DMatrix* p_fmat,
                    HostDeviceVector<bst_float>* out_preds,

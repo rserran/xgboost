@@ -540,7 +540,7 @@ class DataIter(ABC):  # pylint: disable=too-many-instance-attributes
         with GPU-based :py:class:`ExtMemQuantileDMatrix`. When using GPU-based external
         memory with the data cached in the host memory, XGBoost can concatenate the
         pages internally to increase the batch size for the GPU. The default page size
-        is about 1/8 of the total device memory. Users can manually set the value based
+        is about 1/16 of the total device memory. Users can manually set the value based
         on the actual hardware and datasets. Set this to 0 to disable page
         concatenation.
 
@@ -777,6 +777,64 @@ def require_keyword_args(
 
 
 _deprecate_positional_args = require_keyword_args(False)
+
+
+def _get_categories(
+    cfn: Callable[[ctypes.c_char_p], int],
+    feature_names: Optional[FeatureNames],
+    n_features: int,
+) -> Optional[Dict[str, "pa.DictionaryArray"]]:
+    if not is_pyarrow_available():
+        raise ImportError("`pyarrow` is required for exporting categories.")
+
+    if TYPE_CHECKING:
+        import pyarrow as pa
+    else:
+        pa = import_pyarrow()
+
+    fnames = feature_names
+    if fnames is None:
+        fnames = [str(i) for i in range(n_features)]
+
+    results: Dict[str, "pa.DictionaryArray"] = {}
+
+    ret = ctypes.c_char_p()
+    _check_call(cfn(ret))
+    if ret.value is None:
+        return None
+
+    retstr = ret.value.decode()  # pylint: disable=no-member
+    jcats = json.loads(retstr)
+    assert isinstance(jcats, list) and len(jcats) == n_features
+
+    for fidx in range(n_features):
+        f_jcats = jcats[fidx]
+        if f_jcats is None:
+            # Numeric data
+            results[fnames[fidx]] = None
+            continue
+
+        if "offsets" not in f_jcats:
+            values = from_array_interface(f_jcats)
+            pa_values = pa.Array.from_pandas(values)
+            results[fnames[fidx]] = pa_values
+            continue
+
+        joffsets = f_jcats["offsets"]
+        jvalues = f_jcats["values"]
+        offsets = from_array_interface(joffsets, True)
+        values = from_array_interface(jvalues, True)
+        pa_offsets = pa.array(offsets).buffers()
+        pa_values = pa.array(values).buffers()
+        assert (
+            pa_offsets[0] is None and pa_values[0] is None
+        ), "Should not have null mask."
+        pa_dict = pa.StringArray.from_buffers(
+            len(offsets) - 1, pa_offsets[1], pa_values[1]
+        )
+        results[fnames[fidx]] = pa_dict
+
+    return results
 
 
 @unique
@@ -1289,8 +1347,8 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
         return indptr, data
 
     def get_categories(self) -> Optional[Dict[str, "pa.DictionaryArray"]]:
-        """Get the categories in the dataset. Return `None` if there's no categorical
-        features.
+        """Get the categories in the dataset using `pyarrow`. Returns `None` if there's
+        no categorical features.
 
         .. warning::
 
@@ -1299,58 +1357,11 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
         .. versionadded:: 3.1.0
 
         """
-        if not is_pyarrow_available():
-            raise ImportError("`pyarrow` is required for exporting categories.")
-
-        if TYPE_CHECKING:
-            import pyarrow as pa
-        else:
-            pa = import_pyarrow()
-
-        n_features = self.num_col()
-        fnames = self.feature_names
-        if fnames is None:
-            fnames = [str(i) for i in range(n_features)]
-
-        results: Dict[str, "pa.DictionaryArray"] = {}
-
-        ret = ctypes.c_char_p()
-        _check_call(_LIB.XGBDMatrixGetCategories(self.handle, ctypes.byref(ret)))
-        if ret.value is None:
-            return None
-
-        retstr = ret.value.decode()  # pylint: disable=no-member
-        jcats = json.loads(retstr)
-        assert isinstance(jcats, list) and len(jcats) == n_features
-
-        for fidx in range(n_features):
-            f_jcats = jcats[fidx]
-            if f_jcats is None:
-                # Numeric data
-                results[fnames[fidx]] = None
-                continue
-
-            if "offsets" not in f_jcats:
-                values = from_array_interface(f_jcats)
-                pa_values = pa.Array.from_pandas(values)
-                results[fnames[fidx]] = pa_values
-                continue
-
-            joffsets = f_jcats["offsets"]
-            jvalues = f_jcats["values"]
-            offsets = from_array_interface(joffsets, True)
-            values = from_array_interface(jvalues, True)
-            pa_offsets = pa.array(offsets).buffers()
-            pa_values = pa.array(values).buffers()
-            assert (
-                pa_offsets[0] is None and pa_values[0] is None
-            ), "Should not have null mask."
-            pa_dict = pa.StringArray.from_buffers(
-                len(offsets) - 1, pa_offsets[1], pa_values[1]
-            )
-            results[fnames[fidx]] = pa_dict
-
-        return results
+        return _get_categories(
+            lambda ret: _LIB.XGBDMatrixGetCategories(self.handle, ctypes.byref(ret)),
+            self.feature_names,
+            self.num_col(),
+        )
 
     def num_row(self) -> int:
         """Get the number of rows in the DMatrix."""
@@ -1841,6 +1852,8 @@ class ExtMemQuantileDMatrix(DMatrix, _RefMixIn):
             parameter specifies the size of host cache compared to the size of the
             entire cache: :math:`host / (host + device)`.
 
+            See :ref:`extmem-adaptive-cache` for more info.
+
         """
         self.max_bin = max_bin
         self.missing = missing if missing is not None else np.nan
@@ -2309,6 +2322,23 @@ class Booster:
     @feature_names.setter
     def feature_names(self, features: Optional[FeatureNames]) -> None:
         self._set_feature_info(features, "feature_name")
+
+    def get_categories(self) -> Optional[Dict[str, "pa.DictionaryArray"]]:
+        """Get the categories in the dataset using `pyarrow`. Returns `None` if there's
+        no categorical features.
+
+        .. warning::
+
+            This function is still working in progress.
+
+        .. versionadded:: 3.1.0
+
+        """
+        return _get_categories(
+            lambda ret: _LIB.XGBoosterGetCategories(self.handle, ctypes.byref(ret)),
+            self.feature_names,
+            self.num_features(),
+        )
 
     def set_param(
         self,

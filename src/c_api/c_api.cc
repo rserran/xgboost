@@ -700,52 +700,66 @@ XGB_DLL int XGDMatrixGetStrFeatureInfo(DMatrixHandle handle, const char *field,
   API_END();
 }
 
-XGB_DLL int XGBDMatrixGetCategories(DMatrixHandle handle, char const **out) {
+namespace {
+template <typename FidxT>
+void GetCategoriesImpl(enc::HostColumnsView const &cats, FidxT n_features,
+                       std::string *p_out_storage, char const **out) {
+  auto &ret_str = *p_out_storage;
+  if (cats.Empty()) {
+    ret_str.clear();
+    *out = nullptr;
+    return;
+  }
+
   // We can directly use the storage in the cat container instead of allocating temporary storage.
+  Json jout{Array{}};
+  for (decltype(n_features) f_idx = 0; f_idx < n_features; ++f_idx) {
+    auto const &col = cats[f_idx];
+    if (std::visit([](auto &&arg) { return arg.empty(); }, col)) {
+      get<Array>(jout).emplace_back();
+      continue;
+    }
+    std::visit(enc::Overloaded{[&](enc::CatStrArrayView const &str) {
+                                 auto const &offsets = str.offsets;
+                                 auto ovec = linalg::MakeVec(offsets.data(), offsets.size());
+                                 auto jovec = linalg::ArrayInterface(ovec);
+
+                                 auto const &values = str.values;
+                                 auto dvec = linalg::MakeVec(values.data(), values.size());
+                                 auto jdvec = linalg::ArrayInterface(dvec);
+
+                                 get<Array>(jout).emplace_back(Object{});
+                                 get<Array>(jout).back()["offsets"] = std::move(jovec);
+                                 get<Array>(jout).back()["values"] = std::move(jdvec);
+                               },
+                               [&](auto &&values) {
+                                 auto vec = linalg::MakeVec(values.data(), values.size());
+                                 auto jvec = linalg::ArrayInterface(vec);
+                                 get<Array>(jout).emplace_back(std::move(jvec));
+                               }},
+               col);
+  }
+  auto str = Json::Dump(jout);
+  ret_str = std::move(str);
+
+  *out = ret_str.c_str();
+}
+}  // anonymous namespace
+
+/**
+ * Experimental (3.1), hidden.
+ */
+XGB_DLL int XGBDMatrixGetCategories(DMatrixHandle handle, char const **out) {
   API_BEGIN()
   CHECK_HANDLE()
   auto const p_fmat = *static_cast<std::shared_ptr<DMatrix> *>(handle);
   auto const cats = p_fmat->Cats()->HostView();
+  auto n_features = p_fmat->Info().num_col_;
 
   auto &ret_str = p_fmat->GetThreadLocal().ret_str;
   xgboost_CHECK_C_ARG_PTR(out);
 
-  if (cats.Empty()) {
-    *out = nullptr;
-  } else {
-    Json jout{Array{}};
-    auto n_features = p_fmat->Info().num_col_;
-    for (decltype(n_features) f_idx = 0; f_idx < n_features; ++f_idx) {
-      auto const &col = cats[f_idx];
-      if (std::visit([](auto &&arg) { return arg.empty(); }, col)) {
-        get<Array>(jout).emplace_back();
-        continue;
-      }
-      std::visit(enc::Overloaded{[&](enc::CatStrArrayView const &str) {
-                                   auto const &offsets = str.offsets;
-                                   auto ovec = linalg::MakeVec(offsets.data(), offsets.size());
-                                   auto jovec = linalg::ArrayInterface(ovec);
-
-                                   auto const &values = str.values;
-                                   auto dvec = linalg::MakeVec(values.data(), values.size());
-                                   auto jdvec = linalg::ArrayInterface(dvec);
-
-                                   get<Array>(jout).emplace_back(Object{});
-                                   get<Array>(jout).back()["offsets"] = std::move(jovec);
-                                   get<Array>(jout).back()["values"] = std::move(jdvec);
-                                 },
-                                 [&](auto &&values) {
-                                   auto vec = linalg::MakeVec(values.data(), values.size());
-                                   auto jvec = linalg::ArrayInterface(vec);
-                                   get<Array>(jout).emplace_back(std::move(jvec));
-                                 }},
-                 col);
-    }
-    auto str = Json::Dump(jout);
-    ret_str = std::move(str);
-
-    *out = ret_str.c_str();
-  }
+  GetCategoriesImpl(cats, n_features, &ret_str, out);
 
   API_END()
 }
@@ -1400,37 +1414,64 @@ XGB_DLL int XGBoosterPredictFromCUDAColumnar(BoosterHandle handle, char const *,
 }
 #endif  // !defined(XGBOOST_USE_CUDA)
 
-XGB_DLL int XGBoosterLoadModel(BoosterHandle handle, const char* fname) {
+namespace {
+template <typename Buffer, typename Iter = typename Buffer::const_iterator>
+Json DispatchModelType(Buffer const &buffer, StringView ext, bool warn) {
+  auto first_non_space = [&](Iter beg, Iter end) {
+    for (auto i = beg; i != end; ++i) {
+      if (!std::isspace(*i)) {
+        return i;
+      }
+    }
+    return end;
+  };
+
+  Json model;
+  auto it = first_non_space(buffer.cbegin() + 1, buffer.cend());
+  if (it != buffer.cend() && *it == '"') {
+    if (warn) {
+      LOG(WARNING) << "Unknown file format: `" << ext << "`. Using JSON (`json`) as a guess.";
+    }
+    model = Json::Load(StringView{buffer.data(), buffer.size()});
+  } else if (it != buffer.cend() && std::isalpha(*it)) {
+    if (warn) {
+      LOG(WARNING) << "Unknown file format: `" << ext << "`. Using UBJSON (`ubj`) as a guess.";
+    }
+    model = Json::Load(StringView{buffer.data(), buffer.size()}, std::ios::binary);
+  } else {
+    LOG(FATAL) << "Invalid model format. Expecting UBJSON (`ubj`) or JSON (`json`), got `" << ext
+               << "`";
+  }
+  return model;
+}
+}  // namespace
+
+XGB_DLL int XGBoosterLoadModel(BoosterHandle handle, const char *fname) {
   API_BEGIN();
   CHECK_HANDLE();
   xgboost_CHECK_C_ARG_PTR(fname);
   auto read_file = [&]() {
     auto str = common::LoadSequentialFile(fname);
-    CHECK_GE(str.size(), 3);  // "{}\0"
+    CHECK_GE(str.size(), 2);  // "{}"
     CHECK_EQ(str[0], '{');
     return str;
   };
-  if (common::FileExtension(fname) == "json") {
+  auto ext = common::FileExtension(fname);
+  if (ext == "json") {
     auto buffer = read_file();
     Json in{Json::Load(StringView{buffer.data(), buffer.size()})};
-    static_cast<Learner*>(handle)->LoadModel(in);
-  } else if (common::FileExtension(fname) == "ubj") {
+    static_cast<Learner *>(handle)->LoadModel(in);
+  } else if (ext == "ubj") {
     auto buffer = read_file();
     Json in = Json::Load(StringView{buffer.data(), buffer.size()}, std::ios::binary);
     static_cast<Learner *>(handle)->LoadModel(in);
   } else {
-    std::unique_ptr<dmlc::Stream> fi(dmlc::Stream::Create(fname, "r"));
-    static_cast<Learner*>(handle)->LoadModel(fi.get());
+    auto buffer = read_file();
+    auto in = DispatchModelType(buffer, ext, true);
+    static_cast<Learner *>(handle)->LoadModel(in);
   }
   API_END();
 }
-
-namespace {
-void WarnOldModel() {
-  LOG(WARNING) << "Saving into deprecated binary model format, please consider using `json` or "
-                  "`ubj`. Model format is default to UBJSON in XGBoost 2.1 if not specified.";
-}
-}  // anonymous namespace
 
 XGB_DLL int XGBoosterSaveModel(BoosterHandle handle, const char *fname) {
   API_BEGIN();
@@ -1447,17 +1488,14 @@ XGB_DLL int XGBoosterSaveModel(BoosterHandle handle, const char *fname) {
     Json::Dump(out, &str, mode);
     fo->Write(str.data(), str.size());
   };
-  if (common::FileExtension(fname) == "json") {
+  auto ext = common::FileExtension(fname);
+  if (ext == "json") {
     save_json(std::ios::out);
-  } else if (common::FileExtension(fname) == "ubj") {
+  } else if (ext == "ubj") {
     save_json(std::ios::binary);
-  } else if (common::FileExtension(fname) == "deprecated") {
-    WarnOldModel();
-    auto *bst = static_cast<Learner *>(handle);
-    bst->SaveModel(fo.get());
   } else {
-    LOG(WARNING) << "Saving model in the UBJSON format as default.  You can use file extension:"
-                    " `json`, `ubj` or `deprecated` to choose between formats.";
+    LOG(WARNING) << "Saving model in the UBJSON format as default.  You can use a file extension:"
+                    " `json` or `ubj` to choose between formats.";
     save_json(std::ios::binary);
   }
   API_END();
@@ -1468,9 +1506,11 @@ XGB_DLL int XGBoosterLoadModelFromBuffer(BoosterHandle handle, const void *buf,
   API_BEGIN();
   CHECK_HANDLE();
   xgboost_CHECK_C_ARG_PTR(buf);
-
+  auto buffer = common::Span<char const>{static_cast<char const *>(buf), len};
+  // Don't warn, we have to guess the format with buffer input.
+  auto in = DispatchModelType(buffer, "", false);
   common::MemoryFixSizeBuffer fs((void *)buf, len);  // NOLINT(*)
-  static_cast<Learner *>(handle)->LoadModel(&fs);
+  static_cast<Learner *>(handle)->LoadModel(in);
   API_END();
 }
 
@@ -1503,17 +1543,9 @@ XGB_DLL int XGBoosterSaveModelToBuffer(BoosterHandle handle, char const *json_co
     save_json(std::ios::out);
   } else if (format == "ubj") {
     save_json(std::ios::binary);
-  } else if (format == "deprecated") {
-    WarnOldModel();
-    auto &raw_str = learner->GetThreadLocal().ret_str;
-    raw_str.clear();
-    common::MemoryBufferStream fo(&raw_str);
-    learner->SaveModel(&fo);
-
-    *out_dptr = dmlc::BeginPtr(raw_str);
-    *out_len = static_cast<xgboost::bst_ulong>(raw_str.size());
   } else {
-    LOG(FATAL) << "Unknown format: `" << format << "`";
+    LOG(FATAL) << "Unknown model format: `" << format
+               << "`. Expecting UBJSON (`ubj`) or JSON (`json`).";
   }
 
   API_END();
@@ -1649,6 +1681,24 @@ XGB_DLL int XGBoosterDumpModelExWithFeatures(BoosterHandle handle,
   }
   XGBoostDumpModelImpl(handle, &featmap, with_stats, format, len, out_models);
   API_END();
+}
+
+/**
+ * Experimental (3.1), hidden.
+ */
+XGB_DLL int XGBoosterGetCategories(BoosterHandle handle, char const **out) {
+  API_BEGIN()
+  CHECK_HANDLE()
+  auto *bst = static_cast<Learner *>(handle);
+  auto const cats = bst->Cats()->HostView();
+  auto n_features = bst->GetNumFeature();
+
+  auto &ret_str = bst->GetThreadLocal().ret_str;
+  xgboost_CHECK_C_ARG_PTR(out);
+
+  GetCategoriesImpl(cats, n_features, &ret_str, out);
+
+  API_END()
 }
 
 XGB_DLL int XGBoosterGetAttr(BoosterHandle handle, const char *key, const char **out,

@@ -9,11 +9,17 @@ from typing import Any, Literal, Tuple, Type, TypeVar
 import numpy as np
 import pytest
 
+from ..callback import TrainingCallback
 from ..compat import import_cupy
 from ..core import DMatrix, ExtMemQuantileDMatrix, QuantileDMatrix
 from ..data import _lazy_load_cudf_is_cat
 from ..training import train
-from .data import IteratorForTest, is_pd_cat_dtype, make_categorical
+from .data import (
+    IteratorForTest,
+    is_pd_cat_dtype,
+    make_batches,
+    make_categorical,
+)
 
 
 def get_df_impl(device: str) -> Tuple[Type, Type]:
@@ -49,10 +55,24 @@ def assert_allclose(device: str, a: Any, b: Any) -> None:
         cp.testing.assert_allclose(a, b)
 
 
+def comp_booster(device: Literal["cpu", "cuda"], Xy: DMatrix, booster: str) -> None:
+    """Compare the results from DMatrix and Booster."""
+    cats = Xy.get_categories()
+    assert cats is not None
+
+    rng = np.random.default_rng(2025)
+    Xy.set_label(rng.normal(size=Xy.num_row()))
+    bst = train({"booster": booster, "device": device}, Xy, 1)
+    cats_bst = bst.get_categories()
+    assert cats_bst is not None
+    for k, v in cats_bst.items():
+        assert v == cats[k]
+
+
 def run_cat_container(device: Literal["cpu", "cuda"]) -> None:
     """Basic tests for the container class used by the DMatrix."""
 
-    def run_dispatch(device: str, DMatrixT: Type) -> None:
+    def run_dispatch(device: Literal["cpu", "cuda"], DMatrixT: Type) -> None:
         Df, _ = get_df_impl(device)
         # Basic test with a single feature
         df = Df({"c": ["cdef", "abc"]}, dtype="category")
@@ -85,9 +105,15 @@ def run_cat_container(device: Literal["cpu", "cuda"]) -> None:
         assert_allclose(device, csr.indptr, np.array([0, 1, 1, 2, 3]))
         assert_allclose(device, csr.indices, np.array([0, 0, 0]))
 
+        comp_booster(device, Xy, "gbtree")
+        comp_booster(device, Xy, "dart")
+
         # Test with explicit null-terminated strings.
         df = Df({"c": ["cdef", None, "abc", "abc\0"]}, dtype="category")
         Xy = DMatrixT(df, enable_categorical=True)
+
+        comp_booster(device, Xy, "gbtree")
+        comp_booster(device, Xy, "dart")
 
     for dm in (DMatrix, QuantileDMatrix):
         run_dispatch(device, dm)
@@ -128,6 +154,7 @@ def run_cat_container_mixed(device: Literal["cpu", "cuda"]) -> None:
                 assert cats[fname] is None
 
         if not hasattr(Xy, "ref"):  # not quantile DMatrix.
+            assert not isinstance(Xy, QuantileDMatrix)
             with tempfile.TemporaryDirectory() as tmpdir:
                 fname = os.path.join(tmpdir, "DMatrix.binary")
                 Xy.save_binary(fname)
@@ -142,6 +169,9 @@ def run_cat_container_mixed(device: Literal["cpu", "cuda"]) -> None:
                         assert v_1 is None
                     else:
                         assert v_0.to_pylist() == v_1.to_pylist()
+
+        comp_booster(device, Xy, "gbtree")
+        comp_booster(device, Xy, "dart")
 
     def run_dispatch(DMatrixT: Type) -> None:
         # full str type
@@ -214,6 +244,15 @@ def run_cat_container_mixed(device: Literal["cpu", "cuda"]) -> None:
 
     for dm in (DMatrix, QuantileDMatrix):
         run_dispatch(dm)
+
+    batches = make_batches(
+        n_samples_per_batch=128, n_features=4, n_batches=1, use_cupy=device == "cuda"
+    )
+    X, y, w = map(lambda x: x[0], batches)
+    Xy = DMatrix(X, y, weight=w)
+    assert Xy.get_categories() is None
+    Xy = QuantileDMatrix(X, y, weight=w)
+    assert Xy.get_categories() is None
 
 
 def run_cat_container_iter(device: Literal["cpu", "cuda"]) -> None:
@@ -429,16 +468,70 @@ def run_cat_leaf(device: Literal["cpu", "cuda"]) -> None:
     )
 
 
+# pylint: disable=too-many-locals
+def make_recoded(device: Literal["cpu", "cuda"]) -> Tuple:
+    """Synthesize a test dataset with changed encoding."""
+    Df, _ = get_df_impl(device)
+
+    import pandas as pd
+
+    # Test large column numbers. XGBoost makes some specializations for slim datasets,
+    # make sure we cover all the cases.
+    n_features = 4096
+    n_samples = 1024
+
+    # Same between old and new, with 0 ("a") and 1 ("b") exchanged their position.
+    old_cats = ["a", "b", "c", "d"]
+    new_cats = ["b", "a", "c", "d"]
+    mapping = {0: 1, 1: 0}
+
+    rng = np.random.default_rng(2025)
+
+    col_numeric = rng.uniform(0, 1, size=(n_samples, n_features // 2))
+    col_categorical = rng.integers(
+        low=0, high=4, size=(n_samples, n_features // 2), dtype=np.int32
+    )
+
+    df = {}  # avoid fragmentation warning from pandas
+    for c in range(n_features):
+        if c % 2 == 0:
+            col = col_numeric[:, c // 2]
+        else:
+            codes = col_categorical[:, c // 2]
+            col = pd.Categorical.from_codes(
+                categories=old_cats,
+                codes=codes,
+            )
+        df[f"f{c}"] = col
+
+    enc = Df(df)
+    y = rng.normal(size=n_samples)
+
+    reenc = enc.copy()
+    for c in range(n_features):
+        if c % 2 == 0:
+            continue
+
+        name = f"f{c}"
+        codes_ser = reenc[name].cat.codes
+        if hasattr(codes_ser, "to_pandas"):  # cudf
+            codes_ser = codes_ser.to_pandas()
+        new_codes = codes_ser.replace(mapping)
+        reenc[name] = pd.Categorical.from_codes(categories=new_cats, codes=new_codes)
+    reenc = Df(reenc)
+    assert (reenc.iloc[:, 1].cat.codes != enc.iloc[:, 1].cat.codes).any()
+    return enc, reenc, y, col_numeric, col_categorical
+
+
 def run_specified_cat(  # pylint: disable=too-many-locals
     device: Literal["cpu", "cuda"],
 ) -> None:
     """Run with manually specified category encoding."""
     import pandas as pd
 
-    # Same between old and new, wiht 0 ("a") and 1 ("b") exchanged their position.
+    # Same between old and new, with 0 ("a") and 1 ("b") exchanged their position.
     old_cats = ["a", "b", "c", "d"]
     new_cats = ["b", "a", "c", "d"]
-    mapping = {0: 1, 1: 0}
 
     col0 = np.arange(0, 9)
     col1 = pd.Categorical.from_codes(
@@ -468,57 +561,23 @@ def run_specified_cat(  # pylint: disable=too-many-locals
         predt2 = booster.inplace_predict(df1)
         assert_allclose(device, predt0, predt2)
 
-    # Test large column numbers. XGBoost makes some specializations for slim datasets,
-    # make sure we cover all the cases.
-    n_features = 4096
-    n_samples = 1024
+    enc, reenc, y, col_numeric, col_categorical = make_recoded(device)
 
-    col_numeric = rng.uniform(0, 1, size=(n_samples, n_features // 2))
-    col_categorical = rng.integers(
-        low=0, high=4, size=(n_samples, n_features // 2), dtype=np.int32
-    )
-
-    df = {}  # avoid fragmentation warning from pandas
-    for c in range(n_features):
-        if c % 2 == 0:
-            col = col_numeric[:, c // 2]
-        else:
-            codes = col_categorical[:, c // 2]
-            col = pd.Categorical.from_codes(
-                categories=old_cats,
-                codes=codes,
-            )
-        df[f"f{c}"] = col
-
-    df = Df(df)
-    y = rng.normal(size=n_samples)
-
-    Xy = DMatrix(df, y, enable_categorical=True)
+    Xy = DMatrix(enc, y, enable_categorical=True)
     booster = train({"device": device}, Xy)
 
     predt0 = booster.predict(Xy)
-    predt1 = booster.inplace_predict(df)
+    predt1 = booster.inplace_predict(enc)
     assert_allclose(device, predt0, predt1)
 
-    for c in range(n_features):
-        if c % 2 == 0:
-            continue
-
-        name = f"f{c}"
-        codes_ser = df[name].cat.codes
-        if hasattr(codes_ser, "to_pandas"):  # cudf
-            codes_ser = codes_ser.to_pandas()
-        new_codes = codes_ser.replace(mapping)
-        df[name] = pd.Categorical.from_codes(categories=new_cats, codes=new_codes)
-
-    df = Df(df)
-    Xy = DMatrix(df, y, enable_categorical=True)
+    Xy = DMatrix(reenc, y, enable_categorical=True)
     predt2 = booster.predict(Xy)
     assert_allclose(device, predt0, predt2)
 
-    array = np.empty(shape=(n_samples, n_features))
-    array[:, np.arange(0, n_features) % 2 == 0] = col_numeric
-    array[:, np.arange(0, n_features) % 2 != 0] = col_categorical
+    array = np.empty(shape=(reenc.shape[0], reenc.shape[1]))
+
+    array[:, enc.dtypes == "category"] = col_categorical
+    array[:, enc.dtypes != "category"] = col_numeric
 
     if device == "cuda":
         import cupy as cp
@@ -527,3 +586,24 @@ def run_specified_cat(  # pylint: disable=too-many-locals
 
     predt3 = booster.inplace_predict(array)
     assert_allclose(device, predt0, predt3)
+
+
+def run_validation(device: Literal["cpu", "cuda"]) -> None:
+    """CHeck the validation dataset is using the correct encoding."""
+    enc, reenc, y, _, _ = make_recoded(device)
+
+    Xy = DMatrix(enc, y, enable_categorical=True)
+    Xy_valid = DMatrix(reenc, y, enable_categorical=True)
+
+    evals_result: TrainingCallback.EvalsLog = {}
+    train(
+        {"device": device},
+        Xy,
+        evals=[(Xy, "Train"), (Xy_valid, "Valid")],
+        evals_result=evals_result,
+    )
+
+    # Evaluation dataset should have the exact same performance as the training dataset.
+    assert_allclose(
+        device, evals_result["Train"]["rmse"], evals_result["Valid"]["rmse"]
+    )

@@ -467,7 +467,7 @@ template <bool allow_mask, typename CategoricalIndex>
   auto const& jstr = get<Object const>(jnames.at("values"));
   auto strbuf = ArrayInterface<1>(jstr);
   CHECK_EQ(strbuf.type, ArrayInterfaceHandler::kI1);
-
+  CHECK_EQ(offset.type, ArrayInterfaceHandler::kI4);
   auto names = enc::CatStrArrayView{
       common::Span{static_cast<std::int32_t const*>(offset.data), offset.Shape<0>()},
       common::Span<std::int8_t const>{reinterpret_cast<std::int8_t const*>(strbuf.data), strbuf.n}};
@@ -525,7 +525,7 @@ template <typename CategoricalIndex, bool allow_mask>
 /**
  * @brief Adapter for columnar format (arrow).
  *
- *   Supports for both numeric values and categorical values.
+ *   Supports both numeric values and categorical values.
  */
 class ColumnarAdapter : public detail::SingleBatchDataIter<ColumnarAdapterBatch> {
   std::vector<ArrayInterface<1>> columns_;
