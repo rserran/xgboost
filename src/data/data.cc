@@ -931,6 +931,11 @@ DMatrix* DMatrix::Load(const std::string& uri, bool silent, DataSplitMode data_s
 
   int partid = 0, npart = 1;
 
+  static std::once_flag warning_flag;
+  std::call_once(warning_flag, []() {
+    LOG(WARNING) << "Text file input has been deprecated since 3.1";
+  });
+
   fname = data::ValidateFileFormat(fname);
   std::unique_ptr<dmlc::Parser<std::uint32_t>> parser(
       dmlc::Parser<std::uint32_t>::Create(fname.c_str(), partid, npart, "auto"));
@@ -1105,7 +1110,7 @@ void SparsePage::Push(const SparsePage &batch) {
 }
 
 template <typename AdapterBatchT>
-uint64_t SparsePage::Push(const AdapterBatchT& batch, float missing, int nthread) {
+bst_idx_t SparsePage::Push(AdapterBatchT const& batch, float missing, std::int32_t nthread) {
   constexpr bool kIsRowMajor = AdapterBatchT::kIsRowMajor;
   // Allow threading only for row-major case as column-major requires O(nthread*batch_size) memory
   nthread = kIsRowMajor ? nthread : 1;
