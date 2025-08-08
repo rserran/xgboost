@@ -134,13 +134,27 @@ struct CatContainerImpl {
     that->Finalize();
   }
 };
+
+[[nodiscard]] std::tuple<CatAccessor, dh::DeviceUVector<std::int32_t>> MakeCatAccessor(
+    Context const* ctx, enc::DeviceColumnsView const& new_enc, CatContainer const* orig_cats) {
+  dh::DeviceUVector<std::int32_t> mapping(new_enc.n_total_cats);
+  auto d_sorted_idx = orig_cats->RefSortedIndex(ctx);
+  auto orig_enc = orig_cats->DeviceView(ctx);
+  enc::Recode(EncPolicy, orig_enc, d_sorted_idx, new_enc, dh::ToSpan(mapping));
+  CHECK_EQ(new_enc.feature_segments.size(), orig_enc.feature_segments.size());
+  auto cats_mapping = enc::MappingView{new_enc.feature_segments, dh::ToSpan(mapping)};
+  auto acc = CatAccessor{cats_mapping};
+  return std::tuple{acc, std::move(mapping)};
+}
 }  // namespace cuda_impl
 
 CatContainer::CatContainer()  // NOLINT
     : cpu_impl_{std::make_unique<cpu_impl::CatContainerImpl>()},
       cu_impl_{std::make_unique<cuda_impl::CatContainerImpl>()} {}
 
-CatContainer::CatContainer(Context const* ctx, enc::DeviceColumnsView const& df) : CatContainer{} {
+CatContainer::CatContainer(Context const* ctx, enc::DeviceColumnsView const& df, bool is_ref)
+    : CatContainer{} {
+  this->is_ref_ = is_ref;
   this->n_total_cats_ = df.n_total_cats;
 
   this->feature_segments_.SetDevice(ctx->Device());

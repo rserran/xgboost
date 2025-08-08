@@ -4,7 +4,18 @@
 import copy
 import os
 import weakref
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 import numpy as np
 
@@ -15,7 +26,7 @@ from .callback import (
     EvaluationMonitor,
     TrainingCallback,
 )
-from .compat import SKLEARN_INSTALLED, DataFrame, XGBStratifiedKFold
+from .compat import SKLEARN_INSTALLED, XGBStratifiedKFold
 from .core import (
     Booster,
     DMatrix,
@@ -26,7 +37,15 @@ from .core import (
     _RefMixIn,
 )
 
+if TYPE_CHECKING:
+    from pandas import DataFrame as PdDataFrame
+
 _CVFolds = Sequence["CVPack"]
+
+_RefError = (
+    "Training dataset should be used as a reference when constructing the "
+    "`QuantileDMatrix` for evaluation.",
+)
 
 
 @_deprecate_positional_args
@@ -158,10 +177,7 @@ def train(
             and va.ref is not weakref.ref(dtrain)
             and va is not dtrain
         ):
-            raise ValueError(
-                "Training dataset should be used as a reference when constructing "
-                "the `QuantileDMatrix` for evaluation."
-            )
+            raise ValueError(_RefError)
 
     bst = Booster(params, [dtrain] + [d[0] for d in evals], model_file=xgb_model)
     start_iteration = 0
@@ -435,7 +451,7 @@ def cv(
     callbacks: Optional[Sequence[TrainingCallback]] = None,
     shuffle: bool = True,
     custom_metric: Optional[Metric] = None,
-) -> Union[Dict[str, float], DataFrame]:
+) -> Union[Dict[str, float], "PdDataFrame"]:
     # pylint: disable = invalid-name
     """Cross-validation with given parameters.
 

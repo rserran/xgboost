@@ -144,9 +144,9 @@ class CatContainer {
 
  public:
   CatContainer();
-  explicit CatContainer(enc::HostColumnsView const& df);
+  explicit CatContainer(enc::HostColumnsView const& df, bool is_ref);
 #if defined(XGBOOST_USE_CUDA)
-  explicit CatContainer(Context const* ctx, enc::DeviceColumnsView const& df);
+  explicit CatContainer(Context const* ctx, enc::DeviceColumnsView const& df, bool is_ref);
 #endif  // defined(XGBOOST_USE_CUDA)
   ~CatContainer();
 
@@ -162,6 +162,7 @@ class CatContainer {
    *        this method returns True.
    */
   [[nodiscard]] bool Empty() const;
+  [[nodiscard]] bool NeedRecode() const { return !this->Empty() && !this->is_ref_; }
 
   [[nodiscard]] std::size_t NumFeatures() const;
   /**
@@ -220,6 +221,7 @@ class CatContainer {
 #if defined(XGBOOST_USE_CUDA)
   std::unique_ptr<cuda_impl::CatContainerImpl> cu_impl_;
 #endif  // defined(XGBOOST_USE_CUDA)
+  bool is_ref_{false};
 };
 
 /**
@@ -251,8 +253,8 @@ struct CatAccessor {
  * @brief No-op accessor used to handle numeric data.
  */
 struct NoOpAccessor {
-  XGBOOST_DEVICE explicit NoOpAccessor(enc::MappingView const&) {}
-  NoOpAccessor() = default;
+  constexpr explicit NoOpAccessor(enc::MappingView const&) {}
+  constexpr NoOpAccessor() = default;
   template <typename T, typename Fidx>
   [[nodiscard]] XGBOOST_DEVICE T operator()(T fvalue, Fidx) const {
     return fvalue;

@@ -397,7 +397,7 @@ def array_interface_dict(data: np.ndarray) -> ArrayInf:
     return cast(ArrayInf, ainf)
 
 
-def pd_cats_inf(  # pylint: disable=too-many-locals
+def pd_cat_inf(  # pylint: disable=too-many-locals
     cats: DfCatAccessor, codes: "pd.Series"
 ) -> Tuple[Union[StringArray, ArrayInf], ArrayInf, Tuple]:
     """Get the array interface representation of pandas category accessor."""
@@ -665,19 +665,29 @@ class Categories:
             )
         return self._arrow_arrays
 
+    def empty(self) -> bool:
+        """Returns True if there's no category."""
+        return self._handle.value is None
+
     def get_handle(self) -> int:
         """Internal method for retrieving the handle."""
         assert self._handle.value
         return self._handle.value
 
     def __del__(self) -> None:
+        if self._handle.value is None:
+            return
         self._free()
 
 
 def get_ref_categories(
     feature_types: Optional[Union[FeatureTypes, Categories]],
 ) -> Tuple[Optional[FeatureTypes], Optional[Categories]]:
-    """Get the optional reference categories from the input."""
+    """Get the optional reference categories from the `feature_types`. This is used by
+    various `DMatrix` where the `feature_types` is reused for specifying the reference
+    categories.
+
+    """
     if isinstance(feature_types, Categories):
         ref_categories = feature_types
         feature_types = None
@@ -718,7 +728,7 @@ class TransformedDf(ABC):
 
     def __init__(self, ref_categories: Optional[Categories], aitfs: AifType) -> None:
         self.ref_categories = ref_categories
-        if ref_categories is not None:
+        if ref_categories is not None and ref_categories.get_handle() is not None:
             aif = ref_categories.get_handle()
             self.ref_aif: Optional[int] = aif
         else:

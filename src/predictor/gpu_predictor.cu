@@ -22,6 +22,7 @@
 #include "../data/device_adapter.cuh"
 #include "../data/ellpack_page.cuh"
 #include "../data/proxy_dmatrix.h"
+#include "../data/proxy_dmatrix.cuh"  // for DispatchAny
 #include "../gbm/gbtree_model.h"
 #include "predict_fn.h"
 #include "xgboost/data.h"
@@ -1049,7 +1050,9 @@ class GPUPredictor : public xgboost::Predictor {
     }
 
     CHECK_LE(p_fmat->Info().num_col_, model.learner_model_param->num_feature);
-    auto new_enc = p_fmat->Cats()->DeviceView(ctx_);
+    auto new_enc =
+        p_fmat->Cats()->NeedRecode() ? p_fmat->Cats()->DeviceView(ctx_) : enc::DeviceColumnsView{};
+
     if (p_fmat->PageExists<SparsePage>()) {
       bst_idx_t batch_offset = 0;
       for (auto& page : p_fmat->GetBatches<SparsePage>()) {
@@ -1153,28 +1156,18 @@ class GPUPredictor : public xgboost::Predictor {
         enc::DeviceColumnsView{}, 0, &out_preds->predictions);
   }
 
-  bool InplacePredict(std::shared_ptr<DMatrix> p_m, gbm::GBTreeModel const& model, float missing,
-                      PredictionCacheEntry* out_preds, bst_tree_t tree_begin,
-                      bst_tree_t tree_end) const override {
+  [[nodiscard]] bool InplacePredict(std::shared_ptr<DMatrix> p_m, gbm::GBTreeModel const& model,
+                                    float missing, PredictionCacheEntry* out_preds,
+                                    bst_tree_t tree_begin, bst_tree_t tree_end) const override {
     auto proxy = dynamic_cast<data::DMatrixProxy*>(p_m.get());
     CHECK(proxy) << error::InplacePredictProxy();
-    auto x = proxy->Adapter();
-    if (x.type() == typeid(std::shared_ptr<data::CupyAdapter>)) {
-      this->DispatchedInplacePredict<data::CupyAdapter>(x, p_m, model, missing, out_preds,
-                                                        tree_begin, tree_end);
-    } else if (x.type() == typeid(std::shared_ptr<data::CudfAdapter>)) {
-      auto m = std::any_cast<std::shared_ptr<data::CudfAdapter>>(x);
-      if (m->HasCategorical()) {
-        this->DispatchedInplacePredict<data::CudfAdapter>(x, p_m, model, missing, out_preds,
-                                                          tree_begin, tree_end);
-      } else {
-        this->DispatchedInplacePredict<data::CudfAdapter>(x, p_m, model, missing, out_preds,
-                                                          tree_begin, tree_end);
-      }
-    } else {
-      return false;
-    }
-    return true;
+    bool type_error = false;
+    data::cuda_impl::DispatchAny<false>(proxy, [&](auto x) {
+      using AdapterT = typename decltype(x)::element_type;
+      this->DispatchedInplacePredict<AdapterT>(x, p_m, model, missing, out_preds, tree_begin,
+                                               tree_end);
+    }, &type_error);
+    return !type_error;
   }
 
   void PredictContribution(DMatrix* p_fmat, HostDeviceVector<float>* out_contribs,
@@ -1208,7 +1201,8 @@ class GPUPredictor : public xgboost::Predictor {
     dh::device_vector<gpu_treeshap::PathElement<ShapSplitCondition>> device_paths;
     DeviceModel d_model;
     d_model.Init(model, 0, tree_end, ctx_->Device());
-    auto new_enc = p_fmat->Cats()->DeviceView(this->ctx_);
+    auto new_enc =
+        p_fmat->Cats()->NeedRecode() ? p_fmat->Cats()->DeviceView(ctx_) : enc::DeviceColumnsView{};
 
     dh::device_vector<uint32_t> categories;
     ExtractPaths(ctx_, &device_paths, &d_model, &categories, ctx_->Device());
@@ -1292,7 +1286,8 @@ class GPUPredictor : public xgboost::Predictor {
     d_model.Init(model, 0, tree_end, ctx_->Device());
     dh::device_vector<uint32_t> categories;
     ExtractPaths(ctx_, &device_paths, &d_model, &categories, ctx_->Device());
-    auto new_enc = p_fmat->Cats()->DeviceView(ctx_);
+    auto new_enc =
+        p_fmat->Cats()->NeedRecode() ? p_fmat->Cats()->DeviceView(ctx_) : enc::DeviceColumnsView{};
 
     if (p_fmat->PageExists<SparsePage>()) {
       for (auto const& batch : p_fmat->GetBatches<SparsePage>()) {
@@ -1367,7 +1362,8 @@ class GPUPredictor : public xgboost::Predictor {
     }
 
     bst_feature_t n_features = info.num_col_;
-    auto new_enc = p_fmat->Cats()->DeviceView(this->ctx_);
+    auto new_enc =
+        p_fmat->Cats()->NeedRecode() ? p_fmat->Cats()->DeviceView(ctx_) : enc::DeviceColumnsView{};
     LaunchConfig cfg{this->ctx_, n_features};
 
     if (p_fmat->PageExists<SparsePage>()) {
