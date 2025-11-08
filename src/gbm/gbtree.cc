@@ -145,6 +145,21 @@ void GBTree::Configure(Args const& cfg) {
   }
 }
 
+void GBTreeModel::InitTreesToUpdate() {
+  if (trees_to_update.empty()) {
+    for (auto& tree : trees) {
+      trees_to_update.push_back(std::move(tree));
+    }
+
+    trees.clear();
+    param.num_trees = 0;
+    tree_info.HostVector().clear();
+
+    iteration_indptr.clear();
+    iteration_indptr.push_back(0);
+  }
+}
+
 void GPUCopyGradient(Context const*, linalg::Matrix<GradientPair> const*, bst_group_t,
                      linalg::Matrix<GradientPair>*)
 #if defined(XGBOOST_USE_CUDA)
@@ -201,7 +216,6 @@ void GBTree::DoBoost(DMatrix* p_fmat, linalg::Matrix<GradientPair>* in_gpair,
     CHECK(tparam_.tree_method == TreeMethod::kHist || tparam_.tree_method == TreeMethod::kAuto)
         << "Only the hist tree method is supported for building multi-target trees with vector "
            "leaf.";
-    CHECK(ctx_->IsCPU()) << "GPU is not yet supported for vector leaf.";
   }
 
   TreesOneIter new_trees;
@@ -444,7 +458,9 @@ void GBTree::Slice(bst_layer_t begin, bst_layer_t end, bst_layer_t step, Gradien
 
   auto& out_indptr = out_model.iteration_indptr;
   TreesOneGroup& out_trees = out_model.trees;
-  std::vector<int32_t>& out_trees_info = out_model.tree_info;
+  auto& out_tree_info = out_model.tree_info.HostVector();
+
+  auto const& in_tree_info = this->model_.tree_info.ConstHostVector();
 
   bst_layer_t n_layers = (end - begin) / step;
   out_indptr.resize(n_layers + 1, 0);
@@ -462,8 +478,8 @@ void GBTree::Slice(bst_layer_t begin, bst_layer_t end, bst_layer_t step, Gradien
         std::unique_ptr<RegTree> new_tree{this->model_.trees.at(in_tree_idx)->Copy()};
         out_trees.emplace_back(std::move(new_tree));
 
-        bst_group_t group = this->model_.tree_info[in_tree_idx];
-        out_trees_info.push_back(group);
+        bst_group_t group = in_tree_info[in_tree_idx];
+        out_tree_info.push_back(group);
 
         out_model.iteration_indptr[out_l + 1]++;
       });
@@ -714,9 +730,8 @@ class Dart : public GBTree {
   }
 
   // An independent const function to make sure it's thread safe.
-  void PredictBatchImpl(DMatrix *p_fmat, PredictionCacheEntry *p_out_preds,
-                        bool training, unsigned layer_begin,
-                        unsigned layer_end) const {
+  void PredictBatchImpl(DMatrix* p_fmat, PredictionCacheEntry* p_out_preds, bool training,
+                        bst_layer_t layer_begin, bst_layer_t layer_end) const {
     CHECK(!this->model_.learner_model_param->IsVectorLeaf()) << "dart" << MTNotImplemented();
     auto& predictor = this->GetPredictor(training, &p_out_preds->predictions, p_fmat);
     CHECK(predictor);
@@ -735,7 +750,7 @@ class Dart : public GBTree {
     auto layer_trees = [&]() {
       return model_.param.num_parallel_tree * model_.learner_model_param->OutputLength();
     };
-
+    auto const& h_tree_info = this->model_.tree_info.ConstHostVector();
     for (bst_tree_t i = tree_begin; i < tree_end; i += 1) {
       if (training && std::binary_search(idx_drop_.cbegin(), idx_drop_.cend(), i)) {
         continue;
@@ -749,20 +764,19 @@ class Dart : public GBTree {
 
       // Multiple the weight to output prediction.
       auto w = this->weight_drop_.at(i);
-      auto group = model_.tree_info.at(i);
+      auto grp_idx = h_tree_info.at(i);
       CHECK_EQ(p_out_preds->predictions.Size(), predts.predictions.Size());
 
       size_t n_rows = p_fmat->Info().num_row_;
       if (predts.predictions.Device().IsCUDA()) {
         p_out_preds->predictions.SetDevice(predts.predictions.Device());
-        GPUDartPredictInc(p_out_preds->predictions.DeviceSpan(),
-                          predts.predictions.DeviceSpan(), w, n_rows, n_groups,
-                          group);
+        GPUDartPredictInc(p_out_preds->predictions.DeviceSpan(), predts.predictions.DeviceSpan(), w,
+                          n_rows, n_groups, grp_idx);
       } else {
         auto &h_out_predts = p_out_preds->predictions.HostVector();
-        auto &h_predts = predts.predictions.HostVector();
+        auto &h_predts = predts.predictions.ConstHostVector();
         common::ParallelFor(p_fmat->Info().num_row_, ctx_->Threads(), [&](auto ridx) {
-          const size_t offset = ridx * n_groups + group;
+          const size_t offset = ridx * n_groups + grp_idx;
           h_out_predts[offset] += (h_predts[offset] * w);
         });
       }
@@ -815,6 +829,7 @@ class Dart : public GBTree {
       CHECK(success) << msg;
     };
 
+    auto const& h_tree_info = this->model_.tree_info.ConstHostVector();
     // Inplace predict is not used for training, so no need to drop tree.
     for (bst_tree_t i = tree_begin; i < tree_end; ++i) {
       predict_impl(i);
@@ -837,7 +852,7 @@ class Dart : public GBTree {
       }
       // Multiple the tree weight
       auto w = this->weight_drop_.at(i);
-      auto group = model_.tree_info.at(i);
+      auto group = h_tree_info.at(i);
       CHECK_EQ(predts.predictions.Size(), p_out_preds->predictions.Size());
 
       size_t n_rows = p_fmat->Info().num_row_;
@@ -886,7 +901,7 @@ class Dart : public GBTree {
   }
 
   // Select which trees to drop.
-  inline void DropTrees(bool is_training) {
+  void DropTrees(bool is_training) {
     if (!is_training) {
       // This function should be thread safe when it's not training.
       return;
@@ -896,10 +911,12 @@ class Dart : public GBTree {
     std::uniform_real_distribution<> runif(0.0, 1.0);
     auto& rnd = common::GlobalRandom();
     bool skip = false;
-    if (dparam_.skip_drop > 0.0) skip = (runif(rnd) < dparam_.skip_drop);
+    if (dparam_.skip_drop > 0.0) {
+      skip = (runif(rnd) < dparam_.skip_drop);
+    }
     // sample some trees to drop
     if (!skip) {
-      if (dparam_.sample_type == 1) {
+      if (dparam_.sample_type == DartSampleType::kWeighted) {
         bst_float sum_weight = 0.0;
         for (auto elem : weight_drop_) {
           sum_weight += elem;
@@ -967,17 +984,6 @@ class Dart : public GBTree {
     // reset
     idx_drop_.clear();
     return num_drop;
-  }
-
-  // init thread buffers
-  inline void InitThreadTemp(int nthread) {
-    int prev_thread_temp_size = thread_temp_.size();
-    if (prev_thread_temp_size < nthread) {
-      thread_temp_.resize(nthread, RegTree::FVec());
-      for (int i = prev_thread_temp_size; i < nthread; ++i) {
-        thread_temp_[i].Init(model_.learner_model_param->num_feature);
-      }
-    }
   }
 
   // --- data structure ---
