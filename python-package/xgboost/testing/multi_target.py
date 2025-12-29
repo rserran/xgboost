@@ -72,7 +72,7 @@ class LsObj0(TreeObjective):
     """Split grad is the same as value grad."""
 
     def __call__(
-        self, y_pred: ArrayLike, dtrain: DMatrix
+        self, iteration: int, y_pred: ArrayLike, dtrain: DMatrix
     ) -> Tuple[ArrayLike, ArrayLike]:
         cp = import_cupy()
 
@@ -81,7 +81,7 @@ class LsObj0(TreeObjective):
         return cp.array(grad), cp.array(hess)
 
     def split_grad(
-        self, grad: ArrayLike, hess: ArrayLike
+        self, iteration: int, grad: ArrayLike, hess: ArrayLike
     ) -> Tuple[ArrayLike, ArrayLike]:
         cp = import_cupy()
 
@@ -92,7 +92,7 @@ class LsObj1(Objective):
     """No split grad."""
 
     def __call__(
-        self, y_pred: ArrayLike, dtrain: DMatrix
+        self, iteration: int, y_pred: ArrayLike, dtrain: DMatrix
     ) -> Tuple[ArrayLike, ArrayLike]:
         cp = import_cupy()
 
@@ -151,7 +151,7 @@ def run_reduced_grad(device: Device) -> None:
             self._chk = check_used
 
         def split_grad(
-            self, grad: ArrayLike, hess: ArrayLike
+            self, iteration: int, grad: ArrayLike, hess: ArrayLike
         ) -> Tuple[cp.ndarray, cp.ndarray]:
             if self._chk:
                 assert False
@@ -300,3 +300,30 @@ def run_deterministic(device: Device) -> None:
     raw_0 = booster_0.save_raw()
     raw_1 = booster_1.save_raw()
     assert raw_0 == raw_1
+
+
+def run_column_sampling(device: Device) -> None:
+    """Test with column sampling."""
+    n_features = 32
+    X, y = make_regression(
+        n_samples=1024, n_features=n_features, random_state=1994, n_targets=3
+    )
+    # First half is valid, second half is 0.
+    feature_weights = np.zeros(shape=(n_features, 1), dtype=np.float32)
+    feature_weights[: n_features // 2] = 1.0 / (n_features / 2)
+    Xy = QuantileDMatrix(X, y, feature_weights=feature_weights)
+
+    params = {
+        "device": device,
+        "multi_strategy": "multi_output_tree",
+        "debug_synchronize": True,
+        "colsample_bynode": 0.4,
+    }
+    booster = train(params, Xy, num_boost_round=16)
+    fscores = booster.get_fscore()
+    # sampled
+    for f in range(0, n_features // 2):
+        assert f"f{f}" in fscores
+    # not sampled
+    for f in range(n_features // 2, n_features):
+        assert f"f{f}" not in fscores
