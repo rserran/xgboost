@@ -1,6 +1,7 @@
 """Tests for multi-target training."""
 
 # pylint: disable=unbalanced-tuple-unpacking
+from types import ModuleType
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -20,8 +21,8 @@ from ..objective import Objective, TreeObjective
 from ..sklearn import XGBClassifier
 from ..training import train
 from .data import IteratorForTest
-from .updater import ResetStrategy
-from .utils import Device, assert_allclose
+from .updater import ResetStrategy, train_result
+from .utils import Device, assert_allclose, non_increasing
 
 
 def run_multiclass(device: Device, learning_rate: Optional[float]) -> None:
@@ -39,7 +40,7 @@ def run_multiclass(device: Device, learning_rate: Optional[float]) -> None:
     )
     clf.fit(X, y, eval_set=[(X, y)])
     assert clf.objective == "multi:softprob"
-    assert tm.non_increasing(clf.evals_result()["validation_0"]["mlogloss"])
+    assert non_increasing(clf.evals_result()["validation_0"]["mlogloss"])
     if learning_rate is not None and abs(learning_rate - 1.0) < 1e-5:
         assert clf.evals_result()["validation_0"]["mlogloss"][-1] < 0.045
 
@@ -60,7 +61,7 @@ def run_multilabel(device: Device, learning_rate: Optional[float]) -> None:
     )
     clf.fit(X, y, eval_set=[(X, y)])
     assert clf.objective == "binary:logistic"
-    assert tm.non_increasing(clf.evals_result()["validation_0"]["logloss"])
+    assert non_increasing(clf.evals_result()["validation_0"]["logloss"])
     if learning_rate is not None and abs(learning_rate - 1.0) < 1e-5:
         assert clf.evals_result()["validation_0"]["logloss"][-1] < 0.065
 
@@ -68,42 +69,121 @@ def run_multilabel(device: Device, learning_rate: Optional[float]) -> None:
     assert proba.shape == y.shape
 
 
+def run_quantile_loss(device: Device, weighted: bool) -> None:
+    """Check quantile regression for vector leaf."""
+    params = {
+        "objective": "reg:quantileerror",
+        "device": device,
+        "quantile_alpha": [0.45, 0.5, 0.55],
+        "multi_strategy": "multi_output_tree",
+    }
+    n_samples = 2048
+    X, y = make_regression(n_samples=n_samples, n_features=16, random_state=2026)
+
+    def no_crossing_first_tree(weight: Optional[np.ndarray]) -> None:
+        """The first tree should not generate quantile crossing given sufficient amount
+        of samples for quantile interpolation.
+
+        """
+        Xy = QuantileDMatrix(X, y, weight=weight)
+        booster = train(params, Xy, evals=[(Xy, "Train")], num_boost_round=1)
+        y_predt = booster.predict(Xy)
+        assert y_predt.shape == (n_samples, 3)
+        assert (y_predt[:, 0] <= y_predt[:, 1]).all()
+        assert (y_predt[:, 1] <= y_predt[:, 2]).all()
+
+    if not weighted:
+        weight = None
+    else:
+        # Test with weights.
+        rng = np.random.default_rng(2026)
+        weight = rng.uniform(0.0, 1.0, size=n_samples)
+
+    no_crossing_first_tree(weight)
+
+    Xy = QuantileDMatrix(X, y, weight=weight)
+    evals_result = train_result(params, Xy, num_rounds=10)
+    assert non_increasing(evals_result["train"]["quantile"])
+
+
+def run_absolute_error(device: Device) -> None:
+    """Test mean absolute error with vector leaf."""
+    params = {
+        "objective": "reg:absoluteerror",
+        "device": device,
+        "multi_strategy": "multi_output_tree",
+    }
+    n_samples = 1024
+    X, y = make_regression(
+        n_samples=n_samples, n_features=16, n_targets=3, random_state=2026
+    )
+    Xy = QuantileDMatrix(X, y)
+    evals_result: Dict[str, Dict] = {}
+    booster = train(
+        params,
+        Xy,
+        evals=[(Xy, "Train")],
+        verbose_eval=False,
+        evals_result=evals_result,
+        num_boost_round=16,
+    )
+    predt = booster.predict(Xy)
+    # make sure different targets are used
+    assert np.abs((predt[:, 2] - predt[:, 1]).sum()) > 1000
+    assert np.abs((predt[:, 1] - predt[:, 0]).sum()) > 1000
+    assert non_increasing(evals_result["Train"]["mae"])
+    assert evals_result["Train"]["mae"][-1] < 30.0
+
+
+def _array_impl(device: Device) -> ModuleType:
+    if device == "cuda":
+        nda = import_cupy()
+    else:
+        nda = np
+    return nda
+
+
 class LsObj0(TreeObjective):
     """Split grad is the same as value grad."""
+
+    def __init__(self, device: Device) -> None:
+        self.device = device
 
     def __call__(
         self, iteration: int, y_pred: ArrayLike, dtrain: DMatrix
     ) -> Tuple[ArrayLike, ArrayLike]:
-        cp = import_cupy()
+        nda = _array_impl(self.device)
 
         y_true = dtrain.get_label().reshape(y_pred.shape)
         grad, hess = tm.ls_obj(y_true, y_pred, None)
-        return cp.array(grad), cp.array(hess)
+        return nda.array(grad), nda.array(hess)
 
     def split_grad(
         self, iteration: int, grad: ArrayLike, hess: ArrayLike
     ) -> Tuple[ArrayLike, ArrayLike]:
-        cp = import_cupy()
-
-        return cp.array(grad), cp.array(hess)
+        nda = _array_impl(self.device)
+        return nda.array(grad), nda.array(hess)
 
 
 class LsObj1(Objective):
     """No split grad."""
 
+    def __init__(self, device: Device) -> None:
+        self.device = device
+
     def __call__(
         self, iteration: int, y_pred: ArrayLike, dtrain: DMatrix
     ) -> Tuple[ArrayLike, ArrayLike]:
-        cp = import_cupy()
+        nda = _array_impl(self.device)
 
         y_true = dtrain.get_label().reshape(y_pred.shape)
         grad, hess = tm.ls_obj(y_true, y_pred, None)
-        return cp.array(grad), cp.array(hess)
+        return nda.array(grad), nda.array(hess)
 
 
 def run_reduced_grad(device: Device) -> None:
     """Basic test for using reduced gradient for tree splits."""
-    import cupy as cp
+    nda = _array_impl(device)
 
     X, y = make_regression(
         n_samples=1024, n_features=16, random_state=1994, n_targets=5
@@ -128,16 +208,16 @@ def run_reduced_grad(device: Device) -> None:
             num_boost_round=8,
             evals_result=evals_result,
         )
-        assert tm.non_increasing(evals_result["Train"]["rmse"])
+        assert non_increasing(evals_result["Train"]["rmse"])
         return booster
 
-    booster_0 = run_test(LsObj0())
-    booster_1 = run_test(LsObj1())
+    booster_0 = run_test(LsObj0(device))
+    booster_1 = run_test(LsObj1(device))
     np.testing.assert_allclose(
         booster_0.inplace_predict(X), booster_1.inplace_predict(X)
     )
 
-    booster_2 = run_test(LsObj0(), [0.5] * y.shape[1])
+    booster_2 = run_test(LsObj0(device), [0.5] * y.shape[1])
     booster_3 = run_test(None, [0.5] * y.shape[1])
     np.testing.assert_allclose(
         booster_2.inplace_predict(X), booster_3.inplace_predict(X)
@@ -149,14 +229,15 @@ def run_reduced_grad(device: Device) -> None:
 
         def __init__(self, check_used: bool):
             self._chk = check_used
+            super().__init__(device=device)
 
         def split_grad(
             self, iteration: int, grad: ArrayLike, hess: ArrayLike
-        ) -> Tuple[cp.ndarray, cp.ndarray]:
+        ) -> Tuple[np.ndarray, np.ndarray]:
             if self._chk:
                 assert False
-            sgrad = cp.mean(grad, axis=1)
-            shess = cp.mean(hess, axis=1)
+            sgrad = nda.mean(grad, axis=1)
+            shess = nda.mean(hess, axis=1)
             return sgrad, shess
 
     run_test(LsObj2(False))
@@ -166,10 +247,7 @@ def run_reduced_grad(device: Device) -> None:
 
 def run_with_iter(device: Device) -> None:  # pylint: disable=too-many-locals
     """Test vector leaf with external memory."""
-    if device == "cuda":
-        from cupy import asarray
-    else:
-        from numpy import asarray
+    nda = _array_impl(device)
 
     n_batches = 4
     n_rounds = 8
@@ -190,10 +268,12 @@ def run_with_iter(device: Device) -> None:  # pylint: disable=too-many-locals
         X_i, y_i = make_regression(
             n_samples=4096, n_features=8, random_state=(i + 1), n_targets=n_targets
         )
-        Xs.append(asarray(X_i))
-        ys.append(asarray(y_i))
+        Xs.append(nda.asarray(X_i))
+        ys.append(nda.asarray(y_i))
     it = IteratorForTest(Xs, ys, None, cache="cache", on_host=True)
-    Xy: DMatrix = ExtMemQuantileDMatrix(it, cache_host_ratio=1.0)
+    Xy: DMatrix = ExtMemQuantileDMatrix(
+        it, cache_host_ratio=1.0 if device == "cuda" else None
+    )
 
     evals_result_0: Dict[str, Dict] = {}
     booster_0 = train(
@@ -217,12 +297,13 @@ def run_with_iter(device: Device) -> None:  # pylint: disable=too-many-locals
     np.testing.assert_allclose(
         evals_result_0["Train"]["rmse"], evals_result_1["Train"]["rmse"]
     )
-    assert tm.non_increasing(evals_result_0["Train"]["rmse"])
+    assert non_increasing(evals_result_0["Train"]["rmse"])
     X, _, _ = it.as_arrays()
     assert_allclose(device, booster_0.inplace_predict(X), booster_1.inplace_predict(X))
 
-    v = build_info()["THRUST_VERSION"]
-    if v[0] < 3:
+    binfo = build_info()
+    tv = "THRUST_VERSION"
+    if device == "cuda" and tv in binfo and binfo[tv][0] < 3:
         pytest.xfail("CCCL version too old.")
 
     it = IteratorForTest(
@@ -233,14 +314,14 @@ def run_with_iter(device: Device) -> None:  # pylint: disable=too-many-locals
         on_host=True,
         min_cache_page_bytes=X.shape[0] // n_batches * X.shape[1],
     )
-    Xy = ExtMemQuantileDMatrix(it, cache_host_ratio=1.0)
+    Xy = ExtMemQuantileDMatrix(it, cache_host_ratio=1.0 if device == "cuda" else None)
 
     evals_result_2: Dict[str, Dict] = {}
     booster_2 = train(
         params,
         Xy,
         evals=[(Xy, "Train")],
-        obj=LsObj0(),
+        obj=LsObj0(device),
         num_boost_round=n_rounds,
         evals_result=evals_result_2,
     )
@@ -277,7 +358,7 @@ def run_eta(device: Device) -> None:
         np.testing.assert_allclose(predt_0 * 2, predt_2, rtol=1e-6)
 
     run(None)
-    run(LsObj0())
+    run(LsObj0(device))
 
 
 def run_deterministic(device: Device) -> None:
