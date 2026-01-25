@@ -139,7 +139,8 @@ class MultiTargetHistMaker {
     for (auto nidx : build_nodes) {
       auto d_ridx = this->partitioners_.At(k)->GetRows(nidx);
       if (d_ridx.empty()) {
-        // external memory.
+        // Node has no rows - can happen with external memory when all rows go to the
+        // sibling node.
         CHECK_GT(this->batch_ptr_.size(), 2);
         continue;
       }
@@ -151,12 +152,25 @@ class MultiTargetHistMaker {
 
       ++nidx_in_set;
     }
+
     dh::device_vector<common::Span<GradientPairInt64>> hists{h_hists};
     dh::device_vector<common::Span<RowIndexT const>> ridxs{h_ridxs};
 
     this->histogram_.BuildHistogram(this->ctx_, acc,
                                     this->feature_groups_->DeviceAccessor(this->ctx_->Device()),
                                     d_gpair, dh::ToSpan(ridxs), dh::ToSpan(hists), h_sizes_csum);
+  }
+
+  auto MakeSharedInputs(bst_feature_t max_active_feature) const {
+    common::Span<GradientQuantiser const> d_roundings = this->split_quantizer_->Quantizers();
+    GPUTrainingParam d_param{this->param_};
+    return MultiEvaluateSplitSharedInputs{d_roundings,
+                                          this->cuts_->cut_ptrs_.ConstDeviceSpan(),
+                                          this->cuts_->cut_values_.ConstDevicePointer(),
+                                          this->cuts_->min_vals_.ConstDevicePointer(),
+                                          this->param_.max_bin,
+                                          max_active_feature,
+                                          d_param};
   }
 
  public:
@@ -228,17 +242,13 @@ class MultiTargetHistMaker {
     MultiEvaluateSplitInputs input{RegTree::kRoot, p_tree->GetDepth(RegTree::kRoot), d_root_sum,
                                    feature_set, node_hist};
 
-    auto d_roundings = split_quantizer_->Quantizers();
-    GPUTrainingParam param{this->param_};
-    MultiEvaluateSplitSharedInputs shared_inputs{d_roundings,
-                                                 this->cuts_->cut_ptrs_.ConstDeviceSpan(),
-                                                 this->cuts_->cut_values_.ConstDevicePointer(),
-                                                 this->cuts_->min_vals_.ConstDevicePointer(),
-                                                 this->param_.max_bin,
-                                                 static_cast<bst_feature_t>(feature_set.size()),
-                                                 param};
+    auto shared_inputs = MakeSharedInputs(static_cast<bst_feature_t>(feature_set.size()));
     auto entry = this->evaluator_.EvaluateSingleSplit(ctx_, input, shared_inputs);
-    p_tree->SetRoot(linalg::MakeVec(this->ctx_->Device(), entry.base_weight));
+    auto weights = this->evaluator_.GetNodeWeights(n_targets);
+    // Root's sum_hess is the sum of left and right child hessians
+    float root_sum_hess = static_cast<float>(entry.left_sum + entry.right_sum);
+    p_tree->SetRoot(linalg::MakeVec(this->ctx_->Device(), weights.Base(RegTree::kRoot)),
+                    root_sum_hess);
 
     return entry;
   }
@@ -247,20 +257,24 @@ class MultiTargetHistMaker {
     xgboost_NVTX_FN_RANGE();
 
     CHECK(!h_candidates.empty());
-    auto n_targets = h_candidates.front().base_weight.size();
+    auto n_targets = this->split_gpair_.Shape(1);
 
+    // Get weights by node ID from the evaluator's buffer.
+    //
     // TODO(jiamingy): Avoid device to host copies.
     for (auto const& candidate : h_candidates) {
-      std::vector<float> h_base_weight(candidate.base_weight.size());
-      std::vector<float> h_left_weight(candidate.left_weight.size());
-      std::vector<float> h_right_weight(candidate.right_weight.size());
-      dh::CopyDeviceSpanToVector(&h_base_weight, candidate.base_weight);
-      dh::CopyDeviceSpanToVector(&h_left_weight, candidate.left_weight);
-      dh::CopyDeviceSpanToVector(&h_right_weight, candidate.right_weight);
-
+      std::vector<float> h_base_weight, h_left_weight, h_right_weight;
+      this->evaluator_.CopyNodeWeightsToHost(candidate.nidx, n_targets, &h_base_weight,
+                                             &h_left_weight, &h_right_weight);
+      // Get loss_chg from the split, and sum hessians for parent and children
+      float loss_chg = candidate.split.loss_chg;
+      float left_sum = static_cast<float>(candidate.left_sum);
+      float right_sum = static_cast<float>(candidate.right_sum);
+      float sum_hess = left_sum + right_sum;
       p_tree->ExpandNode(candidate.nidx, candidate.split.findex, candidate.split.fvalue,
                          candidate.split.dir == kLeftDir, linalg::MakeVec(h_base_weight),
-                         linalg::MakeVec(h_left_weight), linalg::MakeVec(h_right_weight));
+                         linalg::MakeVec(h_left_weight), linalg::MakeVec(h_right_weight), loss_chg,
+                         sum_hess, left_sum, right_sum);
     }
 
     dh::device_vector<MultiExpandEntry> candidates{h_candidates};
@@ -422,7 +436,7 @@ class MultiTargetHistMaker {
     std::vector<bst_node_t> subtraction_nidx(candidates.size());
     auto mt_tree = p_tree->HostMtView();
     AssignNodes(mt_tree, candidates, build_nidx, subtraction_nidx, [](MultiExpandEntry const& e) {
-      bool fewer_right = e.right_fst_hess < e.left_fst_hess;
+      bool fewer_right = e.right_sum < e.left_sum;
       return fewer_right;
     });
 
@@ -431,8 +445,8 @@ class MultiTargetHistMaker {
 
     histogram_.AllocateHistograms(this->ctx_, build_nidx, subtraction_nidx);
 
-    // Pull to device
-    mt_tree = MultiTargetTreeView{this->ctx_->Device(), p_tree};
+    // Pull to device (stats not needed for partitioning)
+    mt_tree = MultiTargetTreeView{this->ctx_->Device(), false, p_tree};
 
     std::int32_t k{0};
     for (auto const& page :
@@ -465,8 +479,6 @@ class MultiTargetHistMaker {
     }
     xgboost_NVTX_FN_RANGE();
 
-    GPUTrainingParam param{this->param_};
-
     dh::device_vector<MultiEvaluateSplitInputs> inputs(2 * candidates.size());
     dh::device_vector<MultiExpandEntry> outputs(2 * candidates.size());
 
@@ -478,6 +490,9 @@ class MultiTargetHistMaker {
 
     auto n_targets = this->split_gpair_.Shape(1);
     bst_feature_t max_active_feature = 0;
+    // Track max node ID for buffer allocation
+    bst_node_t max_nidx = 0;
+
     for (std::size_t i = 0; i < candidates.size(); i++) {
       auto candidate = candidates.at(i);
       bst_node_t left_nidx = mt_tree.LeftChild(candidate.nidx);
@@ -506,22 +521,14 @@ class MultiTargetHistMaker {
 
       max_active_feature = std::max({left_feature_set.size(), right_feature_set.size(),
                                      static_cast<std::size_t>(max_active_feature)});
+      max_nidx = std::max({max_nidx, left_nidx, right_nidx});
     }
     dh::safe_cuda(cudaMemcpyAsync(inputs.data().get(), h_node_inputs.data(),
                                   common::SizeBytes<MultiEvaluateSplitInputs>(h_node_inputs.size()),
                                   cudaMemcpyDefault, ctx_->CUDACtx()->Stream()));
 
-    MultiEvaluateSplitSharedInputs shared_inputs{
-        this->split_quantizer_->Quantizers(),
-        this->cuts_->cut_ptrs_.ConstDeviceSpan(),
-        this->cuts_->cut_values_.ConstDevicePointer(),
-        this->cuts_->min_vals_.ConstDevicePointer(),
-        this->param_.max_bin,
-        max_active_feature,
-        param,
-    };
-
-    this->evaluator_.EvaluateSplits(this->ctx_, dh::ToSpan(inputs), shared_inputs,
+    auto shared_inputs = MakeSharedInputs(max_active_feature);
+    this->evaluator_.EvaluateSplits(this->ctx_, dh::ToSpan(inputs), shared_inputs, max_nidx,
                                     dh::ToSpan(outputs));
     dh::safe_cuda(cudaMemcpyAsync(pinned_candidates_out.data(), outputs.data().get(),
                                   pinned_candidates_out.size_bytes(), cudaMemcpyDefault,
@@ -561,7 +568,7 @@ class MultiTargetHistMaker {
     CHECK_EQ(out_position.size(), 1);
     auto d_position = out_position.front().ConstDeviceSpan();
     CHECK_EQ(out_preds_d.Shape(0), d_position.size());
-    auto mt_tree = MultiTargetTreeView{this->ctx_->Device(), p_tree};
+    auto mt_tree = MultiTargetTreeView{this->ctx_->Device(), false, p_tree};
     thrust::for_each_n(this->ctx_->CUDACtx()->CTP(), thrust::make_counting_iterator(0ul),
                        out_preds_d.Size(), [=] XGBOOST_DEVICE(std::size_t i) mutable {
                          auto [sample_idx, target_idx] =
@@ -578,9 +585,6 @@ class MultiTargetHistMaker {
                   HostDeviceVector<bst_node_t>* p_out_position) {
     xgboost_NVTX_FN_RANGE();
 
-    if (param_.grow_policy == TrainParam::kLossGuide) {
-      LOG(FATAL) << "Loss guide" << MTNotImplemented();
-    }
     if (1.0f - param_.subsample > kRtEps) {
       LOG(FATAL) << "Subsample" << MTNotImplemented();
     }
