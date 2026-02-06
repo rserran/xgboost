@@ -2,7 +2,7 @@
 
 # pylint: disable=unbalanced-tuple-unpacking
 from types import ModuleType
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pytest
@@ -155,7 +155,7 @@ class LsObj0(TreeObjective):
     ) -> Tuple[ArrayLike, ArrayLike]:
         nda = _array_impl(self.device)
 
-        y_true = dtrain.get_label().reshape(y_pred.shape)
+        y_true = dtrain.get_label()
         grad, hess = tm.ls_obj(y_true, y_pred, None)
         return nda.array(grad), nda.array(hess)
 
@@ -177,15 +177,33 @@ class LsObj1(Objective):
     ) -> Tuple[ArrayLike, ArrayLike]:
         nda = _array_impl(self.device)
 
-        y_true = dtrain.get_label().reshape(y_pred.shape)
+        y_true = dtrain.get_label()
         grad, hess = tm.ls_obj(y_true, y_pred, None)
         return nda.array(grad), nda.array(hess)
 
 
+# Use mean gradient, should still converge.
+class LsObj2(LsObj0):
+    """Use mean as split grad."""
+
+    def __init__(self, device: Device, check_used: bool):
+        self._chk = check_used
+        super().__init__(device=device)
+
+    def split_grad(
+        self, iteration: int, grad: ArrayLike, hess: ArrayLike
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        nda = _array_impl(self.device)
+
+        if self._chk:
+            assert False
+        sgrad = nda.mean(grad, axis=1)
+        shess = nda.mean(hess, axis=1)
+        return sgrad, shess
+
+
 def run_reduced_grad(device: Device) -> None:
     """Basic test for using reduced gradient for tree splits."""
-    nda = _array_impl(device)
-
     X, y = make_regression(
         n_samples=1024, n_features=16, random_state=1994, n_targets=5
     )
@@ -224,26 +242,9 @@ def run_reduced_grad(device: Device) -> None:
         booster_2.inplace_predict(X), booster_3.inplace_predict(X)
     )
 
-    # Use mean gradient, should still converge.
-    class LsObj2(LsObj0):
-        """Use mean as split grad."""
-
-        def __init__(self, check_used: bool):
-            self._chk = check_used
-            super().__init__(device=device)
-
-        def split_grad(
-            self, iteration: int, grad: ArrayLike, hess: ArrayLike
-        ) -> Tuple[np.ndarray, np.ndarray]:
-            if self._chk:
-                assert False
-            sgrad = nda.mean(grad, axis=1)
-            shess = nda.mean(hess, axis=1)
-            return sgrad, shess
-
-    run_test(LsObj2(False))
+    run_test(LsObj2(device, False))
     with pytest.raises(AssertionError):
-        run_test(LsObj2(True))
+        run_test(LsObj2(device, True))
 
 
 def run_with_iter(device: Device) -> None:  # pylint: disable=too-many-locals
@@ -554,3 +555,252 @@ def run_feature_importance_strategy_compare(device: Device) -> None:
         assert cosine_similarity([imps[0]], [imps[1]])[0, 0] > 0.9
         assert cosine_similarity([imps[0]], [imps[2]])[0, 0] > 0.9
         assert cosine_similarity([imps[1]], [imps[2]])[0, 0] > 0.9
+
+
+# pylint: disable=too-many-arguments, too-many-locals
+def _run_regression_objective_test(
+    device: Device,
+    objective: str,
+    metric: str,
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    extra_params: Optional[Dict[str, Any]] = None,
+    check_pred_positive: bool = False,
+    check_pred_probability: bool = False,
+    check_pred_binary: bool = False,
+    strictly_non_increasing: bool = True,
+) -> None:
+    params: Dict[str, Any] = {
+        "objective": objective,
+        "device": device,
+        "multi_strategy": "multi_output_tree",
+    }
+    if extra_params:
+        params.update(extra_params)
+
+    n_samples = X.shape[0]
+    n_targets = y.shape[1] if y.ndim > 1 else 1
+
+    Xy = DMatrix(X, y)
+    evals_result: Dict[str, Dict] = {}
+    booster = train(
+        params,
+        Xy,
+        evals=[(Xy, "Train")],
+        verbose_eval=False,
+        evals_result=evals_result,
+        num_boost_round=16,
+    )
+    predt = booster.predict(Xy)
+    assert predt.shape == (n_samples, n_targets)
+
+    if check_pred_positive:
+        assert (predt > 0).all()
+    if check_pred_probability:
+        assert (predt > 0).all() and (predt < 1).all()
+    if check_pred_binary:
+        assert set(np.unique(predt)).issubset({0.0, 1.0})
+
+    metric_vals = evals_result["Train"][metric]
+    if strictly_non_increasing:
+        assert non_increasing(metric_vals)
+    else:
+        assert metric_vals[-1] < metric_vals[0]
+
+
+def run_reg_squarederror(device: Device) -> None:
+    """Test squared error regression with vector leaf."""
+    n_samples, n_targets = 1024, 3
+    X, y = make_regression(
+        n_samples=n_samples, n_features=16, n_targets=n_targets, random_state=2026
+    )
+    _run_regression_objective_test(device, "reg:squarederror", "rmse", X, y)
+
+
+def run_reg_logistic(device: Device) -> None:
+    """Test logistic regression for probability with vector leaf."""
+    n_samples, n_targets = 1024, 3
+    rng = np.random.default_rng(2026)
+    X = rng.standard_normal((n_samples, 16))
+    y = rng.uniform(0.0, 1.0, (n_samples, n_targets))  # Labels in [0, 1]
+    _run_regression_objective_test(
+        device, "reg:logistic", "rmse", X, y, check_pred_probability=True
+    )
+
+
+def run_reg_gamma(device: Device) -> None:
+    """Test gamma regression with vector leaf."""
+    n_samples, n_targets = 1024, 3
+    rng = np.random.default_rng(2026)
+    X = rng.standard_normal((n_samples, 16))
+    y = rng.gamma(2.0, 2.0, (n_samples, n_targets))  # Labels must be positive
+    _run_regression_objective_test(
+        device, "reg:gamma", "gamma-deviance", X, y, check_pred_positive=True
+    )
+
+
+def run_reg_squaredlogerror(device: Device) -> None:
+    """Test squared log error regression with vector leaf."""
+    n_samples, n_targets = 1024, 3
+    rng = np.random.default_rng(2026)
+    X = rng.standard_normal((n_samples, 16))
+    y = np.abs(rng.standard_normal((n_samples, n_targets))) + 0.1  # Labels > -1
+    _run_regression_objective_test(device, "reg:squaredlogerror", "rmsle", X, y)
+
+
+def run_reg_pseudohubererror(device: Device) -> None:
+    """Test pseudo huber error regression with vector leaf."""
+    n_samples, n_targets = 1024, 3
+    X, y = make_regression(
+        n_samples=n_samples, n_features=16, n_targets=n_targets, random_state=2026
+    )
+    _run_regression_objective_test(
+        device, "reg:pseudohubererror", "mphe", X, y, extra_params={"huber_slope": 1.0}
+    )
+
+
+def run_binary_logitraw(device: Device) -> None:
+    """Test binary logitraw with vector leaf (multi-label classification)."""
+    n_samples = 1024
+    X, y = make_multilabel_classification(n_samples, random_state=2026)
+    _run_regression_objective_test(
+        device, "binary:logitraw", "logloss", X, y, strictly_non_increasing=False
+    )
+
+
+def run_binary_hinge(device: Device) -> None:
+    """Test binary hinge loss with vector leaf (multi-label classification)."""
+    n_samples = 1024
+    X, y = make_multilabel_classification(n_samples, random_state=2026)
+    _run_regression_objective_test(
+        device,
+        "binary:hinge",
+        "error",
+        X,
+        y,
+        check_pred_binary=True,
+        strictly_non_increasing=False,
+    )
+
+
+def run_count_poisson(device: Device) -> None:
+    """Test Poisson regression with vector leaf."""
+    n_samples, n_targets = 1024, 3
+    rng = np.random.default_rng(2026)
+    X = rng.standard_normal((n_samples, 16))
+    y = rng.poisson(5, (n_samples, n_targets)).astype(np.float32)  # Labels >= 0
+    _run_regression_objective_test(
+        device, "count:poisson", "poisson-nloglik", X, y, check_pred_positive=True
+    )
+
+
+def run_reg_tweedie(device: Device) -> None:
+    """Test Tweedie regression with vector leaf."""
+    n_samples, n_targets = 1024, 3
+    rng = np.random.default_rng(2026)
+    X = rng.standard_normal((n_samples, 16))
+    y = rng.gamma(2.0, 2.0, (n_samples, n_targets))  # Labels >= 0
+    _run_regression_objective_test(
+        device, "reg:tweedie", "tweedie-nloglik@1.5", X, y, check_pred_positive=True
+    )
+
+
+def all_reg_objectives() -> List[Callable[[Device], None]]:
+    """List of obj tests."""
+    objs: List[Callable[[Device], None]] = [
+        run_reg_squarederror,
+        run_reg_logistic,
+        run_reg_gamma,
+        run_reg_squaredlogerror,
+        run_reg_pseudohubererror,
+        run_binary_logitraw,
+        run_binary_hinge,
+        run_count_poisson,
+        run_reg_tweedie,
+    ]
+    return objs
+
+
+def _make_subsample_params(device: Device, sampling_method: str) -> dict:
+    params = {
+        "device": device,
+        "tree_method": "hist",
+        "multi_strategy": "multi_output_tree",
+        "subsample": 0.5,
+        "sampling_method": sampling_method,
+        "max_depth": 6,
+        "debug_synchronize": True,
+        "seed": 2026,
+    }
+    return params
+
+
+def run_subsample(device: Device, sampling_method: str) -> None:
+    """Test row subsampling."""
+    n_samples = 2048
+    X, y = make_regression(
+        n_samples=n_samples, n_features=16, n_targets=3, random_state=2026
+    )
+    Xy = QuantileDMatrix(X, y)
+
+    params = _make_subsample_params(device, sampling_method)
+
+    evals_result = train_result(params, Xy, num_rounds=16)
+    # Training should converge with subsampling
+    assert non_increasing(evals_result["train"]["rmse"], tolerance=0.01)
+
+    # Test with quantile regression
+    params = _make_subsample_params(device, sampling_method)
+    params["objective"] = "reg:quantileerror"
+    params["quantile_alpha"] = [0.25, 0.5, 0.75]
+    Xy_single = QuantileDMatrix(X, y[:, 0])
+    evals_result_q = train_result(params, Xy_single, num_rounds=16)
+    assert non_increasing(evals_result_q["train"]["quantile"], tolerance=0.01)
+
+
+def run_gradient_based_sampling_accuracy(device: Device) -> None:
+    """Test that gradient-based sampling provides better accuracy."""
+    n_samples = 4096
+    X, y = make_regression(
+        n_samples=n_samples, n_features=16, n_targets=3, random_state=2026
+    )
+    Xy = QuantileDMatrix(X, y)
+
+    params_uniform = _make_subsample_params(device, "uniform")
+
+    def run(obj: Callable | None) -> None:
+        # Train with uniform sampling
+        evals_uniform: Dict[str, Dict] = {}
+        train(
+            params_uniform,
+            Xy,
+            num_boost_round=32,
+            evals=[(Xy, "train")],
+            obj=obj,
+            verbose_eval=False,
+            evals_result=evals_uniform,
+        )
+
+        # Train with gradient-based sampling
+        params_grad = _make_subsample_params(device, "gradient_based")
+        evals_grad: Dict[str, Dict] = {}
+        train(
+            params_grad,
+            Xy,
+            num_boost_round=32,
+            evals=[(Xy, "train")],
+            obj=obj,
+            verbose_eval=False,
+            evals_result=evals_grad,
+        )
+
+        uniform_final = evals_uniform["train"]["rmse"][-1]
+        grad_final = evals_grad["train"]["rmse"][-1]
+        assert non_increasing(evals_uniform["train"]["rmse"])
+        assert non_increasing(evals_grad["train"]["rmse"])
+        if obj is None:
+            assert grad_final < uniform_final
+
+    run(None)
+    run(LsObj2(device, False))
