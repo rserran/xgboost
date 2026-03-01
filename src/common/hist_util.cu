@@ -33,7 +33,7 @@ size_t RequiredSampleCutsPerColumn(int max_bins, size_t num_rows) {
   double eps = 1.0 / (WQSketch::kFactor * max_bins);
   size_t dummy_nlevel;
   size_t num_cuts;
-  WQuantileSketch<bst_float, bst_float>::LimitSizeLevel(num_rows, eps, &dummy_nlevel, &num_cuts);
+  WQuantileSketch::LimitSizeLevel(num_rows, eps, &dummy_nlevel, &num_cuts);
   return std::min(num_cuts, num_rows);
 }
 
@@ -367,8 +367,7 @@ HistogramCuts DeviceSketchWithHessian(Context const* ctx, DMatrix* p_fmat, bst_b
   auto d_weight = UnifyWeight(cuctx, info, hessian, &weight);
 
   HistogramCuts cuts;
-  SketchContainer sketch_container(info.feature_types, max_bin, info.num_col_, info.num_row_,
-                                   ctx->Device());
+  SketchContainer sketch_container(info.feature_types, max_bin, info.num_col_, ctx->Device());
   CHECK_EQ(has_weight || !hessian.empty(), !d_weight.empty());
   for (const auto& page : p_fmat->GetBatches<SparsePage>()) {
     std::size_t page_nnz = page.data.Size();
