@@ -214,7 +214,7 @@ struct GPUHistMakerDevice {
   GPUExpandEntry EvaluateRootSplit(DMatrix const* p_fmat, GradientPairInt64 root_sum) {
     bst_node_t nidx = RegTree::kRoot;
     GPUTrainingParam gpu_param(param);
-    auto sampled_features = column_sampler_->GetFeatureSet(0);
+    auto sampled_features = column_sampler_->GetFeatureSet(ctx_, 0);
     sampled_features->SetDevice(ctx_->Device());
     common::Span<bst_feature_t const> feature_set =
         interaction_constraints.Query(sampled_features->ConstDeviceSpan(), nidx);
@@ -224,7 +224,6 @@ struct GPUHistMakerDevice {
                                             p_fmat->Info().feature_types.ConstDeviceSpan(),
                                             cuts_->cut_ptrs_.ConstDeviceSpan(),
                                             cuts_->cut_values_.ConstDeviceSpan(),
-                                            cuts_->min_vals_.ConstDeviceSpan(),
                                             p_fmat->IsDense() && !collective::IsDistributed()};
     auto split = this->evaluator_.EvaluateSingleSplit(ctx_, inputs, shared_inputs);
     return split;
@@ -243,7 +242,6 @@ struct GPUHistMakerDevice {
     EvaluateSplitSharedInputs shared_inputs{
         GPUTrainingParam{param}, (*quantiser)[0], p_fmat->Info().feature_types.ConstDeviceSpan(),
         cuts_->cut_ptrs_.ConstDeviceSpan(), cuts_->cut_values_.ConstDeviceSpan(),
-        cuts_->min_vals_.ConstDeviceSpan(),
         // is_dense represents the local data
         p_fmat->IsDense() && !collective::IsDistributed()};
     dh::TemporaryArray<GPUExpandEntry> entries(2 * candidates.size());
@@ -256,11 +254,11 @@ struct GPUHistMakerDevice {
       bst_node_t right_nidx = sc_tree.RightChild(candidate.nidx);
       nidx[i * 2] = left_nidx;
       nidx[i * 2 + 1] = right_nidx;
-      auto left_sampled_features = column_sampler_->GetFeatureSet(tree.GetDepth(left_nidx));
+      auto left_sampled_features = column_sampler_->GetFeatureSet(ctx_, tree.GetDepth(left_nidx));
       feature_sets.emplace_back(left_sampled_features);
       common::Span<bst_feature_t const> left_feature_set =
           interaction_constraints.Query(left_sampled_features->ConstDeviceSpan(), left_nidx);
-      auto right_sampled_features = column_sampler_->GetFeatureSet(tree.GetDepth(right_nidx));
+      auto right_sampled_features = column_sampler_->GetFeatureSet(ctx_, tree.GetDepth(right_nidx));
       feature_sets.emplace_back(right_sampled_features);
       common::Span<bst_feature_t const> right_feature_set =
           interaction_constraints.Query(right_sampled_features->ConstDeviceSpan(), right_nidx);
@@ -759,7 +757,10 @@ std::pair<std::shared_ptr<common::HistogramCuts const>, bool> InitBatchCuts(
 
 class GPUHistMaker : public TreeUpdater {
  public:
-  explicit GPUHistMaker(Context const* ctx, ObjInfo const* task) : TreeUpdater(ctx), task_{task} {};
+  explicit GPUHistMaker(Context const* ctx, ObjInfo const* task)
+      : TreeUpdater(ctx),
+        task_{task},
+        column_sampler_{std::make_shared<common::ColumnSampler>()} {};
   void Configure(const Args& args) override {
     // Used in test to count how many configurations are performed
     LOG(DEBUG) << "[GPU Hist]: Configure";
@@ -805,9 +806,6 @@ class GPUHistMaker : public TreeUpdater {
   void InitDataOnce(TrainParam const* param, DMatrix* p_fmat) {
     monitor_.Start(__func__);
     CHECK_GE(ctx_->Ordinal(), 0) << "Must have at least one device";
-
-    // Synchronise the column sampling seed
-    this->column_sampler_ = common::MakeColumnSampler(ctx_);
 
     curt::SetDevice(ctx_->Ordinal());
     p_fmat->Info().feature_types.SetDevice(ctx_->Device());
@@ -895,7 +893,9 @@ XGBOOST_REGISTER_TREE_UPDATER(GPUHistMaker, "grow_gpu_hist")
 class GPUGlobalApproxMaker : public TreeUpdater {
  public:
   explicit GPUGlobalApproxMaker(Context const* ctx, ObjInfo const* task)
-      : TreeUpdater(ctx), task_{task} {};
+      : TreeUpdater(ctx),
+        task_{task},
+        column_sampler_{std::make_shared<common::ColumnSampler>()} {};
   void Configure(Args const& args) override {
     // Used in test to count how many configurations are performed
     LOG(DEBUG) << "[GPU Approx]: Configure";
@@ -962,7 +962,6 @@ class GPUGlobalApproxMaker : public TreeUpdater {
 
     monitor_.Start(__func__);
     CHECK(ctx_->IsCUDA()) << error::InvalidCUDAOrdinal();
-    this->column_sampler_ = common::MakeColumnSampler(ctx_);
 
     p_last_fmat_ = p_fmat;
     initialised_ = true;

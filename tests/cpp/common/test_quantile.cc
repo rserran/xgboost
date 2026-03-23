@@ -31,26 +31,60 @@ TEST(Quantile, LoadBalance) {
 }
 
 TEST(Quantile, InitWithEmptyColumn) {
-  WQuantileSketch sketch;
-  sketch.Init(0, 0.1);
+  WQuantileSketch sketch{0, 0.1};
 
-  WQuantileSketch::SummaryContainer out;
-  sketch.GetSummary(&out);
-  ASSERT_EQ(out.current_elements, 0);
+  auto out = sketch.GetSummary(1);
+  ASSERT_EQ(out.Size(), 0);
+}
+
+TEST(Quantile, SetPruneInplace) {
+  using Summary = WQSummary<>;
+  using Entry = Summary::Entry;
+
+  SimpleLCG lcg;
+  for (size_t trial = 0; trial < 256; ++trial) {
+    size_t n = (lcg() % 256) + 1;
+    size_t max_size = (lcg() % n) + 1;
+
+    std::vector<Entry> src_storage(n);
+    float running_rank = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+      float w = static_cast<float>((lcg() % 7) + 1);
+      float value = static_cast<float>(i);
+      src_storage[i] = Entry{running_rank, running_rank + w, w, value};
+      running_rank += w;
+    }
+
+    std::vector<Entry> ref_storage(n);
+    Summary src_ref{Span<Entry>{src_storage.data(), src_storage.size()}, n};
+    Summary out_ref{Span<Entry>{ref_storage.data(), ref_storage.size()}, 0};
+    out_ref.CopyFrom(src_ref);
+    out_ref.SetPrune(max_size);
+
+    Summary in_place{Span<Entry>{src_storage.data(), src_storage.size()}, n};
+    in_place.SetPrune(max_size);
+
+    ASSERT_EQ(in_place.Size(), out_ref.Size()) << "trial=" << trial;
+    auto const in_entries = in_place.Entries();
+    auto const ref_entries = out_ref.Entries();
+    for (size_t i = 0; i < in_place.Size(); ++i) {
+      EXPECT_FLOAT_EQ(in_entries[i].rmin, ref_entries[i].rmin) << "trial=" << trial;
+      EXPECT_FLOAT_EQ(in_entries[i].rmax, ref_entries[i].rmax) << "trial=" << trial;
+      EXPECT_FLOAT_EQ(in_entries[i].wmin, ref_entries[i].wmin) << "trial=" << trial;
+      EXPECT_FLOAT_EQ(in_entries[i].value, ref_entries[i].value) << "trial=" << trial;
+    }
+  }
 }
 
 namespace {
 template <bool use_column>
-using ContainerType = std::conditional_t<use_column, SortedSketchContainer, HostSketchContainer>;
-
-// Dispatch for push page.
-void PushPage(SortedSketchContainer* container, SparsePage const& page, MetaInfo const& info,
-              Span<float const> hessian) {
-  container->PushColPage(page, info, hessian);
-}
 void PushPage(HostSketchContainer* container, SparsePage const& page, MetaInfo const& info,
               Span<float const> hessian) {
-  container->PushRowPage(page, info, hessian);
+  if constexpr (use_column) {
+    container->PushColPage(page, info, hessian);
+  } else {
+    container->PushRowPage(page, info, hessian);
+  }
 }
 
 template <bool use_column>
@@ -85,21 +119,20 @@ void DoTestDistributedQuantile(size_t rows, size_t cols) {
   std::vector<float> hessian(rows, 1.0);
   auto hess = Span<float const>{hessian};
 
-  ContainerType<use_column> sketch_distributed(
-      &ctx, n_bins, m->Info().feature_types.ConstHostSpan(), column_size, false);
+  HostSketchContainer sketch_distributed(&ctx, n_bins, m->Info().feature_types.ConstHostSpan(),
+                                         column_size, false);
 
   if (use_column) {
     for (auto const& page : m->GetBatches<SortedCSCPage>(&ctx)) {
-      PushPage(&sketch_distributed, page, m->Info(), hess);
+      PushPage<use_column>(&sketch_distributed, page, m->Info(), hess);
     }
   } else {
     for (auto const& page : m->GetBatches<SparsePage>(&ctx)) {
-      PushPage(&sketch_distributed, page, m->Info(), hess);
+      PushPage<use_column>(&sketch_distributed, page, m->Info(), hess);
     }
   }
 
-  HistogramCuts distributed_cuts;
-  sketch_distributed.MakeCuts(&ctx, m->Info(), &distributed_cuts);
+  auto distributed_cuts = sketch_distributed.MakeCuts(&ctx, m->Info());
 
   // Generate cuts for single node environment
   collective::Finalize();
@@ -107,8 +140,8 @@ void DoTestDistributedQuantile(size_t rows, size_t cols) {
   CHECK_EQ(collective::GetWorldSize(), 1);
   std::for_each(column_size.begin(), column_size.end(), [=](auto& size) { size *= world; });
   m->Info().num_row_ = world * rows;
-  ContainerType<use_column> sketch_on_single_node(
-      &ctx, n_bins, m->Info().feature_types.ConstHostSpan(), column_size, false);
+  HostSketchContainer sketch_on_single_node(&ctx, n_bins, m->Info().feature_types.ConstHostSpan(),
+                                            column_size, false);
   m->Info().num_row_ = rows;
 
   for (auto rank = 0; rank < world; ++rank) {
@@ -121,24 +154,21 @@ void DoTestDistributedQuantile(size_t rows, size_t cols) {
                  .GenerateDMatrix();
     if (use_column) {
       for (auto const& page : m->GetBatches<SortedCSCPage>(&ctx)) {
-        PushPage(&sketch_on_single_node, page, m->Info(), hess);
+        PushPage<use_column>(&sketch_on_single_node, page, m->Info(), hess);
       }
     } else {
       for (auto const& page : m->GetBatches<SparsePage>()) {
-        PushPage(&sketch_on_single_node, page, m->Info(), hess);
+        PushPage<use_column>(&sketch_on_single_node, page, m->Info(), hess);
       }
     }
   }
 
-  HistogramCuts single_node_cuts;
-  sketch_on_single_node.MakeCuts(&ctx, m->Info(), &single_node_cuts);
+  auto single_node_cuts = sketch_on_single_node.MakeCuts(&ctx, m->Info());
 
   auto const& sptrs = single_node_cuts.Ptrs();
   auto const& dptrs = distributed_cuts.Ptrs();
   auto const& svals = single_node_cuts.Values();
   auto const& dvals = distributed_cuts.Values();
-  auto const& smins = single_node_cuts.MinValues();
-  auto const& dmins = distributed_cuts.MinValues();
 
   ASSERT_EQ(sptrs.size(), dptrs.size());
   for (size_t i = 0; i < sptrs.size(); ++i) {
@@ -148,11 +178,6 @@ void DoTestDistributedQuantile(size_t rows, size_t cols) {
   ASSERT_EQ(svals.size(), dvals.size());
   for (size_t i = 0; i < svals.size(); ++i) {
     ASSERT_NEAR(svals[i], dvals[i], 2e-2f);
-  }
-
-  ASSERT_EQ(smins.size(), dmins.size());
-  for (size_t i = 0; i < smins.size(); ++i) {
-    ASSERT_FLOAT_EQ(smins[i], dmins[i]);
   }
 }
 
@@ -218,55 +243,53 @@ void DoTestColSplitQuantile(size_t rows, size_t cols) {
   auto const n_bins = 64;
 
   // Generate cuts for distributed environment.
-  HistogramCuts distributed_cuts;
+  HistogramCuts distributed_cuts{0};
   {
-    ContainerType<use_column> sketch_distributed(
-        &ctx, n_bins, m->Info().feature_types.ConstHostSpan(), column_size, false);
+    HostSketchContainer sketch_distributed(&ctx, n_bins, m->Info().feature_types.ConstHostSpan(),
+                                           column_size, false);
 
     std::vector<float> hessian(rows, 1.0);
     auto hess = Span<float const>{hessian};
     if (use_column) {
       for (auto const& page : m->GetBatches<SortedCSCPage>(&ctx)) {
-        PushPage(&sketch_distributed, page, m->Info(), hess);
+        PushPage<use_column>(&sketch_distributed, page, m->Info(), hess);
       }
     } else {
       for (auto const& page : m->GetBatches<SparsePage>(&ctx)) {
-        PushPage(&sketch_distributed, page, m->Info(), hess);
+        PushPage<use_column>(&sketch_distributed, page, m->Info(), hess);
       }
     }
 
-    sketch_distributed.MakeCuts(&ctx, m->Info(), &distributed_cuts);
+    distributed_cuts = sketch_distributed.MakeCuts(&ctx, m->Info());
   }
 
   // Generate cuts for single node environment
   collective::Finalize();
   CHECK_EQ(collective::GetWorldSize(), 1);
-  HistogramCuts single_node_cuts;
+  HistogramCuts single_node_cuts{0};
   {
-    ContainerType<use_column> sketch_on_single_node(
-        &ctx, n_bins, m->Info().feature_types.ConstHostSpan(), column_size, false);
+    HostSketchContainer sketch_on_single_node(&ctx, n_bins, m->Info().feature_types.ConstHostSpan(),
+                                              column_size, false);
 
     std::vector<float> hessian(rows, 1.0);
     auto hess = Span<float const>{hessian};
     if (use_column) {
       for (auto const& page : m->GetBatches<SortedCSCPage>(&ctx)) {
-        PushPage(&sketch_on_single_node, page, m->Info(), hess);
+        PushPage<use_column>(&sketch_on_single_node, page, m->Info(), hess);
       }
     } else {
       for (auto const& page : m->GetBatches<SparsePage>(&ctx)) {
-        PushPage(&sketch_on_single_node, page, m->Info(), hess);
+        PushPage<use_column>(&sketch_on_single_node, page, m->Info(), hess);
       }
     }
 
-    sketch_on_single_node.MakeCuts(&ctx, m->Info(), &single_node_cuts);
+    single_node_cuts = sketch_on_single_node.MakeCuts(&ctx, m->Info());
   }
 
   auto const& sptrs = single_node_cuts.Ptrs();
   auto const& dptrs = distributed_cuts.Ptrs();
   auto const& svals = single_node_cuts.Values();
   auto const& dvals = distributed_cuts.Values();
-  auto const& smins = single_node_cuts.MinValues();
-  auto const& dmins = distributed_cuts.MinValues();
 
   EXPECT_EQ(sptrs.size(), dptrs.size());
   for (size_t i = 0; i < sptrs.size(); ++i) {
@@ -276,11 +299,6 @@ void DoTestColSplitQuantile(size_t rows, size_t cols) {
   EXPECT_EQ(svals.size(), dvals.size());
   for (size_t i = 0; i < svals.size(); ++i) {
     EXPECT_NEAR(svals[i], dvals[i], 2e-2f) << "rank: " << rank << ", i: " << i;
-  }
-
-  EXPECT_EQ(smins.size(), dmins.size());
-  for (size_t i = 0; i < smins.size(); ++i) {
-    EXPECT_FLOAT_EQ(smins[i], dmins[i]) << "rank: " << rank << ", i: " << i;
   }
 }
 
@@ -336,40 +354,28 @@ void TestSameOnAllWorkers() {
     std::vector<float> cut_values(cuts.Values().size() * world, 0);
     std::vector<typename std::remove_reference_t<decltype(cuts.Ptrs())>::value_type> cut_ptrs(
         cuts.Ptrs().size() * world, 0);
-    std::vector<float> cut_min_values(cuts.MinValues().size() * world, 0);
 
     std::int64_t value_size = cuts.Values().size();
     std::int64_t ptr_size = cuts.Ptrs().size();
-    std::int64_t min_value_size = cuts.MinValues().size();
 
     auto rc = collective::Success() << [&] {
       return collective::Allreduce(&ctx, &value_size, collective::Op::kMax);
     } << [&] {
       return collective::Allreduce(&ctx, &ptr_size, collective::Op::kMax);
-    } << [&] {
-      return collective::Allreduce(&ctx, &min_value_size, collective::Op::kMax);
     };
     collective::SafeColl(rc);
     ASSERT_EQ(ptr_size, kCols + 1);
-    ASSERT_EQ(min_value_size, kCols);
 
     std::size_t value_offset = value_size * rank;
     std::copy(cuts.Values().begin(), cuts.Values().end(), cut_values.begin() + value_offset);
     std::size_t ptr_offset = ptr_size * rank;
     std::copy(cuts.Ptrs().cbegin(), cuts.Ptrs().cend(), cut_ptrs.begin() + ptr_offset);
-    std::size_t min_values_offset = min_value_size * rank;
-    std::copy(cuts.MinValues().cbegin(), cuts.MinValues().cend(),
-              cut_min_values.begin() + min_values_offset);
 
     rc = std::move(rc) << [&] {
       return collective::Allreduce(&ctx, linalg::MakeVec(cut_values.data(), cut_values.size()),
                                    collective::Op::kSum);
     } << [&] {
       return collective::Allreduce(&ctx, linalg::MakeVec(cut_ptrs.data(), cut_ptrs.size()),
-                                   collective::Op::kSum);
-    } << [&] {
-      return collective::Allreduce(&ctx,
-                                   linalg::MakeVec(cut_min_values.data(), cut_min_values.size()),
                                    collective::Op::kSum);
     };
     collective::SafeColl(rc);
@@ -383,11 +389,6 @@ void TestSameOnAllWorkers() {
       for (std::int64_t j = 0; j < ptr_size; ++j) {
         size_t idx = i * ptr_size + j;
         EXPECT_EQ(cuts.Ptrs().at(j), cut_ptrs.at(idx));
-      }
-
-      for (std::int64_t j = 0; j < min_value_size; ++j) {
-        size_t idx = i * min_value_size + j;
-        ASSERT_EQ(cuts.MinValues().at(j), cut_min_values.at(idx));
       }
     }
   });
