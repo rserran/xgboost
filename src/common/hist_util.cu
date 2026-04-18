@@ -13,6 +13,7 @@
 #include <thrust/tuple.h>  // for tuple
 #include <xgboost/logging.h>
 
+#include <algorithm>
 #include <cstddef>  // for size_t
 #include <utility>
 #include <vector>
@@ -26,11 +27,9 @@
 #include "xgboost/host_device_vector.h"
 
 namespace xgboost::common {
-constexpr float SketchContainer::kFactor;
-
 namespace detail {
 size_t RequiredSampleCutsPerColumn(int max_bins, size_t num_rows) {
-  double eps = 1.0 / (WQSketch::kFactor * max_bins);
+  double eps = SketchEpsilon(max_bins, num_rows);
   size_t num_cuts = WQuantileSketch::LimitSizeLevel(num_rows, eps);
   return std::min(num_cuts, num_rows);
 }
@@ -51,7 +50,6 @@ void SortByWeight(Context const* ctx, dh::device_vector<float>* weights,
 }
 
 void RemoveDuplicatedCategories(Context const* ctx, MetaInfo const& info,
-                                Span<bst_idx_t> d_cuts_ptr,
                                 dh::device_vector<Entry>* p_sorted_entries,
                                 dh::device_vector<float>* p_sorted_weights,
                                 dh::caching_device_vector<size_t>* p_column_sizes_scan) {
@@ -101,34 +99,30 @@ void RemoveDuplicatedCategories(Context const* ctx, MetaInfo const& info,
   }
   sorted_entries.resize(n_uniques);
 
-  // Renew the column scan and cut scan based on categorical data.
-  dh::caching_device_vector<SketchContainer::OffsetT> new_cuts_size(info.num_col_ + 1);
-  CHECK_EQ(new_column_scan.size(), new_cuts_size.size());
-  dh::LaunchN(new_column_scan.size(), ctx->CUDACtx()->Stream(),
-              [=, d_new_cuts_size = dh::ToSpan(new_cuts_size),
-               d_old_column_sizes_scan = dh::ToSpan(column_sizes_scan),
-               d_new_columns_ptr = dh::ToSpan(new_column_scan)] __device__(size_t idx) {
-                d_old_column_sizes_scan[idx] = d_new_columns_ptr[idx];
-                if (idx == d_new_columns_ptr.size() - 1) {
-                  return;
-                }
-                if (IsCat(d_feature_types, idx)) {
-                  // Cut size is the same as number of categories in input.
-                  d_new_cuts_size[idx] = d_new_columns_ptr[idx + 1] - d_new_columns_ptr[idx];
-                } else {
-                  d_new_cuts_size[idx] = d_cuts_ptr[idx + 1] - d_cuts_ptr[idx];
-                }
-              });
-  // Turn size into ptr.
-  thrust::exclusive_scan(ctx->CUDACtx()->CTP(), new_cuts_size.cbegin(), new_cuts_size.cend(),
-                         d_cuts_ptr.data());
+  // Renew the column scan based on categorical data. Numerical columns preserve their original
+  // span, while categorical columns shrink to their unique category count.
+  column_sizes_scan = std::move(new_column_scan);
 }
 }  // namespace detail
+
+namespace {
+[[nodiscard]] bst_idx_t RowsInEntrySpan(SparsePage const& page, std::size_t begin,
+                                        std::size_t end) {
+  CHECK_LT(begin, end);
+  auto const& h_offset = page.offset.ConstHostVector();
+  auto row_begin_it = std::upper_bound(h_offset.cbegin(), h_offset.cend(), begin);
+  auto row_end_it = std::lower_bound(h_offset.cbegin(), h_offset.cend(), end);
+  auto row_begin = std::distance(h_offset.cbegin(), row_begin_it) - 1;
+  auto row_end = std::distance(h_offset.cbegin(), row_end_it);
+  CHECK_LE(row_begin, row_end);
+  return std::max<bst_idx_t>(1, row_end - row_begin);
+}
+}  // namespace
 
 void ProcessWeightedBatch(Context const* ctx, const SparsePage& page, MetaInfo const& info,
                           std::size_t begin, std::size_t end,
                           SketchContainer* sketch_container,  // <- output sketch
-                          int num_cuts_per_feature, common::Span<float const> sample_weight) {
+                          common::Span<float const> sample_weight) {
   dh::device_vector<Entry> sorted_entries;
   if (page.data.DeviceCanRead()) {
     // direct copy if data is already on device
@@ -162,35 +156,28 @@ void ProcessWeightedBatch(Context const* ctx, const SparsePage& page, MetaInfo c
                  detail::EntryCompareOp());
   }
 
-  HostDeviceVector<SketchContainer::OffsetT> cuts_ptr;
   dh::caching_device_vector<size_t> column_sizes_scan;
   data::IsValidFunctor dummy_is_valid(std::numeric_limits<float>::quiet_NaN());
   auto batch_it = dh::MakeTransformIterator<data::COOTuple>(
       sorted_entries.data().get(), [] __device__(Entry const& e) -> data::COOTuple {
         return {0, e.index, e.fvalue};  // row_idx is not needed for scaning column size.
       });
-  detail::GetColumnSizesScan(ctx->CUDACtx(), ctx->Device(), info.num_col_, num_cuts_per_feature,
-                             IterSpan{batch_it, sorted_entries.size()}, dummy_is_valid, &cuts_ptr,
+  detail::GetColumnSizesScan(ctx->CUDACtx(), ctx->Device(), info.num_col_,
+                             IterSpan{batch_it, sorted_entries.size()}, dummy_is_valid,
                              &column_sizes_scan);
-  auto d_cuts_ptr = cuts_ptr.DeviceSpan();
   if (sketch_container->HasCategorical()) {
     auto p_weight = entry_weight.empty() ? nullptr : &entry_weight;
-    detail::RemoveDuplicatedCategories(ctx, info, d_cuts_ptr, &sorted_entries, p_weight,
-                                       &column_sizes_scan);
+    detail::RemoveDuplicatedCategories(ctx, info, &sorted_entries, p_weight, &column_sizes_scan);
   }
 
-  auto const& h_cuts_ptr = cuts_ptr.ConstHostVector();
-  CHECK_EQ(d_cuts_ptr.size(), column_sizes_scan.size());
-
   // Add cuts into sketches
-  auto approx_n_samples = std::max<bst_idx_t>(1, (end - begin + info.num_col_ - 1) / info.num_col_);
-  sketch_container->Push(ctx, dh::ToSpan(sorted_entries), dh::ToSpan(column_sizes_scan), d_cuts_ptr,
-                         h_cuts_ptr.back(), approx_n_samples, dh::ToSpan(entry_weight));
+  auto n_rows_in_batch = RowsInEntrySpan(page, begin, end);
+  sketch_container->Push(ctx, dh::ToSpan(sorted_entries), dh::ToSpan(column_sizes_scan),
+                         n_rows_in_batch, dh::ToSpan(entry_weight));
 
   sorted_entries.clear();
   sorted_entries.shrink_to_fit();
   CHECK_EQ(sorted_entries.capacity(), 0);
-  CHECK_NE(cuts_ptr.Size(), 0);
 }
 
 // Unify group weight, Hessian, and sample weight into sample weight.
@@ -262,8 +249,7 @@ HistogramCuts DeviceSketchWithHessian(Context const* ctx, DMatrix* p_fmat, bst_b
   HostDeviceVector<float> weight;
   weight.SetDevice(ctx->Device());
 
-  std::size_t num_cuts_per_feature = detail::RequiredSampleCutsPerColumn(max_bin, info.num_row_);
-  auto sketch_batch_num_elements = std::min(detail::kSketchBatchNumElements, info.num_nonzero_);
+  auto sketch_batch_num_elements = detail::kSketchBatchNumElements;
 
   CUDAContext const* cuctx = ctx->CUDACtx();
 
@@ -277,8 +263,7 @@ HistogramCuts DeviceSketchWithHessian(Context const* ctx, DMatrix* p_fmat, bst_b
     for (auto begin = 0ull; begin < page_nnz; begin += sketch_batch_num_elements) {
       std::size_t end =
           std::min(page_nnz, static_cast<std::size_t>(begin + sketch_batch_num_elements));
-      ProcessWeightedBatch(ctx, page, info, begin, end, &sketch_container, num_cuts_per_feature,
-                           d_weight);
+      ProcessWeightedBatch(ctx, page, info, begin, end, &sketch_container, d_weight);
     }
   }
 

@@ -40,7 +40,6 @@ struct SketchUnique {
  */
 class SketchContainer {
  public:
-  static constexpr float kFactor = WQSketch::kFactor;
   using OffsetT = bst_idx_t;
   static_assert(sizeof(OffsetT) == sizeof(size_t), "Wrong type for sketch element offset.");
 
@@ -66,11 +65,9 @@ class SketchContainer {
     columns_ptr_.Copy(columns_ptr_tmp_);
     entries_.resize(n_entries);
   }
-  [[nodiscard]] std::size_t IntermediateNumCuts() const {
-    auto const base = static_cast<std::size_t>(num_bins_) * kFactor;
-    auto const eps = 1.0 / static_cast<double>(base);
-    auto const per_feature = WQSketch::LimitSizeLevel(std::max<std::size_t>(1, rows_seen_), eps);
-    return per_feature * num_columns_;
+  [[nodiscard]] std::size_t IntermediateCutsPerFeature() const {
+    auto const eps = SketchEpsilon(num_bins_, std::max<std::size_t>(1, rows_seen_));
+    return WQSketch::LimitSizeLevel(std::max<std::size_t>(1, rows_seen_), eps);
   }
 
   // Get the span of one column.
@@ -147,13 +144,10 @@ class SketchContainer {
    *
    * \param entries Sorted entries.
    * \param columns_ptr CSC pointer for entries.
-   * \param cuts_ptr CSC pointer for cuts.
-   * \param total_cuts Total number of cuts, equal to the back of cuts_ptr.
    * \param weights (optional) data weights.
    */
   void Push(Context const* ctx, Span<Entry const> entries, Span<size_t> columns_ptr,
-            common::Span<OffsetT> cuts_ptr, size_t total_cuts, bst_idx_t n_rows_in_batch,
-            Span<float> weights = {});
+            bst_idx_t n_rows_in_batch, Span<float> weights = {});
   /**
    * @brief Prune the quantile structure.
    *
