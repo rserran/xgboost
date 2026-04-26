@@ -166,8 +166,7 @@ void PruneImpl(common::Span<SketchContainer::OffsetT const> cuts_ptr,
     }
 
     float w = back.rmin - front.rmax;
-    auto budget = static_cast<float>(d_out.size());
-    assert(budget != 0);
+    assert(!d_out.empty());
     auto q = ((static_cast<float>(idx) * w) / (static_cast<float>(to) - 1.0f) + front.rmax);
     auto it = dh::MakeTransformIterator<SketchEntry>(
         thrust::make_counting_iterator(0ul), [=] __device__(size_t idx) {
@@ -226,7 +225,7 @@ XGBOOST_DEVICE thrust::tuple<uint64_t, uint64_t> MergePartition(Span<SketchEntry
   auto low = k > n ? k - n : 0ul;
   auto high = std::min(k, m);
   auto candidate_it = thrust::make_counting_iterator<uint64_t>(low);
-  auto need_more_x = dh::MakeTransformIterator<bool>(candidate_it, [=] __device__(uint64_t i) {
+  auto need_more_x = dh::MakeTransformIterator<bool>(candidate_it, [=] XGBOOST_DEVICE(uint64_t i) {
     // j is the number of elements taken from y when the partition takes i from x.
     auto j = k - i;
     // Move the boundary right while the last candidate from y still sorts ahead of the
