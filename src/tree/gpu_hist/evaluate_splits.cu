@@ -44,12 +44,10 @@ class EvaluateSplitAgent {
   using ArgMaxT = cub::KeyValuePair<std::uint32_t, float>;
   using BlockScanT = cub::BlockScan<GradientPairInt64, kBlockSize>;
   using MaxReduceT = cub::WarpReduce<ArgMaxT>;
-  using SumReduceT = cub::WarpReduce<GradientPairInt64>;
 
   struct TempStorage {
     typename BlockScanT::TempStorage scan;
     typename MaxReduceT::TempStorage max_reduce;
-    typename SumReduceT::TempStorage sum_reduce;
   };
 
   const int fidx;
@@ -92,10 +90,7 @@ class EvaluateSplitAgent {
     for (auto idx = gidx_begin + threadIdx.x; idx < gidx_end; idx += kBlockSize) {
       local_sum += LoadGpair(node_histogram + idx);
     }
-    local_sum = SumReduceT(temp_storage->sum_reduce).Sum(local_sum);  // NOLINT
-    // Broadcast result from thread 0
-    return {__shfl_sync(0xffffffff, local_sum.GetQuantisedGrad(), 0),
-            __shfl_sync(0xffffffff, local_sum.GetQuantisedHess(), 0)};
+    return WarpSum(local_sum);
   }
 
   // Load using efficient 128 vector load instruction
@@ -126,7 +121,7 @@ class EvaluateSplitAgent {
       auto best = MaxReduceT(temp_storage->max_reduce).Reduce({threadIdx.x, gain}, cub::ArgMax());
       // This reduce result is only valid in thread 0
       // broadcast to the rest of the warp
-      auto best_thread = __shfl_sync(0xffffffff, best.key, 0);
+      auto best_thread = __shfl_sync(dh::WarpFullMask(), best.key, 0);
 
       // Best thread updates the split
       if (threadIdx.x == best_thread) {
@@ -138,7 +133,7 @@ class EvaluateSplitAgent {
         GradientPairInt64 left = missing_left ? bin + missing : bin;
         GradientPairInt64 right = parent_sum - left;
         best_split->Update(gain, missing_left ? kLeftDir : kRightDir, fvalue, fidx, left, right,
-                           false, param, rounding);
+                           false);
       }
 
       __syncwarp();
@@ -162,7 +157,7 @@ class EvaluateSplitAgent {
       auto best = MaxReduceT(temp_storage->max_reduce).Reduce({threadIdx.x, gain}, cub::ArgMax());
       // This reduce result is only valid in thread 0
       // broadcast to the rest of the warp
-      auto best_thread = __shfl_sync(0xffffffff, best.key, 0);
+      auto best_thread = __shfl_sync(dh::WarpFullMask(), best.key, 0);
       // Best thread updates the split
       if (threadIdx.x == best_thread) {
         auto split_gidx = scan_begin + threadIdx.x;
@@ -170,7 +165,7 @@ class EvaluateSplitAgent {
         GradientPairInt64 left = missing_left ? bin + missing : bin;
         GradientPairInt64 right = parent_sum - left;
         best_split->UpdateCat(gain, missing_left ? kLeftDir : kRightDir,
-                              static_cast<bst_cat_t>(fvalue), fidx, left, right, param, rounding);
+                              static_cast<bst_cat_t>(fvalue), fidx, left, right);
       }
 
       __syncwarp();
@@ -200,7 +195,7 @@ class EvaluateSplitAgent {
       // index of best threshold inside a feature.
       auto best_thresh = it - gidx_begin;
       best_split->UpdateCat(gain, missing_left ? kLeftDir : kRightDir, best_thresh, fidx, left_sum,
-                            right_sum, param, rounding);
+                            right_sum);
     }
 
     __syncwarp();
