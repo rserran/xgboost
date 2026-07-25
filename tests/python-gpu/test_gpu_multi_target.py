@@ -11,6 +11,7 @@ from xgboost import config_context
 from xgboost import testing as tm
 from xgboost.testing.multi_target import (
     all_reg_objectives,
+    check_categorical_mixed,
     run_absolute_error,
     run_column_sampling,
     run_deterministic,
@@ -30,6 +31,11 @@ from xgboost.testing.multi_target import (
 from xgboost.testing.params import hist_parameter_strategy
 from xgboost.testing.updater import check_quantile_loss_rf, train_result
 from xgboost.testing.utils import Device
+
+
+@pytest.mark.skipif(**tm.no_pandas())
+def test_categorical_mixed() -> None:
+    check_categorical_mixed("cuda")
 
 
 @pytest.mark.parametrize("learning_rate", [1.0, None])
@@ -127,8 +133,9 @@ def test_grow_policy(grow_policy: str) -> None:
     run_grow_policy("cuda", grow_policy)
 
 
-def test_mixed_strategy() -> None:
-    run_mixed_strategy("cuda")
+@pytest.mark.parametrize("use_dart", [False, True], ids=["gbtree", "dart"])
+def test_mixed_strategy(use_dart: bool) -> None:
+    run_mixed_strategy("cuda", use_dart)
 
 
 def test_feature_importance_strategy_compare() -> None:

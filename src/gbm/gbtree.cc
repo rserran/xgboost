@@ -10,7 +10,7 @@
 #include <dmlc/omp.h>
 #include <dmlc/parameter.h>
 
-#include <algorithm>  // for equal
+#include <algorithm>  // for equal, any_of
 #include <cstdint>    // for uint32_t
 #include <memory>
 #include <string>
@@ -81,6 +81,7 @@ bool UpdatersMatched(std::vector<std::string> updater_seq,
                       return name == up->Name();
                     });
 }
+
 }  // namespace
 
 void GBTree::Configure(Args const& cfg) {
@@ -227,6 +228,12 @@ void GBTree::DoBoost(DMatrix* p_fmat, GradientContainer* in_gpair, PredictionCac
     CHECK(tparam_.tree_method == TreeMethod::kHist || tparam_.tree_method == TreeMethod::kAuto)
         << "Only the hist tree method is supported for building multi-target trees with vector "
            "leaf.";
+  }
+  if (in_gpair->HasValueGrad()) {
+    CHECK(model_.learner_model_param->IsVectorLeaf())
+        << "Reduced gradient must be used with vector leaf trees";
+    CHECK(!tree_param_.HasMonotone())
+        << "Monotonic constraints are not supported with reduced gradients.";
   }
 
   TreesOneIter new_trees;
@@ -379,8 +386,7 @@ void GBTree::CommitModel(TreesOneIter&& new_trees) {
   monitor_.Start("CommitModel");
   auto n_old_trees = model_.trees.size();
   auto has_tree_weights = !model_.weight_drop.empty();
-  auto dropout_configured =
-      dparam_.rate_drop != 0.0f || dparam_.one_drop || dparam_.skip_drop != 0.0f;
+  auto dropout_configured = dparam_.HasDropout();
   auto track_tree_weights = has_tree_weights || dropout_configured;
   if (track_tree_weights && model_.weight_drop.size() < n_old_trees) {
     model_.weight_drop.insert(model_.weight_drop.cend(), n_old_trees - model_.weight_drop.size(),
@@ -568,9 +574,10 @@ std::vector<float> GBTree::DropTrees(bool is_training) {
   return dropped_weights;
 }
 
-std::size_t GBTree::NormalizeTrees(size_t size_new_trees) {
+[[nodiscard]] std::size_t GBTree::NormalizeTrees(std::size_t size_new_trees) {
   CHECK(tree_param_.GetInitialised());
-  float lr = 1.0 * tree_param_.learning_rate / size_new_trees;
+  // Parallel trees each use eta / num_parallel_tree, so the complete layer uses eta.
+  auto lr = tree_param_.learning_rate;
   size_t num_drop = idx_drop_.size();
   if (num_drop == 0) {
     for (size_t i = 0; i < size_new_trees; ++i) {
@@ -730,10 +737,6 @@ void GBTree::PredictBatch(DMatrix* p_fmat, PredictionCacheEntry* out_preds, bool
 void GBTree::InplacePredict(std::shared_ptr<DMatrix> p_m, float missing,
                             PredictionCacheEntry* out_preds, bst_layer_t layer_begin,
                             bst_layer_t layer_end) const {
-  auto const* tree_weights = model_.TreeWeights();
-  if (tree_weights != nullptr) {
-    CHECK(!this->model_.learner_model_param->IsVectorLeaf()) << "dart" << MTNotImplemented();
-  }
   auto [tree_begin, tree_end] = detail::LayerToTree(model_, layer_begin, layer_end);
   CHECK_LE(tree_end, model_.trees.size()) << "Invalid number of trees.";
   if (p_m->Ctx()->Device() != this->ctx_->Device()) {

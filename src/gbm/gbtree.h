@@ -117,6 +117,10 @@ struct DartTrainParam : public XGBoostParameter<DartTrainParam> {
         .set_default(0.0f)
         .describe("Probability of skipping the dropout during a boosting iteration.");
   }
+
+  [[nodiscard]] bool HasDropout() const {
+    return this->rate_drop != 0.0f || this->one_drop || this->skip_drop != 0.0f;
+  }
 };
 
 namespace detail {
@@ -234,7 +238,7 @@ class GBTree : public GradientBooster {
     auto total_n_trees = model_.trees.size();
     auto add_score = [&](auto fn) {
       for (auto idx : trees) {
-        CHECK_LE(idx, total_n_trees) << "Invalid tree index.";
+        CHECK_LT(idx, total_n_trees) << "Invalid tree index.";
         auto const& tree = *model_.trees[idx];
         tree::WalkTree(tree, [&](auto const& tree, bst_node_t nidx) {
           if (!tree.IsLeaf(nidx)) {
@@ -289,11 +293,22 @@ class GBTree : public GradientBooster {
 
   [[nodiscard]] CatContainer const* Cats() const override { return this->model_.Cats(); }
 
-  void PredictLeaf(DMatrix* p_fmat, HostDeviceVector<bst_float>* out_preds, uint32_t layer_begin,
-                   uint32_t layer_end) override {
+  void PredictLeaf(DMatrix* p_fmat, HostDeviceVector<bst_float>* out_preds, bst_layer_t layer_begin,
+                   bst_layer_t layer_end, bool strict_shape) override {
     auto [tree_begin, tree_end] = detail::LayerToTree(model_, layer_begin, layer_end);
     CHECK_EQ(tree_begin, 0) << "Predict leaf supports only iteration end: [0, "
                                "n_iteration), use model slicing instead.";
+    auto it = this->model_.trees.cbegin();
+    // There's no good representation for vector leaf for now as the existing shape is:
+    // `(n_samples, n_iterations, n_classes, n_trees_in_forest)`. But with vector leaf, we
+    // can have mixed tree types and `n_classes` is invalid.
+    if (strict_shape &&
+        std::any_of(it + tree_begin, it + tree_end, [](std::unique_ptr<RegTree> const& p_tree) {
+          return p_tree->IsMultiTarget();
+        })) {
+      LOG(FATAL)
+          << "`strict_shape` with predict leaf is not supported when vector leaf trees are used.";
+    }
     this->GetPredictor(false)->PredictLeaf(p_fmat, out_preds, model_, tree_end);
   }
 
@@ -324,7 +339,7 @@ class GBTree : public GradientBooster {
 
  protected:
   [[nodiscard]] std::vector<float> DropTrees(bool is_training);
-  std::size_t NormalizeTrees(std::size_t size_new_trees);
+  [[nodiscard]] std::size_t NormalizeTrees(std::size_t size_new_trees);
 
   void BoostNewTrees(GradientContainer* gpair, DMatrix* p_fmat, int bst_group,
                      std::vector<HostDeviceVector<bst_node_t>>* out_position,
