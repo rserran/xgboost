@@ -29,20 +29,19 @@ The following parameters can be set in the global scope, using :py:func:`xgboost
 
 * ``verbosity``: Verbosity of printing messages. Valid values of 0 (silent), 1 (warning), 2 (info), and 3 (debug).
 
-* ``use_rmm``: Whether to use RAPIDS Memory Manager (RMM) to allocate cache GPU
-  memory. The primary memory is always allocated on the RMM pool when XGBoost is built
-  (compiled) with the RMM plugin enabled. Valid values are ``true`` and ``false``. See
-  :doc:`/python/rmm-examples/index` for details.
+* ``use_rmm``:
+
+  .. deprecated:: 3.5.0
+
+    The RMM plugin has been deprecated, use the CUDA async pool instead.
 
 * ``use_cuda_async_pool`` [default=false]
 
   Whether to use the device memory pool in the CUDA driver. This option is not available
   if XGBoost is built with RMM support, as it is the same as using the RMM
-  `CudaAsyncMemoryResource` pool.
+  ``CudaAsyncMemoryResource`` pool.
 
   .. versionadded:: 3.2.0
-
-  .. warning:: This is an experimental feature and is subject to change without notice. Windows is not supported yet.
 
 * ``nthread``: Set the global number of threads for OpenMP. Use this only when you need to
   override some OpenMP-related environment variables like ``OMP_NUM_THREADS``. Otherwise,
@@ -402,7 +401,7 @@ Specify the learning task and the corresponding learning objective. The objectiv
 
     .. versionadded:: 1.7.0
 
-  - ``reg:quantileerror``: Quantile loss, also known as ``pinball loss``. See later sections for its parameter and :ref:`sphx_glr_python_examples_prediction_intervals.py` for a worked example.
+  - ``reg:quantileerror``: Quantile loss, also known as ``pinball loss``. A smooth approximation is used to optimize the quantile loss. See later sections for its parameter and :ref:`sphx_glr_python_examples_prediction_intervals.py` for a worked example.
 
     .. versionadded:: 2.0.0
 
@@ -412,8 +411,6 @@ Specify the learning task and the corresponding learning objective. The objectiv
   - ``binary:logitraw``: logistic regression for binary classification, output score before logistic transformation
   - ``binary:hinge``: hinge loss for binary classification. This makes predictions of 0 or 1, rather than producing probabilities.
   - ``count:poisson``: Poisson regression for count data, output mean of Poisson distribution.
-
-    + ``max_delta_step`` is set to 0.7 by default in Poisson regression (used to safeguard optimization)
 
   - ``survival:cox``: Cox regression for right censored survival time data (negative values are considered right censored).
     Note that predictions are returned on the hazard ratio scale (i.e., as HR = exp(marginal_prediction) in the proportional hazard function ``h(t) = h0(t) * HR``).
@@ -524,7 +521,7 @@ Parameter for using Pseudo-Huber (``reg:pseudohubererror``)
 Parameter for using Quantile Loss (``reg:quantileerror``)
 =========================================================
 
-* ``quantile_alpha``: A scalar or a list of targeted quantiles.
+* ``quantile_alpha``: A scalar or an ascending list of targeted quantiles.
 
     .. versionadded:: 2.0.0
 

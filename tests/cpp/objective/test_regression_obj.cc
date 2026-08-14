@@ -146,21 +146,20 @@ void TestPoissonRegressionGPair(const Context* ctx) {
   std::vector<std::pair<std::string, std::string>> args;
   std::unique_ptr<ObjFunction> obj{ObjFunction::Create("count:poisson", ctx)};
 
-  args.emplace_back("max_delta_step", "0.1f");
   obj->Configure(args);
   // clang-format off
   CheckObjFunction(obj,
-                   {   0,  0.1f,  0.9f,    1,    0,  0.1f,  0.9f,    1},
-                   {   0,    0,    0,    0,    1,    1,    1,    1},
-                   {   1,    1,    1,    1,    1,    1,    1,    1},
-                   {   1, 1.10f, 2.45f, 2.71f,    0, 0.10f, 1.45f, 1.71f},
-                   {1.10f, 1.22f, 2.71f, 3.00f, 1.10f, 1.22f, 2.71f, 3.00f});
+                   {  -2,    -1,     0,    1,   -2,    -1,     0,    1},
+                   {   0,     0,     0,    0,    1,     2,     3,    4},
+                   {   1,     1,     1,    1,    1,     1,     1,    1},
+                   { .14f,  .37f,     1, 2.71f, -.86f, -1.63f,    -2, -1.28f},
+                   {.068f, .184f,   .5f, 1.359f, .568f, 1.184f,     2, 3.359f});
   CheckObjFunction(obj,
-                   {   0,  0.1f,  0.9f,    1,    0,  0.1f,  0.9f,    1},
-                   {   0,    0,    0,    0,    1,    1,    1,    1},
+                   {  -2,    -1,     0,    1,   -2,    -1,     0,    1},
+                   {   0,     0,     0,    0,    1,     2,     3,    4},
                    {},  // Empty weight
-                   {   1, 1.10f, 2.45f, 2.71f,    0, 0.10f, 1.45f, 1.71f},
-                   {1.10f, 1.22f, 2.71f, 3.00f, 1.10f, 1.22f, 2.71f, 3.00f});
+                   { .14f,  .37f,     1, 2.71f, -.86f, -1.63f,    -2, -1.28f},
+                   {.068f, .184f,   .5f, 1.359f, .568f, 1.184f,     2, 3.359f});
   // clang-format on
 }
 
@@ -168,8 +167,16 @@ void TestPoissonRegressionBasic(const Context* ctx) {
   std::vector<std::pair<std::string, std::string>> args;
   std::unique_ptr<ObjFunction> obj{ObjFunction::Create("count:poisson", ctx)};
 
+  Json legacy_config{Object{}};
+  legacy_config["name"] = String{"count:poisson"};
+  legacy_config["poisson_regression_param"] = Object{};
+  legacy_config["poisson_regression_param"]["max_delta_step"] = String{"7E-1"};
+  ASSERT_NO_THROW(obj->LoadConfig(legacy_config));
+
   obj->Configure(args);
-  CheckConfigReload(obj, "count:poisson");
+  auto config = CheckConfigReload(obj, "count:poisson");
+  auto const& config_obj = get<Object const>(config);
+  ASSERT_EQ(config_obj.size(), 1);
 
   // test label validation
   EXPECT_ANY_THROW(CheckObjFunction(obj, {0}, {-1}, {1}, {0}, {0}))
@@ -308,7 +315,6 @@ void TestAbsoluteError(const Context* ctx) {
   obj->Configure({});
   CheckConfigReload(obj, "reg:absoluteerror");
   ASSERT_FALSE(obj->Task().const_hess);
-  ASSERT_FALSE(obj->Task().zero_hess);
 
   auto check = [&](std::vector<float> const& predts, std::vector<float> const& labels,
                    std::vector<float> const& weights) {
@@ -407,38 +413,6 @@ void TestAbsoluteError(const Context* ctx) {
     ASSERT_NEAR(init(labels, weights), expected + 1000.0f, 1.0e-4f);
   }
   ASSERT_EQ(obj->DefaultEvalMetric(), std::string{"mae"});
-}
-
-void TestVectorLeafObj(Context const* ctx, std::string name, Args const& args, bst_idx_t n_samples,
-                       bst_idx_t n_target_labels, std::vector<float> const& sol_left,
-                       std::vector<float> const& sol_right) {
-  std::unique_ptr<ObjFunction> obj{ObjFunction::Create(name, ctx)};
-  obj->Configure(args);
-
-  bst_target_t n_targets = 3;
-  auto tree = MakeMtTreeForTest(n_targets);
-
-  bst_node_t left_nidx = tree->LeftChild(RegTree::kRoot);
-  bst_node_t right_nidx = tree->RightChild(RegTree::kRoot);
-
-  MetaInfo info;
-  MakeIotaLabelsForTest(n_samples, n_target_labels, &info);
-  HostDeviceVector<bst_node_t> position;
-  MakePositionsForTest(info.num_row_, left_nidx, right_nidx, &position);
-
-  HostDeviceVector<float> predt(info.labels.Shape(0) * n_targets, 0.0f);
-
-  auto lr = 2.0f;
-  obj->UpdateTreeLeaf(position, info, lr, predt, 0, tree.get());
-
-  auto mt_tree = tree->HostMtView();
-  auto left = mt_tree.LeafValue(mt_tree.LeftChild(RegTree::kRoot));
-  auto right = mt_tree.LeafValue(mt_tree.RightChild(RegTree::kRoot));
-
-  for (std::size_t i = 0; i < left.Size(); ++i) {
-    ASSERT_FLOAT_EQ(left(i), sol_left[i]);
-    ASSERT_FLOAT_EQ(right(i), sol_right[i]);
-  }
 }
 
 void TestExpectileRegressionGPair(const Context* ctx) {

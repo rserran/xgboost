@@ -23,6 +23,7 @@ from typing import (
     TypeVar,
     Union,
     cast,
+    runtime_checkable,
 )
 
 import numpy as np
@@ -156,6 +157,7 @@ def _can_use_qdm(tree_method: Optional[str], device: Optional[str]) -> bool:
     return tree_method in ("hist", None, "auto") and not_sycl
 
 
+@runtime_checkable
 class _SklObjWProto(Protocol):
     def __call__(
         self,
@@ -1189,8 +1191,9 @@ class XGBModel(XGBModelBase):
     def load_model(self, fname: ModelIn) -> None:
         # pylint: disable=attribute-defined-outside-init
         if not self.__sklearn_is_fitted__():
-            self._Booster = Booster({"n_jobs": self.n_jobs})
-        self.get_booster().load_model(fname)
+            self._Booster = Booster({"n_jobs": self.n_jobs}, model_file=fname)
+        else:
+            self.get_booster().load_model(fname)
 
         meta_str = self.get_booster().attr("scikit_learn")
         if meta_str is not None:
