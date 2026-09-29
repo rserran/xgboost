@@ -17,7 +17,9 @@
 #include <utility>
 #include <vector>
 
+#include "../common/kernel.h"  // for DispatchKernel
 #include "../common/timer.h"
+#include "../predictor/prediction_kernel.h"
 #include "../tree/param.h"      // TrainParam
 #include "../tree/tree_view.h"  // for WalkTree
 #include "gbtree_model.h"
@@ -333,8 +335,7 @@ class GBTree : public GradientBooster {
       LOG(FATAL)
           << "`strict_shape` with predict leaf is not supported when vector leaf trees are used.";
     }
-    auto predictor = this->CreatePredictor(false);
-    predictor->PredictLeaf(p_fmat, out_preds, model_, tree_end);
+    common::DispatchKernel<predictor::PredictLeafKernel>(ctx_, p_fmat, out_preds, model_, tree_end);
   }
 
   void PredictContribution(DMatrix* p_fmat, HostDeviceVector<float>* out_contribs,
@@ -343,8 +344,13 @@ class GBTree : public GradientBooster {
     auto [tree_begin, tree_end] = detail::LayerToTree(model_, layer_begin, layer_end);
     CHECK_EQ(tree_begin, 0) << "Predict contribution supports only iteration end: [0, "
                                "n_iteration), using model slicing instead.";
-    auto predictor = this->CreatePredictor(false);
-    predictor->PredictContribution(p_fmat, out_contribs, model_, tree_end, approximate);
+    if (approximate) {
+      common::DispatchKernel<predictor::PredictApproxContributionKernel>(
+          ctx_, p_fmat, out_contribs, model_, tree_end, model_.TreeWeights());
+    } else {
+      common::DispatchKernel<predictor::PredictContributionKernel>(
+          ctx_, p_fmat, out_contribs, model_, tree_end, model_.TreeWeights());
+    }
   }
 
   void PredictInteractionContributions(DMatrix* p_fmat, HostDeviceVector<float>* out_contribs,
@@ -353,8 +359,8 @@ class GBTree : public GradientBooster {
     auto [tree_begin, tree_end] = detail::LayerToTree(model_, layer_begin, layer_end);
     CHECK_EQ(tree_begin, 0) << "Predict interaction contribution supports only iteration end: [0, "
                                "n_iteration), using model slicing instead.";
-    auto predictor = this->CreatePredictor(false);
-    predictor->PredictInteractionContributions(p_fmat, out_contribs, model_, tree_end, approximate);
+    common::DispatchKernel<predictor::PredictInteractionContributionsKernel>(
+        ctx_, p_fmat, out_contribs, model_, tree_end, model_.TreeWeights(), approximate);
   }
 
   [[nodiscard]] std::vector<std::string> DumpModel(const FeatureMap& fmap, bool with_stats,

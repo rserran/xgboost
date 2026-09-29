@@ -10,11 +10,8 @@
 #include <xgboost/context.h>  // for Context
 #include <xgboost/data.h>
 #include <xgboost/host_device_vector.h>
-#include <xgboost/linalg.h>
-#include <xgboost/span.h>
 
 #include <functional>  // for function
-#include <memory>      // for shared_ptr
 #include <string>
 #include <vector>
 
@@ -24,7 +21,6 @@ struct GBTreeModel;
 }  // namespace xgboost::gbm
 
 namespace xgboost {
-class RegTree;
 /**
  * \class Predictor
  *
@@ -43,16 +39,6 @@ class Predictor {
   virtual ~Predictor() = default;
 
   /**
-   * \brief Initialize output prediction
-   *
-   * \param info Meta info for the DMatrix object used for prediction.
-   * \param out_predt Prediction vector to be initialized.
-   * \param model Tree model used for prediction.
-   */
-  virtual void InitOutPredictions(const MetaInfo& info, HostDeviceVector<float>* out_predt,
-                                  const gbm::GBTreeModel& model) const;
-
-  /**
    * \brief Generate batch predictions for a given feature matrix. May use
    * cached predictions if available instead of calculating from scratch.
    *
@@ -67,72 +53,6 @@ class Predictor {
                             gbm::GBTreeModel const& model, bst_tree_t tree_begin,
                             bst_tree_t tree_end = 0,
                             std::vector<float> const* tree_weights_override = nullptr) const = 0;
-
-  /**
-   * \brief Inplace prediction.
-   *
-   * \param           p_fmat                 A proxy DMatrix that contains the data and related
-   *                                         meta info.
-   * \param           model                  The model to predict from.
-   * \param           missing                Missing value in the data.
-   * \param [in,out]  out_preds              The output preds.
-   * \param           tree_begin (Optional) Beginning of boosted trees used for prediction.
-   * \param           tree_end   (Optional) End of booster trees. 0 means do not limit trees.
-   *
-   * \return True if the data can be handled by current predictor, false otherwise.
-   */
-  virtual bool InplacePredict(std::shared_ptr<DMatrix> p_fmat, const gbm::GBTreeModel& model,
-                              float missing, HostDeviceVector<float>* out_preds,
-                              bst_tree_t tree_begin = 0, bst_tree_t tree_end = 0) const = 0;
-
-  /**
-   * \brief predict the leaf index of each tree, the output will be nsample *
-   * ntree vector this is only valid in gbtree predictor.
-   *
-   * \param [in,out]  dmat        The input feature matrix.
-   * \param [in,out]  out_preds   The output preds.
-   * \param           model       Model to make predictions from.
-   * \param           tree_end    (Optional) The tree end index.
-   */
-
-  virtual void PredictLeaf(DMatrix* dmat, HostDeviceVector<float>* out_preds,
-                           gbm::GBTreeModel const& model, bst_tree_t tree_end = 0) const = 0;
-
-  /**
-   * \brief Add prediction contributions from known leaf ids. The leaf ids are encoded with
-   *        tree::SamplePosition, where invalid rows are still decoded for prediction.
-   *
-   * \param leaf_ids Leaf ids for each tree, one vector per tree.
-   * \param trees Trees corresponding to the leaf id vectors.
-   * \param out_preds Prediction output to be incremented.
-   */
-  virtual void PredictFromLeafIds(common::Span<HostDeviceVector<bst_node_t> const> leaf_ids,
-                                  common::Span<RegTree const*> trees,
-                                  linalg::MatrixView<float> out_preds) const = 0;
-
-  /**
-   * \brief feature contributions to individual predictions; the output will be
-   * a vector of length (nfeats + 1) * num_output_group * nsample, arranged in
-   * that order.
-   *
-   * \param [in,out]  dmat               The input feature matrix.
-   * \param [in,out]  out_contribs       The output feature contribs.
-   * \param           model              Model to make predictions from.
-   * \param           tree_end           The tree end index.
-   * \param           approximate        Use fast approximate algorithm.
-   * \param           condition          Condition on the condition_feature (0=no, -1=cond off, 1=cond on).
-   * \param           condition_feature  Feature to condition on (i.e. fix) during calculations.
-   */
-
-  virtual void PredictContribution(DMatrix* dmat, HostDeviceVector<float>* out_contribs,
-                                   gbm::GBTreeModel const& model, bst_tree_t tree_end = 0,
-                                   bool approximate = false, int condition = 0,
-                                   unsigned condition_feature = 0) const = 0;
-
-  virtual void PredictInteractionContributions(DMatrix* dmat, HostDeviceVector<float>* out_contribs,
-                                               gbm::GBTreeModel const& model,
-                                               bst_tree_t tree_end = 0,
-                                               bool approximate = false) const = 0;
 
   /**
    * \brief Creates a new Predictor*.

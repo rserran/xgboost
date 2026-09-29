@@ -12,15 +12,22 @@
 #include <string>
 #include <vector>
 
+#include "../../../src/common/kernel.h"
 #include "../../../src/data/device_adapter.cuh"
 #include "../../../src/data/proxy_dmatrix.h"
 #include "../../../src/gbm/gbtree_model.h"
+#include "../../../src/predictor/prediction_kernel.h"
 #include "../collective/test_worker.h"  // for TestDistributedGlobal
 #include "../helpers.h"
 #include "test_predictor.h"
 #include "test_shap.h"
 
 namespace xgboost::predictor {
+TEST(GPUPredictor, InitOutPredictions) {
+  auto ctx = MakeCUDACtx(0);
+  TestInitOutPredictions(&ctx);
+}
+
 TEST(GPUPredictor, Basic) {
   auto cpu_lparam = MakeCUDACtx(-1);
   auto gpu_lparam = MakeCUDACtx(0);
@@ -43,9 +50,9 @@ TEST(GPUPredictor, Basic) {
     HostDeviceVector<float> gpu_out_predictions;
     HostDeviceVector<float> cpu_out_predictions;
 
-    gpu_predictor->InitOutPredictions(dmat->Info(), &gpu_out_predictions, model);
+    InitOutPredictions(&gpu_lparam, dmat->Info(), &gpu_out_predictions, model);
     gpu_predictor->PredictBatch(dmat.get(), &gpu_out_predictions, model, 0);
-    cpu_predictor->InitOutPredictions(dmat->Info(), &cpu_out_predictions, model);
+    InitOutPredictions(&cpu_lparam, dmat->Info(), &cpu_out_predictions, model);
     cpu_predictor->PredictBatch(dmat.get(), &cpu_out_predictions, model, 0);
 
     std::vector<float>& gpu_out_predictions_h = gpu_out_predictions.HostVector();
@@ -55,6 +62,12 @@ TEST(GPUPredictor, Basic) {
       ASSERT_NEAR(gpu_out_predictions_h[j], cpu_out_predictions_h[j], abs_tolerance);
     }
   }
+}
+
+TEST(GPUPredictor, PredictFromLeafIds) {
+  auto ctx = MakeCUDACtx(0);
+  auto dmat = RandomDataGenerator(16, 4, 0).GenerateDMatrix();
+  TestBasic(dmat.get(), &ctx);
 }
 
 TEST(GPUPredictor, BatchPredictionWithWeights) {
@@ -112,7 +125,7 @@ void TestDecisionStumpExternalMemory(Context const* ctx, bst_feature_t n_feature
   for (auto p_fmat : {create_fn(400), create_fn(800), create_fn(2048)}) {
     p_fmat->Info().base_margin_ = linalg::Constant(ctx, 0.5f, p_fmat->Info().num_row_, n_classes);
     HostDeviceVector<float> out_predictions;
-    gpu_predictor->InitOutPredictions(p_fmat->Info(), &out_predictions, model);
+    InitOutPredictions(ctx, p_fmat->Info(), &out_predictions, model);
     gpu_predictor->PredictBatch(p_fmat.get(), &out_predictions, model, 0);
     ASSERT_EQ(out_predictions.Size(), p_fmat->Info().num_row_ * n_classes);
     auto const& h_predt = out_predictions.ConstHostVector();
@@ -192,8 +205,6 @@ TEST(GPUPredictor, PredictLeafBasic) {
   size_t constexpr kRows = 5, kCols = 5;
   auto dmat = RandomDataGenerator(kRows, kCols, 0).Device(DeviceOrd::CUDA(0)).GenerateDMatrix();
   auto lparam = MakeCUDACtx(GPUIDX);
-  std::unique_ptr<Predictor> gpu_predictor =
-      std::unique_ptr<Predictor>(Predictor::Create("gpu_predictor", &lparam));
 
   LearnerModelState mparam{MakeMP(kCols, .0, 1)};
   Context ctx;
@@ -201,7 +212,9 @@ TEST(GPUPredictor, PredictLeafBasic) {
   auto const& model = *p_model;
 
   HostDeviceVector<float> leaf_out_predictions;
-  gpu_predictor->PredictLeaf(dmat.get(), &leaf_out_predictions, model);
+  common::DispatchKernel<predictor::PredictLeafKernel>(&lparam, dmat.get(), &leaf_out_predictions,
+                                                       model, 0);
+  ASSERT_TRUE(leaf_out_predictions.DeviceCanRead());
   auto const& h_leaf_out_predictions = leaf_out_predictions.ConstHostVector();
   for (auto v : h_leaf_out_predictions) {
     ASSERT_EQ(v, 0);
